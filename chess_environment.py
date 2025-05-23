@@ -8,6 +8,12 @@ class ChessEnvironment:
         """
         self.board = chess.Board()
 
+    def reset(self):
+        """
+        Resets the board to the standard starting position.
+        """
+        self.board.reset()
+
     def get_current_state_fen(self):
         """
         Returns the current board state in FEN (Forsyth-Edwards Notation) format.
@@ -90,3 +96,29 @@ class ChessEnvironment:
         # This outcome structure is a common way to represent it.
         # The value head in your NN expects -1, 0, +1[cite: 14], we'll map to that later.
         return outcome
+    
+    def get_scalar_outcome(self):
+        """
+        Returns the game outcome as a scalar:
+        -  1: White won.
+        - -1: Black won.
+        -  0: Draw.
+        Returns None if the game is not over.
+        """
+        if not self.board.is_game_over():
+            return None
+
+        # The board.result() gives result from White's perspective:
+        # "1-0" (White won), "0-1" (Black won), "1/2-1/2" (Draw)
+        result_str = self.board.result(claim_draw=True)
+
+        if result_str == "1-0":
+            return 1  # White won
+        elif result_str == "0-1":
+            return -1 # Black won
+        elif result_str == "1/2-1/2":
+            return 0  # Draw
+        else:
+            # Should not happen with a completed game using standard rules
+            # Or could be for ongoing games if is_game_over() was false
+            return None # Or raise an error for unexpected result string
