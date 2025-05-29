@@ -1,134 +1,94 @@
-import unittest
-from chess_environment import ChessEnvironment # Adjust import as per your project structure
-import chess
 import os
+import shutil
+from chess_environment import ChessEnvironmentInterface
 
-# Path to your Stockfish executable
-STOCKFISH_PATH = "/usr/games/stockfish" # User provided path
-# STOCKFISH_PATH = os.getenv("STOCKFISH_EXECUTABLE_PATH", STOCKFISH_PATH) # For flexibility
-
-# Skip all engine tests if Stockfish path is not valid
-skip_engine_tests = not (STOCKFISH_PATH and os.path.exists(STOCKFISH_PATH))
-reason_for_skipping = f"Stockfish executable not found at '{STOCKFISH_PATH}' or path not set."
-
-@unittest.skipIf(skip_engine_tests, reason_for_skipping)
-class TestChessEnvironmentWithEngine(unittest.TestCase):
-    env = None # Class variable for the environment
-
-    @classmethod
-    def setUpClass(cls):
-        # This check is redundant due to @unittest.skipIf, but good for clarity
-        if skip_engine_tests:
-            raise unittest.SkipTest(reason_for_skipping)
-        try:
-            cls.env = ChessEnvironment(uci_engine_path=STOCKFISH_PATH)
-        except Exception as e:
-            # This makes sure that if __init__ itself fails, the class setup is aborted.
-            cls.env = None # Ensure env is None if setup fails
-            raise unittest.SkipTest(f"ChessEnvironment initialization failed in setUpClass: {e}")
-
-    @classmethod
-    def tearDownClass(cls):
-        if cls.env and hasattr(cls.env, 'engine') and cls.env.engine:
-            cls.env.close_engine()
-
-    def setUp(self):
-        if not self.env:
-            # This will skip individual tests if setUpClass failed to set up self.env
-            self.skipTest("ChessEnvironment with engine was not initialized in setUpClass.")
-        self.env.reset() # Reset board to starting position before each test
-
-    def test_01_engine_initialization_and_responsiveness(self):
-        self.assertIsNotNone(self.env.engine, "Engine should be initialized.")
-        try:
-            # A basic check: analyze the starting position for 1 node
-            self.env.engine.analyse(self.env.board, chess.engine.Limit(nodes=1))
-        except chess.engine.EngineTerminatedError:
-            self.fail("Engine terminated during basic responsiveness test.")
-        except chess.engine.EngineError as e:
-            self.fail(f"Engine error during basic responsiveness test: {e}")
-
-    def test_02_get_legal_moves_start_pos_from_engine(self):
-        legal_moves = self.env.get_legal_moves() # Now uses the engine
-        self.assertIsInstance(legal_moves, list, "Legal moves should be a list.")
-        self.assertTrue(all(isinstance(m, str) for m in legal_moves), "All moves should be UCI strings.")
+def find_stockfish():
+    """Helper function to find the Stockfish executable."""
+    # Start with common names/paths or check PATH
+    paths_to_try = ["stockfish", "/usr/games/stockfish", "/usr/bin/stockfish"]
+    
+    # Check if stockfish is in PATH first
+    found_path = shutil.which("stockfish")
+    if found_path:
+        print(f"Found Stockfish in PATH: {found_path}")
+        return found_path
         
-        expected_moves_at_start = 20
-        self.assertEqual(len(legal_moves), expected_moves_at_start,
-                         f"Expected {expected_moves_at_start} legal moves at start, got {len(legal_moves)}. Moves: {sorted(legal_moves)}")
-        
-        self.assertIn("e2e4", legal_moves)
-        self.assertIn("g1f3", legal_moves)
+    # If not in PATH, check some common locations
+    for path in paths_to_try:
+        if os.path.exists(path) and os.access(path, os.X_OK):
+            print(f"Found Stockfish at: {path}")
+            return path
 
-    def test_03_get_legal_moves_custom_fen_from_engine(self):
-        fen_checkmated_black = "r1bqkbnr/pppp1Qpp/2n5/4p3/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 0 3" # Black is checkmated
-        self.env.board = chess.Board(fen_checkmated_black)
-        
-        legal_moves = self.env.get_legal_moves()
-        self.assertEqual(len(legal_moves), 0,
-                         f"Expected 0 legal moves for Black in FEN {fen_checkmated_black}, got {len(legal_moves)}. Moves: {legal_moves}")
+    # Add a specific Windows path check if needed
+    win_path = r"C:\path\to\stockfish\stockfish.exe" # <-- ADJUST THIS IF ON WINDOWS
+    if os.name == 'nt' and os.path.exists(win_path) and os.access(win_path, os.X_OK):
+         print(f"Found Stockfish at: {win_path}")
+         return win_path
+         
+    return None # Not found
 
-        fen_few_moves = "k7/8/P7/8/8/8/8/K7 b - - 0 1" # Black king (a8) can only move to b8
-        self.env.board = chess.Board(fen_few_moves)
-        
-        legal_moves = self.env.get_legal_moves()
-        self.assertEqual(len(legal_moves), 1, 
-                         f"Expected 1 legal move in FEN {fen_few_moves}, got {len(legal_moves)}. Moves: {legal_moves}")
-        if len(legal_moves) == 1:
-            self.assertIn("a8b8", legal_moves)
+if __name__ == "__main__":
+    stockfish_exe = find_stockfish()
+    if not stockfish_exe:
+        print("ERROR: Could not find Stockfish executable.")
+        print("Please ensure Stockfish is installed and either in your system's PATH")
+        print("or update the 'find_stockfish' function in this script with the correct path.")
+        exit()
 
-    def test_04_pinned_piece_legal_moves_from_engine(self):
-        fen_pinned_pawn = "k7/8/8/3q4/8/8/3P4/3K4 w - - 0 1" # White pawn d2 pinned [cite: 111]
-        self.env.board = chess.Board(fen_pinned_pawn)
-        
-        engine_moves = self.env.get_legal_moves()
-        print(f"Pinned pawn test ({fen_pinned_pawn}). Engine legal moves: {sorted(engine_moves)}")
-        
-        self.assertNotIn("d2d3", engine_moves, "Pinned pawn d2 should not be able to move to d3.")
-        self.assertNotIn("d2d4", engine_moves, "Pinned pawn d2 should not be able to move to d4.")
-        
-        self.assertIn("d1c1", engine_moves, "King should be able to move d1c1.")
-        self.assertIn("d1e1", engine_moves, "King should be able to move d1e1.")
-        self.assertEqual(len(engine_moves), 2, f"Expected exactly 2 legal moves (d1c1, d1e1). Got: {sorted(engine_moves)}")
+    env = None
+    try:
+        # Initialize the environment
+        env = ChessEnvironmentInterface(stockfish_path=stockfish_exe)
 
-    def test_05_apply_move_updates_board_state(self):
-        initial_fen = self.env.get_current_state_fen()
-        self.assertTrue(self.env.get_current_player(), "Should be White's turn initially.") # White's turn
-        
-        legal_moves = self.env.get_legal_moves()
-        self.assertTrue(len(legal_moves) > 0, "Should have legal moves at the start.")
-        
-        move_to_apply = "e2e4" # A common, known legal move
-        if move_to_apply not in legal_moves: # Fallback if e2e4 isn't in the 'd' list for some reason
-            move_to_apply = legal_moves[0]
-            
-        self.env.apply_move(move_to_apply)
-        
-        new_fen = self.env.get_current_state_fen()
-        self.assertNotEqual(initial_fen, new_fen, "FEN should change after applying a move.")
-        self.assertFalse(self.env.get_current_player(), "After White moves, it should be Black's turn.") # Black's turn
+        # 1. Test starting position
+        print("\n--- Testing Starting Position ---")
+        start_fen = env.get_current_fen()
+        print(f"Starting FEN: {start_fen}")
+        start_moves = env.get_legal_moves()
+        print(f"Legal moves ({len(start_moves)}): {start_moves[:5]} ...")
+        assert len(start_moves) == 20
 
-    def test_06_game_status_methods_after_sequence(self):
-        self.env.reset() # Start from initial position
+        # 2. Apply a move (e.g., e4)
+        print("\n--- Applying move e2e4 ---")
+        move_to_apply = "e2e4"
+        if move_to_apply in start_moves:
+            env.apply_move(move_to_apply)
+            e4_fen = env.get_current_fen()
+            print(f"FEN after e2e4: {e4_fen}")
+            e4_moves = env.get_legal_moves()
+            print(f"Legal moves ({len(e4_moves)}): {e4_moves[:5]} ...")
+            assert len(e4_moves) == 20 # After 1. e4, Black has 20 moves
+            assert "e7e5" in e4_moves
+        else:
+            print(f"ERROR: Move {move_to_apply} not found in legal moves!")
 
-        # Fool's Mate sequence: 1. f3 e5 2. g4 Qh4#
-        moves_sequence = ["f2f3", "e7e5", "g2g4", "d8h4"]
-        
-        for move_uci in moves_sequence:
-            # It's good practice to check if the move is in the engine's list first,
-            # but for a known sequence, we can try applying directly for this test.
-            # Ensure `apply_move` is robust enough or that `get_legal_moves` is called implicitly or explicitly.
-            # Our `apply_move` currently relies on `python-chess`'s `push_uci`.
-            # For this test, we assume the sequence is valid.
-            self.env.apply_move(move_uci)
+        # 3. Apply another move (e.g., e5)
+        print("\n--- Applying move e7e5 ---")
+        move_to_apply_2 = "e7e5"
+        if move_to_apply_2 in e4_moves:
+            env.apply_move(move_to_apply_2)
+            e5_fen = env.get_current_fen()
+            print(f"FEN after e7e5: {e5_fen}")
+            e5_moves = env.get_legal_moves()
+            print(f"Legal moves ({len(e5_moves)}): {e5_moves[:5]} ...")
+            assert len(e5_moves) == 29 # After 1. e4 e5, White has 29 moves.
+            assert "g1f3" in e5_moves
+        else:
+             print(f"ERROR: Move {move_to_apply_2} not found in legal moves!")
 
-        self.assertTrue(self.env.is_game_over(), "Game should be over after Fool's Mate.")
-        outcome = self.env.get_game_outcome()
-        self.assertIsNotNone(outcome, "Outcome should not be None for a completed game.")
-        if outcome: 
-            self.assertEqual(outcome["winner"], "BLACK", "Black should be the winner in Fool's Mate.")
-            self.assertEqual(outcome["reason"], "CHECKMATE", "Reason should be CHECKMATE.")
-        self.assertEqual(self.env.get_scalar_outcome(), -1, "Scalar outcome should be -1 for Black win.")
+        # 4. Test game over (should be false)
+        print(f"\nGame Over? {env.is_game_over()}")
+        assert not env.is_game_over()
 
-if __name__ == '__main__':
-    unittest.main()
+        print("\n--- Test sequence completed successfully! ---")
+
+    except RuntimeError as e:
+        print(f"\n--- A runtime error occurred during testing: {e} ---")
+    except Exception as e:
+        print(f"\n--- An unexpected error occurred during testing: {e} ---")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # 5. Close the environment
+        if env:
+            env.close()

@@ -1,141 +1,145 @@
-import time # Add this import at the top of your chess_environment.py file
-import collections # Should already be implicitly available but good to be aware
 import chess
-import chess.engine
-import re # For parsing 'd' command output
+from stockfish_communicator import StockfishCommunicator
 
-class ChessEnvironment:
-    def __init__(self, uci_engine_path: str):
-        self.board = chess.Board()
-        self.engine = None
+class ChessEnvironmentInterface:
+    """
+    Manages the chess game state and interactions, using python-chess
+    for internal representation and Stockfish (via StockfishCommunicator)
+    for authoritative legal move generation. [cite: 3, 24]
+    """
+
+    def __init__(self, stockfish_path: str):
+        """
+        Initializes the chess environment.
+
+        Args:
+            stockfish_path (str): The path to the Stockfish executable.
+        """
+        print("Initializing Chess Environment Interface...")
+        self.board = chess.Board() # Internal python-chess board [cite: 83]
         try:
-            # popen_uci returns a UciProcess object which SimpleEngine wraps.
-            # We'll use SimpleEngine for its convenience but access its .process for 'd' command.
-            self.engine = chess.engine.SimpleEngine.popen_uci(uci_engine_path)
-            # A quick check to ensure the engine is responsive.
-            self.engine.analyse(self.board, chess.engine.Limit(nodes=1)) 
-            print(f"UCI engine initialized from {uci_engine_path} and seems responsive.")
-        except FileNotFoundError:
-            print(f"ERROR: UCI engine not found at {uci_engine_path}. Please check the path.")
-            raise
-        except chess.engine.EngineError as e:
-            print(f"ERROR: Failed to initialize or communicate with UCI engine: {e}")
-            if self.engine: # If engine object exists but failed configure/ping
-                try:
-                    self.engine.quit()
-                except chess.engine.EngineError:
-                    pass # Ignore errors during quit if init already failed
-            raise
-        self.reset()
+            # Initialize and perform handshake with Stockfish [cite: 83]
+            self.communicator = StockfishCommunicator(stockfish_path)
+            print("Performing initial Stockfish handshake...")
+            if not self.communicator.perform_handshake():
+                self.communicator.close() # Attempt to clean up
+                raise RuntimeError("Failed to establish handshake with Stockfish engine.")
+            print("Stockfish handshake successful.")
+        except Exception as e:
+            print(f"FATAL ERROR during StockfishCommunicator initialization: {e}")
+            raise RuntimeError(f"Could not initialize StockfishCommunicator: {e}")
+        
+        print("Chess Environment Interface initialized.")
 
-    def reset(self):
+    def reset(self) -> str:
+        """
+        Resets the environment to the standard starting position. [cite: 86]
+
+        Returns:
+            str: The FEN string of the starting position.
+        """
+        print("Resetting Chess Environment...")
         self.board.reset()
-        print("DEBUG: reset() called. Board reset. No ucinewgame attempt in this version.")
-        if not self.engine:
-            print("DEBUG: self.engine is None in reset().")
-        elif not hasattr(self.engine, 'protocol'): # Check for 'protocol'
-            print("DEBUG: self.engine exists, but no 'protocol' attribute in reset().")
-        else:
-            # getattr is safer in case protocol is None, though it shouldn't be if engine init succeeded
-            print(f"DEBUG: self.engine.protocol is {getattr(self.engine, 'protocol', 'PROTOCOL_IS_NONE')} in reset().")
+        # No need to reset Stockfish if we send FEN each time,
+        # but we could send "position startpos" if we wanted.
+        return self.get_current_fen()
 
-    def get_current_state_fen(self) -> str: # [cite: 57]
+    def get_current_fen(self) -> str:
+        """
+        Returns the FEN string of the current board position. [cite: 88]
+        """
         return self.board.fen()
 
     def get_legal_moves(self) -> list[str]:
-        if not self.engine:
-            print("ERROR (Diagnostic): Engine not available for diagnostic test.")
-            return []
+        """
+        Gets the authoritative list of legal moves in UCI format from the
+        Stockfish engine for the current board state. (Implements Step 2.4) [cite: 89]
 
-        print(f"DEBUG (Diagnostic): Current FEN: {self.board.fen()}")
-        try:
-            engine_name = self.engine.id.get("name", "Unknown")
-            engine_author = self.engine.id.get("author", "Unknown")
-            print(f"DEBUG (Diagnostic): Engine Name: {engine_name}, Author: {engine_author}")
-
-            if engine_name == "Unknown":
-                print("WARNING (Diagnostic): Engine name was not retrieved from initial UCI handshake.")
-
-            print("DEBUG (Diagnostic): Attempting engine.ping()")
-            self.engine.ping() 
-            print("DEBUG (Diagnostic): engine.ping() successful.")
+        Returns:
+            list[str]: A list of legal moves.
+        
+        Raises:
+            RuntimeError: If communication with the engine fails.
+        """
+        current_fen = self.get_current_fen()
+        # print(f"DEBUG (get_legal_moves): Fetching moves for FEN: {current_fen}")
+        moves = self.communicator.get_legal_moves_for_fen(current_fen)
+        
+        if moves is None:
+            # Communicator failed to get moves. This is a critical error.
+            raise RuntimeError(f"Failed to get legal moves from Stockfish for FEN: {current_fen}")
             
-        except chess.engine.EngineTerminatedError:
-            print("ERROR (Diagnostic): Engine terminated unexpectedly.")
-            self.engine = None 
-            raise
-        except AttributeError as e: # Specifically to see if readline is the issue here
-            print(f"DEBUG (Diagnostic): AttributeError during diagnostic (ping or id access): {e}")
-            import traceback
-            traceback.print_exc()
-            raise 
-        except Exception as e:
-            print(f"DEBUG (Diagnostic): Other error during diagnostic: {type(e).__name__} - {e}")
-            import traceback
-            traceback.print_exc()
-            raise 
+        # Optional: Compare with python-chess moves for debugging?
+        # internal_moves = [m.uci() for m in self.board.legal_moves]
+        # if set(moves) != set(internal_moves):
+        #     print(f"WARNING: Stockfish moves ({len(moves)}) differ from python-chess ({len(internal_moves)})")
+        #     print(f"  Stockfish - python-chess: {set(moves) - set(internal_moves)}")
+        #     print(f"  python-chess - Stockfish: {set(internal_moves) - set(moves)}")
 
-        print("DEBUG (Diagnostic): Diagnostic test in get_legal_moves finished. Returning empty list.")
-        return []
+        return moves
 
-    def apply_move(self, move_uci: str): # [cite: 59]
-        # It's assumed move_uci comes from get_legal_moves() and is thus engine-verified.
+    def apply_move(self, move_uci: str):
+        """
+        Applies a UCI move to the internal python-chess board. [cite: 90]
+        It's *strongly recommended* that the move_uci comes from the
+        get_legal_moves() list to ensure consistency.
+
+        Args:
+            move_uci (str): The move to apply in UCI format.
+
+        Raises:
+            ValueError: If the move is illegal or malformed according to python-chess.
+                        This *should not* happen if the move came from get_legal_moves().
+        """
         try:
-            # `python-chess`'s `board.push_uci()` will validate the UCI string format
-            # and the legality of the move according to its own rules.
-            self.board.push_uci(move_uci)
-            # The engine will be synchronized with the new self.board.fen()
-            # when `self.engine.position(self.board)` is called,
-            # typically at the start of the next `get_legal_moves()` call.
+            move = chess.Move.from_uci(move_uci)
+            self.board.push(move) # [cite: 90, 92]
+            # print(f"Applied move {move_uci}. New FEN: {self.board.fen()}")
         except ValueError as e:
-            # This can mean malformed UCI or move is illegal by python-chess's standards.
-            # If engine provided it, this points to a discrepancy or bug.
-            current_fen = self.board.fen()
-            print(f"CRITICAL ERROR: Engine-provided move '{move_uci}' rejected by python-chess board.push_uci() for FEN '{current_fen}'. Error: {e}")
-            # For debugging, let's see what python-chess thinks are legal moves:
-            # print(f"Python-chess internal legal moves: {[m.uci() for m in self.board.legal_moves]}")
-            raise chess.engine.EngineError(f"Engine move '{move_uci}' rejected by python-chess board.push_uci() on FEN '{current_fen}'. Discrepancy with engine.")
+            print(f"ERROR applying move '{move_uci}' to FEN '{self.board.fen()}'.")
+            print(f"  Internal python-chess error: {e}")
+            # Consider raising or handling this more gracefully.
+            # If this happens, it implies a mismatch between Stockfish and python-chess
+            # or an invalid move was somehow selected.
+            raise
 
-
-    def is_game_over(self) -> bool: # [cite: 60]
+    def is_game_over(self) -> bool:
+        """
+        Checks if the game has ended (checkmate, stalemate, draw, etc.). [cite: 93]
+        """
         return self.board.is_game_over()
 
-    def get_current_player(self) -> bool: # [cite: 61]
-        return self.board.turn == chess.WHITE # True if White's turn
+    def get_game_outcome(self) -> chess.Outcome | None:
+        """
+        Returns the game outcome if it's over, otherwise None. [cite: 94]
+        """
+        return self.board.outcome()
 
-    def get_game_outcome(self) -> dict | None: # [cite: 62]
+    def get_scalar_outcome(self) -> int | None:
+        """
+        Returns the scalar outcome (1 for White win, -1 for Black win, 0 for draw). [cite: 95]
+        Returns None if the game is not over.
+        """
         outcome = self.board.outcome()
-        if outcome:
-            winner_color = "DRAW"
-            if outcome.winner == chess.WHITE:
-                winner_color = "WHITE"
-            elif outcome.winner == chess.BLACK:
-                winner_color = "BLACK"
-            
-            termination_reason = "UNKNOWN"
-            if outcome.termination:
-                termination_reason = outcome.termination.name.upper()
-            return {"winner": winner_color, "reason": termination_reason}
-        return None
+        if outcome is None:
+            return None
+        if outcome.winner == chess.WHITE:
+            return 1
+        if outcome.winner == chess.BLACK:
+            return -1
+        return 0 # Draw
 
-    def get_scalar_outcome(self) -> int | None: # [cite: 63]
-        outcome = self.board.outcome()
-        if outcome:
-            if outcome.winner == chess.WHITE: return 1
-            if outcome.winner == chess.BLACK: return -1
-            return 0 # Draw
-        return None # Game not over
+    def get_python_chess_board(self) -> chess.Board:
+        """
+        Returns the internal python-chess Board object. [cite: 95]
+        """
+        return self.board
 
-    def close_engine(self):
-        if self.engine:
-            try:
-                self.engine.quit()
-                print("UCI engine process quit.")
-            except chess.engine.EngineError as e:
-                print(f"Error quitting engine: {e}")
-            except Exception as e:
-                print(f"Unexpected error quitting engine: {e}")
-            self.engine = None
-
-    def convert_to_gnn_input(self): # [cite: 64]
-        raise NotImplementedError("convert_to_gnn_input is not yet implemented.")
+    def close(self):
+        """
+        Closes the communication with the Stockfish engine.
+        """
+        print("Closing Chess Environment Interface...")
+        if self.communicator:
+            self.communicator.close()
+        print("Chess Environment Interface closed.")
