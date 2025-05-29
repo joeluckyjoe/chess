@@ -1,124 +1,141 @@
-# chess_environment.py
+import time # Add this import at the top of your chess_environment.py file
+import collections # Should already be implicitly available but good to be aware
 import chess
+import chess.engine
+import re # For parsing 'd' command output
 
 class ChessEnvironment:
-    def __init__(self):
-        """
-        Initializes a new chess board in the standard starting position.
-        """
+    def __init__(self, uci_engine_path: str):
         self.board = chess.Board()
+        self.engine = None
+        try:
+            # popen_uci returns a UciProcess object which SimpleEngine wraps.
+            # We'll use SimpleEngine for its convenience but access its .process for 'd' command.
+            self.engine = chess.engine.SimpleEngine.popen_uci(uci_engine_path)
+            # A quick check to ensure the engine is responsive.
+            self.engine.analyse(self.board, chess.engine.Limit(nodes=1)) 
+            print(f"UCI engine initialized from {uci_engine_path} and seems responsive.")
+        except FileNotFoundError:
+            print(f"ERROR: UCI engine not found at {uci_engine_path}. Please check the path.")
+            raise
+        except chess.engine.EngineError as e:
+            print(f"ERROR: Failed to initialize or communicate with UCI engine: {e}")
+            if self.engine: # If engine object exists but failed configure/ping
+                try:
+                    self.engine.quit()
+                except chess.engine.EngineError:
+                    pass # Ignore errors during quit if init already failed
+            raise
+        self.reset()
 
     def reset(self):
-        """
-        Resets the board to the standard starting position.
-        """
         self.board.reset()
+        print("DEBUG: reset() called. Board reset. No ucinewgame attempt in this version.")
+        if not self.engine:
+            print("DEBUG: self.engine is None in reset().")
+        elif not hasattr(self.engine, 'protocol'): # Check for 'protocol'
+            print("DEBUG: self.engine exists, but no 'protocol' attribute in reset().")
+        else:
+            # getattr is safer in case protocol is None, though it shouldn't be if engine init succeeded
+            print(f"DEBUG: self.engine.protocol is {getattr(self.engine, 'protocol', 'PROTOCOL_IS_NONE')} in reset().")
 
-    def get_current_state_fen(self):
-        """
-        Returns the current board state in FEN (Forsyth-Edwards Notation) format.
-        FEN is a standard text notation for describing a particular board position.
-        """
+    def get_current_state_fen(self) -> str: # [cite: 57]
         return self.board.fen()
 
-    def get_legal_moves(self):
-        """
-        Returns a list of legal moves from the current position.
-        Moves are represented in UCI (Universal Chess Interface) format (e.g., 'e2e4').
-        """
-        return [move.uci() for move in self.board.legal_moves]
+    def get_legal_moves(self) -> list[str]:
+        if not self.engine:
+            print("ERROR (Diagnostic): Engine not available for diagnostic test.")
+            return []
 
-    def get_current_player(self):
-        """
-        Returns the current player to move.
-        True for White, False for Black.
-        """
-        return self.board.turn == chess.WHITE
-    
-    def apply_move(self, move_uci: str):
-        """
-        Applies a move to the board.
-        The move must be in UCI format (e.g., 'e2e4').
-        Raises an ValueError if the move is illegal or not in correct format.
-        """
+        print(f"DEBUG (Diagnostic): Current FEN: {self.board.fen()}")
         try:
-            move = self.board.parse_uci(move_uci)
-            if move in self.board.legal_moves:
-                self.board.push(move)
-            else:
-                raise ValueError(f"Illegal move: {move_uci} in current position.")
+            engine_name = self.engine.id.get("name", "Unknown")
+            engine_author = self.engine.id.get("author", "Unknown")
+            print(f"DEBUG (Diagnostic): Engine Name: {engine_name}, Author: {engine_author}")
+
+            if engine_name == "Unknown":
+                print("WARNING (Diagnostic): Engine name was not retrieved from initial UCI handshake.")
+
+            print("DEBUG (Diagnostic): Attempting engine.ping()")
+            self.engine.ping() 
+            print("DEBUG (Diagnostic): engine.ping() successful.")
+            
+        except chess.engine.EngineTerminatedError:
+            print("ERROR (Diagnostic): Engine terminated unexpectedly.")
+            self.engine = None 
+            raise
+        except AttributeError as e: # Specifically to see if readline is the issue here
+            print(f"DEBUG (Diagnostic): AttributeError during diagnostic (ping or id access): {e}")
+            import traceback
+            traceback.print_exc()
+            raise 
+        except Exception as e:
+            print(f"DEBUG (Diagnostic): Other error during diagnostic: {type(e).__name__} - {e}")
+            import traceback
+            traceback.print_exc()
+            raise 
+
+        print("DEBUG (Diagnostic): Diagnostic test in get_legal_moves finished. Returning empty list.")
+        return []
+
+    def apply_move(self, move_uci: str): # [cite: 59]
+        # It's assumed move_uci comes from get_legal_moves() and is thus engine-verified.
+        try:
+            # `python-chess`'s `board.push_uci()` will validate the UCI string format
+            # and the legality of the move according to its own rules.
+            self.board.push_uci(move_uci)
+            # The engine will be synchronized with the new self.board.fen()
+            # when `self.engine.position(self.board)` is called,
+            # typically at the start of the next `get_legal_moves()` call.
         except ValueError as e:
-            # Catch parsing errors from parse_uci as well (e.g. malformed UCI)
-            raise ValueError(f"Invalid or illegal move: {move_uci}. {e}")
+            # This can mean malformed UCI or move is illegal by python-chess's standards.
+            # If engine provided it, this points to a discrepancy or bug.
+            current_fen = self.board.fen()
+            print(f"CRITICAL ERROR: Engine-provided move '{move_uci}' rejected by python-chess board.push_uci() for FEN '{current_fen}'. Error: {e}")
+            # For debugging, let's see what python-chess thinks are legal moves:
+            # print(f"Python-chess internal legal moves: {[m.uci() for m in self.board.legal_moves]}")
+            raise chess.engine.EngineError(f"Engine move '{move_uci}' rejected by python-chess board.push_uci() on FEN '{current_fen}'. Discrepancy with engine.")
 
 
-    def is_game_over(self):
-        """
-        Checks if the game is over (checkmate, stalemate, draw).
-        """
+    def is_game_over(self) -> bool: # [cite: 60]
         return self.board.is_game_over()
 
-    def get_game_outcome(self):
-        """
-        Returns the outcome of the game if it's over.
-        - If White won: {"winner": "WHITE", "reason": "CHECKMATE" or "RESIGNATION" (etc.)}
-        - If Black won: {"winner": "BLACK", "reason": "CHECKMATE" or "RESIGNATION" (etc.)}
-        - If Draw: {"winner": "DRAW", "reason": "STALEMATE", "FIFTY_MOVE_RULE", etc.}
-        - If game not over: None
-        """
-        if not self.board.is_game_over():
-            return None
+    def get_current_player(self) -> bool: # [cite: 61]
+        return self.board.turn == chess.WHITE # True if White's turn
 
-        result = self.board.result(claim_draw=True) # claim_draw=True considers draw offers
+    def get_game_outcome(self) -> dict | None: # [cite: 62]
+        outcome = self.board.outcome()
+        if outcome:
+            winner_color = "DRAW"
+            if outcome.winner == chess.WHITE:
+                winner_color = "WHITE"
+            elif outcome.winner == chess.BLACK:
+                winner_color = "BLACK"
+            
+            termination_reason = "UNKNOWN"
+            if outcome.termination:
+                termination_reason = outcome.termination.name.upper()
+            return {"winner": winner_color, "reason": termination_reason}
+        return None
 
-        outcome = {}
-        if result == "1-0":
-            outcome["winner"] = "WHITE"
-        elif result == "0-1":
-            outcome["winner"] = "BLACK"
-        elif result == "1/2-1/2":
-            outcome["winner"] = "DRAW"
-        else: # Should not happen with standard results
-            return {"winner": "UNKNOWN", "reason": result}
+    def get_scalar_outcome(self) -> int | None: # [cite: 63]
+        outcome = self.board.outcome()
+        if outcome:
+            if outcome.winner == chess.WHITE: return 1
+            if outcome.winner == chess.BLACK: return -1
+            return 0 # Draw
+        return None # Game not over
 
-        # Add reason for game termination
-        if self.board.is_checkmate():
-            outcome["reason"] = "CHECKMATE"
-        elif self.board.is_stalemate():
-            outcome["reason"] = "STALEMATE"
-        elif self.board.is_insufficient_material():
-            outcome["reason"] = "INSUFFICIENT_MATERIAL"
-        elif self.board.is_seventyfive_moves(): # Or is_fifty_moves if you don't auto-claim
-            outcome["reason"] = "SEVENTY_FIVE_MOVE_RULE"
-        elif self.board.is_fivefold_repetition():
-            outcome["reason"] = "FIVEFOLD_REPETITION"
-        # Note: python-chess does not directly tell you if a draw was by agreement or resignation
-        # This outcome structure is a common way to represent it.
-        # The value head in your NN expects -1, 0, +1[cite: 14], we'll map to that later.
-        return outcome
-    
-    def get_scalar_outcome(self):
-        """
-        Returns the game outcome as a scalar:
-        -  1: White won.
-        - -1: Black won.
-        -  0: Draw.
-        Returns None if the game is not over.
-        """
-        if not self.board.is_game_over():
-            return None
+    def close_engine(self):
+        if self.engine:
+            try:
+                self.engine.quit()
+                print("UCI engine process quit.")
+            except chess.engine.EngineError as e:
+                print(f"Error quitting engine: {e}")
+            except Exception as e:
+                print(f"Unexpected error quitting engine: {e}")
+            self.engine = None
 
-        # The board.result() gives result from White's perspective:
-        # "1-0" (White won), "0-1" (Black won), "1/2-1/2" (Draw)
-        result_str = self.board.result(claim_draw=True)
-
-        if result_str == "1-0":
-            return 1  # White won
-        elif result_str == "0-1":
-            return -1 # Black won
-        elif result_str == "1/2-1/2":
-            return 0  # Draw
-        else:
-            # Should not happen with a completed game using standard rules
-            # Or could be for ongoing games if is_game_over() was false
-            return None # Or raise an error for unexpected result string
+    def convert_to_gnn_input(self): # [cite: 64]
+        raise NotImplementedError("convert_to_gnn_input is not yet implemented.")
