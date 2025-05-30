@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv
+from torch_geometric.nn import GCNConv
 
 class SquareGNN(nn.Module):
     """
@@ -67,4 +68,41 @@ class SquareGNN(nn.Module):
         # Apply second GAT layer
         x = self.conv2(x, edge_index)
 
+        return x
+# Define these constants based on your GNNDataConverter output and desired embedding sizes.
+# These are example values.
+NUM_PIECE_FEATURES = 8  # e.g., 6 for piece type (one-hot) + 2 for color (one-hot)
+PIECE_HIDDEN_CHANNELS = 16 # Example intermediate dimension
+PIECE_EMBEDDING_DIM = 32   # Should ideally match SQUARE_EMBEDDING_DIM
+
+class PieceGNN(torch.nn.Module):
+    def __init__(self, in_channels=NUM_PIECE_FEATURES, hidden_channels=PIECE_HIDDEN_CHANNELS, out_channels=PIECE_EMBEDDING_DIM):
+        super(PieceGNN, self).__init__()
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, out_channels)
+
+    def forward(self, x_piece, edge_index_piece):
+        """
+        Forward pass for the PieceGNN.
+
+        Args:
+            x_piece (torch.Tensor): Piece features of shape [num_pieces, num_piece_features].
+                                    num_pieces can vary.
+            edge_index_piece (torch.Tensor): Piece graph connectivity in COO format
+                                             of shape [2, num_piece_edges].
+
+        Returns:
+            torch.Tensor: Piece embeddings of shape [num_pieces, piece_embedding_dim].
+        """
+        # Handle cases with no pieces or no edges if necessary,
+        # though PyG layers often handle this gracefully.
+        if x_piece is None or x_piece.size(0) == 0:
+            # Return an empty tensor with the correct embedding dimension
+            return torch.empty((0, self.conv2.out_channels), device=x_piece.device if x_piece is not None else 'cpu')
+
+        x = self.conv1(x_piece, edge_index_piece)
+        x = F.relu(x)
+        x = self.conv2(x, edge_index_piece)
+        # No final activation, allowing embeddings to be in any range,
+        # or you could add one e.g. F.relu(x) or torch.tanh(x) if desired.
         return x
