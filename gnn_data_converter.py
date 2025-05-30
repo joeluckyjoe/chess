@@ -3,10 +3,12 @@
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
+import torch
 import chess
 import numpy as np
 
 # --- Constants for Feature Engineering ---
+GNN_INPUT_FEATURE_DIM = 12 
 
 # Mapping piece types to an index for one-hot encoding
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
@@ -24,9 +26,8 @@ NUM_PIECE_TYPES = len(PIECE_TYPE_MAP)  # 6
 @dataclass
 class GNNGraph:
     """Represents the structure of a single graph for the GNN."""
-    node_features: np.ndarray  # Shape: (num_nodes, num_node_features)
-    edge_index: np.ndarray      # Shape: (2, num_edges), COO format for sparse graphs
-
+    x: torch.Tensor          # Changed from node_features to x
+    edge_index: torch.Tensor # Changed from edges to edge_index
 @dataclass
 class GNNInput:
     """The complete input for our dual-GNN model for a single board state."""
@@ -53,7 +54,7 @@ def _create_square_adjacency_edges() -> np.ndarray:
                 if 0 <= new_rank < 8 and 0 <= new_file < 8:
                     neighbor_sq = new_rank * 8 + new_file
                     edges.append((i, neighbor_sq))
-    return np.array(edges, dtype=np.int64).T
+    return torch.from_numpy(np.array(edges, dtype=np.int64).T)
 
 # Pre-calculate the static square graph edges
 _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
@@ -103,10 +104,10 @@ def convert_to_gnn_input(board: chess.Board) -> GNNInput:
             np.concatenate([pos_encoding, piece_type_one_hot, piece_color_one_hot, control_status])
         )
 
-    square_graph = GNNGraph(
-        node_features=np.array(square_features_list, dtype=np.float32),
-        edge_index=_SQUARE_ADJACENCY_EDGE_INDEX
-    )
+        square_graph = GNNGraph(
+            x=torch.from_numpy(np.array(square_features_list, dtype=np.float32)),
+            edge_index=_SQUARE_ADJACENCY_EDGE_INDEX
+        )
 
     # 2. Piece-based Graph (G_pc)
     piece_map = board.piece_map()
@@ -156,8 +157,8 @@ def convert_to_gnn_input(board: chess.Board) -> GNNInput:
                 piece_edges.append((from_node_idx, to_node_idx))
 
     piece_graph = GNNGraph(
-        node_features=np.array(piece_features_list, dtype=np.float32),
-        edge_index=np.array(piece_edges, dtype=np.int64).T if piece_edges else np.empty((2, 0), dtype=np.int64)
+        x=torch.from_numpy(np.array(piece_features_list, dtype=np.float32)),
+        edge_index=torch.tensor(piece_edges, dtype=torch.long)
     )
 
     return GNNInput(square_graph=square_graph, piece_graph=piece_graph)
