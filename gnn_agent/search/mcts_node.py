@@ -1,5 +1,6 @@
 # mcts_node.py
 
+import chess
 import math
 from typing import Dict, Optional, Any
 
@@ -8,21 +9,22 @@ class MCTSNode:
     Represents a node in the Monte Carlo Tree Search.
     Stores statistics for a specific board state.
     """
-    def __init__(self, parent: Optional['MCTSNode'] = None, prior_p: float = 1.0):
+    def __init__(self, parent: 'MCTSNode' = None, prior_p: float = 0.0):
         """
-        Initializes a new MCTS Node.
+        Initializes a node in the MCTS tree.
 
         Args:
-            parent (Optional['MCTSNode']): The parent node. None for the root node.
-            prior_p (float): The prior probability of selecting this node's action,
-                             as determined by the policy head of the neural network.
+            parent (MCTSNode, optional): The parent of this node. Defaults to None.
+            prior_p (float, optional): The prior probability of selecting this node,
+                                    as predicted by the policy head. Defaults to 0.0.
         """
         self._parent = parent
-        self._children: Dict[Any, 'MCTSNode'] = {} # Maps a move to a child node
+        self._children: Dict[chess.Move, MCTSNode] = {}
 
-        self._visit_count = 0  # N(s,a)
-        self._total_action_value = 0.0  # Q(s,a)
-        self._prior_p = prior_p  # P(s,a)
+        # Core MCTS statistics
+        self.N: int = 0  # Visit count
+        self.Q: float = 0.0  # Total action value
+        self.P: float = prior_p  # Prior probability
 
     @property
     def parent(self) -> Optional['MCTSNode']:
@@ -34,7 +36,7 @@ class MCTSNode:
 
     @property
     def visit_count(self) -> int:
-        return self._visit_count
+        return self.N
 
     @property
     def total_action_value(self) -> float:
@@ -42,23 +44,41 @@ class MCTSNode:
 
     @property
     def prior_p(self) -> float:
-        return self._prior_p
+        return self.P
 
-    def is_leaf_node(self) -> bool:
+    def is_leaf(self) -> bool:
         """Checks if the node has any children."""
         return not self._children
 
-    def expand(self, move_priors: Dict[Any, float]):
+    def expand(self, legal_moves, policy_priors: Dict):
         """
-        Expands the node by creating children for all legal moves from this state.
+        Expands the node by creating children for all legal moves.
 
         Args:
-            move_priors (Dict[Any, float]): A dictionary mapping legal moves
-                                             to their prior probabilities from the policy head.
+            legal_moves: A list or generator of legal moves from the current position.
+            policy_priors: A dictionary mapping moves to their prior probabilities
+                        as predicted by the neural network.
         """
-        for move, prob in move_priors.items():
-            if move not in self._children:
-                self._children[move] = MCTSNode(parent=self, prior_p=prob)
+        for move in legal_moves:
+            if move in policy_priors:
+                self._children[move] = MCTSNode(parent=self, prior_p=policy_priors[move])
+
+    def backpropagate(self, value: float):
+        """
+        Updates the node's statistics and propagates the value up to the root.
+
+        Args:
+            value (float): The value of the terminal state from the perspective
+                        of the player who just moved.
+        """
+        current = self
+        while current is not None:
+            current.N += 1
+            current.Q += value
+            # The value for the parent is from the other player's perspective,
+            # so we must negate it for the next level up.
+            value = -value
+            current = current.parent
 
     def update(self, value: float):
         """
@@ -76,9 +96,9 @@ class MCTSNode:
         Calculates the mean action value Q(s,a).
         This is the average outcome of simulations passing through this node.
         """
-        if self._visit_count == 0:
+        if self.N == 0:
             return 0.0
-        return self._total_action_value / self._visit_count
+        return self.Q / self.N
 
     def uct_value(self, cpuct: float = 1.41) -> float:
         """

@@ -34,6 +34,15 @@ class GNNInput:
     """The complete input for our dual-GNN model for a single board state."""
     square_graph: GNNGraph
     piece_graph: GNNGraph
+    piece_to_square_map: torch.Tensor
+
+    def __iter__(self):
+        """Allows unpacking the object like a tuple for the network forward pass."""
+        yield self.square_graph.x
+        yield self.square_graph.edge_index
+        yield self.piece_graph.x
+        yield self.piece_graph.edge_index
+        yield self.piece_to_square_map
 
 # --- Helper Functions ---
 
@@ -62,56 +71,52 @@ _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 
 # --- Main Conversion Function ---
 
-def convert_to_gnn_input(board: chess.Board) -> GNNInput:
+def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
     """
     Converts a python-chess board state into the GNNInput format.
     """
     # 1. Square-based Graph (G_sq)
     square_features_list = []
     for sq in chess.SQUARES:
-        # Positional encoding (2 features)
         rank = chess.square_rank(sq)
         file = chess.square_file(sq)
         pos_encoding = [file / 7.0, rank / 7.0]
-
-        # Piece type and color (6 + 2 features)
         piece = board.piece_at(sq)
         piece_type_one_hot = np.zeros(NUM_PIECE_TYPES, dtype=np.float32)
-        piece_color_one_hot = np.zeros(2, dtype=np.float32) # [white, black]
+        piece_color_one_hot = np.zeros(2, dtype=np.float32)
         if piece:
             piece_type_one_hot[PIECE_TYPE_MAP[piece.piece_type]] = 1.0
             piece_color_one_hot[0 if piece.color == chess.WHITE else 1] = 1.0
-        
-        # Board control status (2 features)
         is_attacked_by_white = float(board.is_attacked_by(chess.WHITE, sq))
         is_attacked_by_black = float(board.is_attacked_by(chess.BLACK, sq))
         control_status = [is_attacked_by_white, is_attacked_by_black]
-
-        # Combine all features for the square
         square_features_list.append(
             np.concatenate([pos_encoding, piece_type_one_hot, piece_color_one_hot, control_status])
         )
 
     square_graph = GNNGraph(
-        x=torch.from_numpy(np.array(square_features_list, dtype=np.float32)),
-        edge_index=_SQUARE_ADJACENCY_EDGE_INDEX
+        x=torch.from_numpy(np.array(square_features_list, dtype=np.float32)).to(device),
+        edge_index=_SQUARE_ADJACENCY_EDGE_INDEX.to(device)
     )
 
     # 2. Piece-based Graph (G_pc)
     piece_map = board.piece_map()
-    piece_node_indices = {sq: i for i, sq in enumerate(piece_map.keys())}
-    
-    piece_features_list = []
-    piece_edges = []
-    
+
     # Handle empty board case for piece graph
     if not piece_map:
         piece_graph = GNNGraph(
-            x=torch.empty((0, GNN_INPUT_FEATURE_DIM), dtype=torch.float32),
-            edge_index=torch.empty((2, 0), dtype=torch.long)
+            x=torch.empty((0, GNN_INPUT_FEATURE_DIM), dtype=torch.float32, device=device),
+            edge_index=torch.empty((2, 0), dtype=torch.long, device=device)
         )
+        piece_to_square_map = torch.empty((0), dtype=torch.long, device=device)
     else:
-        # Calculate piece mobilities once
+        piece_node_indices = {sq: i for i, sq in enumerate(piece_map.keys())}
+        square_indices_for_pieces = list(piece_map.keys())
+        piece_to_square_map = torch.tensor(square_indices_for_pieces, dtype=torch.long, device=device)
+
+        piece_features_list = []
+        piece_edges = []
+
         legal_moves = list(board.legal_moves)
         piece_mobilities = {sq: 0 for sq in piece_map.keys()}
         for move in legal_moves:
@@ -128,28 +133,25 @@ def convert_to_gnn_input(board: chess.Board) -> GNNInput:
             attack_count = len(board.attacks(from_sq) & board.occupied_co[not piece.color])
             defense_count = len(board.attackers(piece.color, from_sq))
             attack_defense = [float(attack_count), float(defense_count)]
-            
+
             piece_features_list.append(
                 np.concatenate([piece_type_one_hot, piece_color, location, mobility, attack_defense])
             )
-            
-            # Create edges
+
             for to_sq in board.attacks(from_sq):
                 if to_sq in piece_node_indices:
                     from_node_idx = piece_node_indices[from_sq]
                     to_node_idx = piece_node_indices[to_sq]
                     piece_edges.append((from_node_idx, to_node_idx))
 
-        # *** CORRECTED EDGE INDEX CREATION ***
         if not piece_edges:
-            piece_edge_index = torch.empty((2, 0), dtype=torch.long)
+            piece_edge_index = torch.empty((2, 0), dtype=torch.long, device=device)
         else:
-            # Transpose the list of edges to get the correct (2, num_edges) shape
-            piece_edge_index = torch.tensor(piece_edges, dtype=torch.long).t().contiguous()
+            piece_edge_index = torch.tensor(piece_edges, dtype=torch.long, device=device).t().contiguous()
 
         piece_graph = GNNGraph(
-            x=torch.from_numpy(np.array(piece_features_list, dtype=np.float32)),
+            x=torch.from_numpy(np.array(piece_features_list, dtype=np.float32)).to(device),
             edge_index=piece_edge_index
         )
 
-    return GNNInput(square_graph=square_graph, piece_graph=piece_graph)
+    return GNNInput(square_graph=square_graph, piece_graph=piece_graph, piece_to_square_map=piece_to_square_map)
