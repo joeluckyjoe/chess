@@ -10,7 +10,7 @@ class SelfPlay:
     Orchestrates a single game of self-play between two MCTS agents,
     generating training data.
     """
-    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str):
+    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str, num_simulations: int):
         """
         Initializes a self-play game.
 
@@ -22,7 +22,9 @@ class SelfPlay:
         self.mcts_white = mcts_white
         self.mcts_black = mcts_black
         self.game = StockfishCommunicator(stockfish_path)
+        self.game.perform_handshake()
         self.training_data: List[Tuple[torch.Tensor, Dict[chess.Move, float], float]] = []
+        self.num_simulations = num_simulations
 
     def play_game(self, num_simulations: int) -> List[Tuple[torch.Tensor, Dict[chess.Move, float], float]]:
         """

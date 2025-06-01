@@ -16,3 +16,10 @@ def move_to_index(move: chess.Move, board: chess.Board) -> int:
     from_sq = move.from_square
     to_sq = move.to_square
     return (from_sq * 64) + to_sq
+
+def get_action_space_size() -> int:
+    """
+    Returns the total number of possible actions in the defined action space.
+    This should match the output dimension of the policy head.
+    """
+    return 4672 # This value is from your ChessNetwork's num_actions parameter

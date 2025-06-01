@@ -20,6 +20,22 @@ class TrainingDataManager:
         self.data_directory = data_directory
         self.data_directory.mkdir(parents=True, exist_ok=True)
 
+    def clear_data(self):
+        """Deletes the training data file from the data directory."""
+        # NOTE: This assumes the data file is named 'self_play_data.pkl' inside the directory.
+        # Please verify this matches the filename used in your save_data() method.
+        file_to_delete = self.data_directory / "self_play_data.pkl"
+
+        try:
+            if file_to_delete.exists():
+                file_to_delete.unlink()
+                # Optional: Add a log to confirm clearance
+                # logging.info(f"Cleared old training data at {file_to_delete}")
+        except OSError as e:
+            # Optional: Add error logging
+            # logging.error(f"Error clearing data file {file_to_delete}: {e}")
+            raise e
+         
     def save_data(self, data: TrainingData, filename: str):
         """
         Saves a list of training examples to a file using pickle.
