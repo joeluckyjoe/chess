@@ -1,357 +1,214 @@
+# tests/test_neural_network/test_get_attention_from_fen.py
+
 import torch
-import torch.nn as nn
-from typing import Tuple, Dict, Optional, Any, List
-import sys
-import os
+import chess
 import matplotlib.pyplot as plt
 import numpy as np
+import unittest
 
-# Add the project root to the Python path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-# Imports from your project
+# --- Real Project Imports ---
+from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from gnn_agent.neural_network.chess_network import ChessNetwork
-# We don't import CrossAttentionModule directly here, as it's used by ChessNetwork
+from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
+from gnn_agent.neural_network.attention_module import CrossAttentionModule
+from gnn_agent.neural_network.policy_value_heads import PolicyHead, ValueHead
 
-# --- Mock GNNs and Heads (copied from previous test script for self-containment) ---
-class MockSquareGNN(nn.Module):
-    def __init__(self, in_features, hidden_features, out_features, heads):
-        super().__init__()
-        self.out_features = out_features
-        print(f"MockSquareGNN initialized: in={in_features}, out={out_features}")
-    def forward(self, features, edge_index):
-        num_squares = features.size(0)
-        return torch.randn(num_squares, self.out_features)
+# --- Plotting Functions (Unchanged) ---
 
-class MockPieceGNN(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels):
-        super().__init__()
-        self.out_channels = out_channels
-        print(f"MockPieceGNN initialized: in={in_channels}, out={out_channels}")
-    def forward(self, features, edge_index):
-        num_pieces = features.size(0)
-        if num_pieces == 0: return torch.empty(0, self.out_channels)
-        return torch.randn(num_pieces, self.out_channels)
-
-class MockPolicyHead(nn.Module):
-    def __init__(self, embed_dim, num_actions):
-        super().__init__()
-        self.num_actions = num_actions
-        print(f"MockPolicyHead initialized: embed_dim={embed_dim}, num_actions={num_actions}")
-    def forward(self, fused_embeddings_batch):
-        batch_size = fused_embeddings_batch.size(0)
-        return torch.randn(batch_size, self.num_actions)
-
-class MockValueHead(nn.Module):
-    def __init__(self, embed_dim):
-        super().__init__()
-        print(f"MockValueHead initialized: embed_dim={embed_dim}")
-    def forward(self, fused_embeddings_batch):
-        batch_size = fused_embeddings_batch.size(0)
-        return torch.randn(batch_size, 1)
-# --- End Mock GNNs and Heads ---
-
-class MockGNNDataConverter:
-    """
-    A simplified mock converter to simulate turning a FEN into GNN input tensors.
-    For actual visualization, you'd use your real GNNDataConverter.
-    """
-    def __init__(self, square_features_dim: int, piece_features_dim: int):
-        self.square_features_dim = square_features_dim
-        self.piece_features_dim = piece_features_dim
-        # Corrected mapping for FEN parsing (0=a8, 1=b8, ..., 63=h1)
-        self.square_idx_to_algebraic = [f"{chr(ord('a') + (i % 8))}{8 - (i // 8)}" for i in range(64)] 
-        self.algebraic_to_square_idx = {sq: i for i, sq in enumerate(self.square_idx_to_algebraic)}
-
-        print("MockGNNDataConverter initialized.")
-
-    def convert_fen_to_gnn_input(self, fen: str) -> Dict[str, Any]:
-        print(f"MockGNNDataConverter: Converting FEN: {fen[:20]}...") 
-
-        num_squares = 64
-        
-        piece_placement = fen.split(' ')[0]
-        num_pieces = 0
-        piece_labels: List[str] = []
-        # For mock labels, we also store their FEN character and original square for better identification
-        # List of tuples: (label_str, fen_char, algebraic_square_of_piece)
-        piece_details: List[Tuple[str, str, str]] = [] 
-
-        current_square_idx = 0 # 0=a8, 1=b8 ... 63=h1 (standard FEN parsing order)
-        
-        for rank_str in piece_placement.split('/'):
-            file_idx_on_rank = 0 # Tracks file position within the current rank string
-            for char_in_rank in rank_str:
-                if char_in_rank.isalpha():
-                    num_pieces += 1
-                    # The `current_square_idx` correctly tracks the FEN square index (0=a8, etc.)
-                    algebraic_pos = self.square_idx_to_algebraic[current_square_idx]
-                    
-                    label = f"{char_in_rank}_{algebraic_pos}"
-                    piece_labels.append(label)
-                    piece_details.append((label, char_in_rank, algebraic_pos))
-                    
-                    current_square_idx += 1
-                    # file_idx_on_rank was not needed here as current_square_idx is global
-                elif char_in_rank.isdigit():
-                    skip = int(char_in_rank)
-                    current_square_idx += skip
-                    # file_idx_on_rank was not needed here
-
-        print(f"MockGNNDataConverter: Estimated {num_pieces} pieces from FEN. Generated {len(piece_labels)} labels.")
-        if num_pieces > 0:
-            print(f"MockGNNDataConverter: First 5 piece details: {piece_details[:5]}")
-
-
-        square_features = torch.randn(num_squares, self.square_features_dim)
-        edges = []
-        for r in range(8):
-            for f in range(8):
-                idx = r * 8 + f
-                for dr in [-1, 0, 1]:
-                    for df in [-1, 0, 1]:
-                        if dr == 0 and df == 0: continue
-                        nr, nf = r + dr, f + df
-                        if 0 <= nr < 8 and 0 <= nf < 8:
-                            n_idx = nr * 8 + nf
-                            edges.append([idx, n_idx])
-        square_edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous() if edges else torch.empty((2,0), dtype=torch.long)
-
-        if num_pieces > 0:
-            piece_features = torch.randn(num_pieces, self.piece_features_dim)
-            if num_pieces > 1:
-                piece_edge_index = torch.randint(0, num_pieces, (2, num_pieces * 2), dtype=torch.long) 
-            else:
-                 piece_edge_index = torch.empty((2,0), dtype=torch.long)
-            piece_padding_mask = torch.zeros(num_pieces, dtype=torch.bool)
-        else:
-            piece_features = torch.empty(0, self.piece_features_dim)
-            piece_edge_index = torch.empty((2,0), dtype=torch.long)
-            piece_padding_mask = torch.empty(0, dtype=torch.bool)
-
-        piece_to_square_map_mock_tensor = torch.arange(num_pieces, dtype=torch.long) if num_pieces > 0 else torch.empty(0, dtype=torch.long)
-
-        return {
-            "square_features": square_features,
-            "square_edge_index": square_edge_index,
-            "piece_features": piece_features,
-            "piece_edge_index": piece_edge_index,
-            "piece_to_square_map": piece_to_square_map_mock_tensor, 
-            "piece_padding_mask": piece_padding_mask,
-            "piece_labels": piece_labels,
-            "piece_details": piece_details 
-        }
-
-def get_gnn_data_and_attention(fen_string: str, 
-                                network: ChessNetwork, 
-                                converter: MockGNNDataConverter
-                                ) -> Tuple[Optional[torch.Tensor], Optional[List[str]], Optional[List[Tuple[str,str,str]]]]:
-    gnn_input_data = converter.convert_fen_to_gnn_input(fen_string)
-    piece_labels = gnn_input_data.get("piece_labels")
-    piece_details = gnn_input_data.get("piece_details")
-
-    network.eval() 
-    with torch.no_grad():
-        sf = gnn_input_data["square_features"]
-        sei = gnn_input_data["square_edge_index"]
-        pf = gnn_input_data["piece_features"]
-        pei = gnn_input_data["piece_edge_index"]
-        ptsm = gnn_input_data["piece_to_square_map"] 
-        ppm = gnn_input_data["piece_padding_mask"]
-
-        if pf is None or pf.nelement() == 0:
-             print("No piece features, expecting None for attention weights.")
-        
-        policy_logits, value, attention_weights = network.forward(
-            square_features=sf, square_edge_index=sei,
-            piece_features=pf, piece_edge_index=pei,
-            piece_to_square_map=ptsm, piece_padding_mask=ppm,
-            return_attention_weights=True
-        )
+def plot_square_attention_to_pieces(
+    attention_weights,
+    square_name,
+    piece_labels,
+    ax=None
+):
+    """Visualizes attention from one square to all pieces as a bar chart."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
     
-    return attention_weights, piece_labels, piece_details
-
-def plot_square_attention_to_pieces(attention_values: np.ndarray, 
-                                     piece_labels: List[str], 
-                                     square_label: str,
-                                     fen: str):
-    if not piece_labels:
-        print(f"No pieces to plot attention for square {square_label}.")
-        return
-    if attention_values.size == 0 :
-        print(f"Attention values are empty for square {square_label}.")
-        return
-    if len(attention_values) != len(piece_labels):
-        print(f"Mismatch between attention values ({len(attention_values)}) and piece labels ({len(piece_labels)}). Cannot plot.")
-        return
-
-    fig, ax = plt.subplots(figsize=(max(10, len(piece_labels) * 0.4), 8)) 
     y_pos = np.arange(len(piece_labels))
-    
-    ax.barh(y_pos, attention_values, align='center', color='skyblue')
+    ax.barh(y_pos, attention_weights, align='center')
     ax.set_yticks(y_pos)
     ax.set_yticklabels(piece_labels)
-    ax.invert_yaxis() 
-    ax.set_xlabel('Attention Weight', fontsize=12)
-    ax.set_ylabel('Pieces', fontsize=12)
-    ax.set_title(f'Attention from Square {square_label} to Pieces\nFEN: {fen.split(" ")[0]}', fontsize=14)
-    plt.grid(axis='x', linestyle='--', alpha=0.7)
+    ax.invert_yaxis()
+    ax.set_xlabel("Attention Weight")
+    ax.set_title(f"Attention from Square {square_name} to All Pieces")
     plt.tight_layout()
-    plot_filename = f"attention_sq_{square_label}_to_pieces.png"
-    plt.savefig(plot_filename)
-    print(f"Plot saved to {plot_filename}")
-    plt.close(fig)
+    return ax
 
-def plot_all_squares_attention_to_piece(attention_to_piece: np.ndarray,
-                                         target_piece_label: str,
-                                         fen: str,
-                                         square_idx_to_algebraic: List[str]):
-    if attention_to_piece.shape != (64,):
-        print(f"Error: attention_to_piece must be of shape (64,). Got {attention_to_piece.shape}")
-        return
-
-    heatmap_data = attention_to_piece.reshape(8, 8) 
-
-    fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(heatmap_data, cmap='viridis', origin='lower') 
-
+def plot_all_squares_attention_to_piece(
+    attention_weights,
+    piece_label,
+    piece_index,
+    ax=None
+):
+    """Visualizes attention from all 64 squares to one piece as a heatmap."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 8))
+    
+    heatmap_data = attention_weights[:, piece_index].reshape(8, 8) # Assuming square-major order for attention weights
+    
+    im = ax.imshow(heatmap_data, cmap="hot", interpolation="nearest")
+    
     ax.set_xticks(np.arange(8))
     ax.set_yticks(np.arange(8))
-    ax.set_xticklabels([chr(ord('a') + i) for i in range(8)]) 
-    ax.set_yticklabels([str(i + 1) for i in range(8)])      
-
-    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Attention Weight")
-    ax.set_title(f"All Squares' Attention to Piece: {target_piece_label}\nFEN: {fen.split(' ')[0]}", fontsize=12)
+    ax.set_xticklabels(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'])
+    ax.set_yticklabels(range(8, 0, -1)) # Chessboard ranks are 8 to 1
     
-    plt.tight_layout()
-    plot_filename = f"attention_all_sq_to_{target_piece_label.replace('/', '_').replace(' ', '_')}.png" # Sanitize filename
-    plt.savefig(plot_filename)
-    print(f"Heatmap plot saved to {plot_filename}")
-    plt.close(fig)
+    cbar = ax.figure.colorbar(im, ax=ax, shrink=0.7)
+    cbar.ax.set_ylabel("Attention Weight", rotation=-90, va="bottom")
 
+    ax.set_title(f"Attention from All Squares to Piece: {piece_label} (Index {piece_index})")
+    return ax
 
-def run_fen_test():
-    print("--- Starting Get Attention Weights from FEN Test with Basic Plot ---")
+# --- Main Test and Visualization Class ---
 
-    square_in_features = 12
-    piece_in_features = 12
-    embed_dim = 128
-    num_actions = 4672
-    num_heads_attention = 4
-    square_gat_heads = 4
-    attention_dropout_rate = 0.1
+class TestAttentionVisualization(unittest.TestCase):
 
-    chess_net = ChessNetwork(
-        square_in_features=square_in_features, piece_in_features=piece_in_features,
-        embed_dim=embed_dim, num_actions=num_actions, num_heads=num_heads_attention,
-        square_gat_heads=square_gat_heads, attention_dropout_rate=attention_dropout_rate
-    )
+    def test_get_and_plot_attention_from_fen(self):
+        """
+        Tests the full pipeline from FEN -> Converter -> Network -> Attention -> Plots.
+        """
+        # --- 1. Setup ---
+        fen = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1" # e.g., after 1. e4 e5
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    chess_net.square_gnn = MockSquareGNN(
-        in_features=square_in_features, hidden_features=64, out_features=embed_dim, heads=square_gat_heads
-    )
-    chess_net.piece_gnn = MockPieceGNN(
-        in_channels=piece_in_features, hidden_channels=32, out_channels=embed_dim
-    )
-    chess_net.policy_head = MockPolicyHead(embed_dim, num_actions)
-    chess_net.value_head = MockValueHead(embed_dim)
-
-    mock_converter = MockGNNDataConverter(
-        square_features_dim=square_in_features, piece_features_dim=piece_in_features
-    )
-
-    start_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    mid_game_fen_actual = "r1bq1rk1/pp2ppbp/2np1np1/8/3NP3/2N1BP2/PPPQ2PP/R3KB1R w KQ - 3 9" 
-    empty_board_fen = "8/8/8/8/8/8/8/8 w - - 0 1"
-
-    test_fens_for_plot = {
-        "Start Position": start_fen,
-        "Actual Mid Game": mid_game_fen_actual
-    }
-    
-    square_idx_to_algebraic_a1_h8 = [f"{chr(ord('a') + (i % 8))}{ (i // 8) + 1}" for i in range(64)]
-
-    for name, fen in test_fens_for_plot.items():
-        print(f"\n--- Testing FEN for Plotting: {name} ---")
-        attention_weights, piece_labels, piece_details = get_gnn_data_and_attention(fen, chess_net, mock_converter)
-
-        if attention_weights is not None and piece_labels and piece_details:
-            print(f"  Retrieved Attention Weights Shape: {attention_weights.shape}")
-            print(f"  Retrieved {len(piece_labels)} Piece Labels. First 5: {piece_labels[:5]}")
-            
-            square_to_visualize_idx = 0 
-            if name == "Actual Mid Game": 
-                square_to_visualize_idx = (4-1)*8 + (ord('d') - ord('a')) 
-            
-            square_to_visualize_label = square_idx_to_algebraic_a1_h8[square_to_visualize_idx]
-            
-            if square_to_visualize_idx < attention_weights.shape[0]: # Check against num_squares dimension
-                # Ensure piece dimension is also valid for slicing
-                if attention_weights.shape[1] == len(piece_labels):
-                    attention_for_selected_square = attention_weights[square_to_visualize_idx, :].numpy()
-                    print(f"  Plotting bar chart for square: {square_to_visualize_label} (index {square_to_visualize_idx})")
-                    plot_square_attention_to_pieces(
-                        attention_values=attention_for_selected_square,
-                        piece_labels=piece_labels,
-                        square_label=square_to_visualize_label,
-                        fen=fen
-                    )
-                else:
-                    print(f"  Mismatch between attention_weights piece dimension ({attention_weights.shape[1]}) and piece_labels count ({len(piece_labels)}). Skipping bar chart.")
-            else:
-                print(f"  Selected square index {square_to_visualize_idx} is out of bounds. Skipping bar chart.")
-
-            target_piece_for_heatmap_label = None
-            target_piece_idx_in_list = -1
-
-            if name == "Start Position":
-                for i, pd_tuple in enumerate(piece_details):
-                    if pd_tuple[1] == 'Q' and pd_tuple[2] == 'd1': 
-                        target_piece_for_heatmap_label = pd_tuple[0] 
-                        target_piece_idx_in_list = i
-                        break
-                if target_piece_idx_in_list == -1:
-                     print("Could not find White Queen Q on d1 for heatmap. Skipping heatmap for Start Position.")
-
-            elif name == "Actual Mid Game":
-                for i, pd_tuple in enumerate(piece_details):
-                    if pd_tuple[1] == 'q' and pd_tuple[2] == 'd8': 
-                        target_piece_for_heatmap_label = pd_tuple[0]
-                        target_piece_idx_in_list = i
-                        break
-                if target_piece_idx_in_list == -1:
-                     print("Could not find Black Queen q on d8 for heatmap. Skipping heatmap for Mid Game.")
-            
-            if target_piece_for_heatmap_label and target_piece_idx_in_list != -1:
-                if target_piece_idx_in_list < attention_weights.shape[1]:
-                    attention_to_target_piece = attention_weights[:, target_piece_idx_in_list].numpy()
-                    print(f"  Plotting heatmap for piece: {target_piece_for_heatmap_label} (index {target_piece_idx_in_list})")
-                    plot_all_squares_attention_to_piece(
-                        attention_to_piece=attention_to_target_piece,
-                        target_piece_label=target_piece_for_heatmap_label,
-                        fen=fen,
-                        square_idx_to_algebraic=square_idx_to_algebraic_a1_h8 
-                    )
-                else:
-                    print(f"  Target piece index {target_piece_idx_in_list} is out of bounds for attention_weights piece dimension ({attention_weights.shape[1]}). Skipping heatmap.")
-            else:
-                print(f"  Target piece for heatmap not identified for {name}. Skipping heatmap.")
-        elif name == "Empty Board": 
-             pass 
-        else:
-            print(f"  Could not retrieve attention weights or piece labels for {name}. Skipping plots.")
-            if name != "Empty Board":
-                 assert False, f"Attention weights were None for {name}, but pieces/labels were expected."
+        board = chess.Board(fen)
+        gnn_input, piece_labels_for_plot = convert_to_gnn_input(board, device)
         
-    print(f"\n--- Testing FEN for Plotting: Empty Board ---")
-    attention_weights_empty, piece_labels_empty, _ = get_gnn_data_and_attention(empty_board_fen, chess_net, mock_converter)
-    assert attention_weights_empty is None, "Expected None for empty board, but got something."
-    assert not piece_labels_empty, "Expected no piece labels for empty board."
-    print("  Attention Weights: None, Piece Labels: Empty (Correct for empty board)")
+        # --- 2. Initialize the REAL Network (with mock weights) ---
+        
+        square_gnn = SquareGNN(
+            in_features=12,       # From GNNDataConverter square features
+            hidden_features=64,   # Intermediate GNN layer size
+            out_features=128      # Output embedding size for squares
+        )
+        piece_gnn = PieceGNN(
+            in_channels=12,       # From GNNDataConverter piece features
+            hidden_channels=64,   # Intermediate GNN layer size
+            out_channels=128      # Output embedding size for pieces
+        )
+        
+        cross_attention = CrossAttentionModule(
+            sq_embed_dim=128,     # Output dim of SquareGNN
+            pc_embed_dim=128,     # Output dim of PieceGNN
+            num_heads=4
+        )
+        
+        # *** CORRECTED PolicyHead and ValueHead INSTANTIATION ***
+        policy_head = PolicyHead(
+            embedding_dim=128     # Input dim from ChessNetwork's processed embeddings
+        )
+        value_head = ValueHead(
+            embedding_dim=128     # Input dim from ChessNetwork's processed embeddings
+        )
+        # *** END CORRECTION ***
 
-    print("\n--- Get Attention Weights from FEN Test with Basic Plot Completed ---")
+        model = ChessNetwork(
+            square_gnn, piece_gnn, cross_attention, policy_head, value_head
+        ).to(device)
+        model.eval() # Set to evaluation mode
+
+        # --- 3. Get Attention Weights ---
+        # The GNNInput needs to be "batched" for the network, even if batch size is 1.
+        # The network expects inputs like (batch_size, num_nodes, features) or (num_nodes, batch_size, features)
+        # depending on batch_first conventions.
+        # Our GNNDataConverter currently returns unbatched tensors.
+        # The ChessNetwork's forward method expects (batch_size, num_squares, sq_embed_dim) for the policy/value heads
+        # and the CrossAttentionModule expects (num_squares, batch_size, sq_embed_dim) and (num_pieces, batch_size, pc_embed_dim)
+        # Let's ensure the inputs to the model are shaped correctly for a single batch item.
+        # Square graph features: (num_squares, features) -> (1, num_squares, features) or (num_squares, 1, features)
+        # Piece graph features: (num_pieces, features) -> (1, num_pieces, features) or (num_pieces, 1, features)
+        
+        # For this test, ChessNetwork's forward method handles the batching internally if inputs are unbatched.
+        # However, the attention weights returned by CrossAttentionModule are (batch_size, num_squares, num_pieces)
+        # or (num_squares, num_pieces) if batch_size is 1 and squeezed.
+        # Let's assume the ChessNetwork forward pass handles this and returns attention weights
+        # as (num_squares, num_pieces) for a single instance after potential unsqueezing/squeezing.
+
+        with torch.no_grad():
+            # Perform a forward pass, telling the model we want the attention weights
+            # The ChessNetwork's forward method should handle the batch dimension internally for a single FEN.
+            # It should return policy_logits, value, and attention_weights (if requested)
+            # attention_weights from CrossAttentionModule: (batch_size, num_query_elements, num_key_elements)
+            # For us: (1, 64, num_pieces)
+            _, _, attention_weights_batch = model( # Expecting batched output
+                gnn_input.square_graph.x,
+                gnn_input.square_graph.edge_index,
+                gnn_input.piece_graph.x,
+                gnn_input.piece_graph.edge_index,
+                gnn_input.piece_to_square_map,
+                return_attention=True  # The flag to get attention weights
+            )
+        
+        # We expect attention_weights_batch to be (1, 64, num_pieces)
+        # For plotting, we need (64, num_pieces)
+        self.assertIsNotNone(attention_weights_batch, "Attention weights should not be None")
+        self.assertEqual(attention_weights_batch.ndim, 3, "Attention weights should be 3D (batch, query, key)")
+        self.assertEqual(attention_weights_batch.shape[0], 1, "Batch dimension should be 1")
+        
+        attention_weights = attention_weights_batch.squeeze(0).cpu().numpy() # Remove batch dim, move to CPU & NumPy
+        
+        # Shape is (num_query_elements, num_key_elements) which is (squares, pieces) -> (64, num_pieces)
+        
+        self.assertIsNotNone(attention_weights)
+        self.assertEqual(attention_weights.shape[0], 64, "Attention weights should have 64 rows (squares)") 
+        self.assertEqual(attention_weights.shape[1], len(piece_labels_for_plot), "Attention weights columns should match num_pieces")
+
+        print(f"\nSuccessfully retrieved attention weights with shape: {attention_weights.shape}")
+        print(f"Piece labels for plotting ({len(piece_labels_for_plot)} total): {piece_labels_for_plot}")
+
+        # --- 4. Generate Plots ---
+        square_to_plot = 'e4' # White's pawn
+        # Let's pick a specific piece that exists on the board for the second plot.
+        # For FEN "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1"
+        # Black pawn on e5 is a good candidate.
+        # piece_labels_for_plot is like: ['R', 'N', 'B', 'Q', 'K', 'B', 'N', 'R', 'P', 'P', 'P', 'P', 'P', 'P', 'P', 'P', 'r', 'n', 'b', 'q', 'k', 'b', 'n', 'r', 'p', 'p', 'p', 'p', 'p', 'p', 'p', 'p']
+        # The black pawn on e5 should be 'p'. Let's find its index.
+        
+        square_index_to_plot = chess.parse_square(square_to_plot) # e.g., 28 for e4
+
+        # Find the black pawn on e5 (square index 36)
+        target_piece_symbol_for_plot2 = 'p' # black pawn
+        target_piece_square_for_plot2 = chess.E5 # square e5
+        
+        # Find the index of this specific piece in our piece_labels_for_plot
+        # piece_labels_for_plot is ordered based on board.piece_map().keys()
+        # gnn_input.piece_to_square_map maps piece graph indices to board square indices
+        
+        piece_index_for_plot2 = -1
+        for i, sq_idx_tensor in enumerate(gnn_input.piece_to_square_map):
+            sq_idx = sq_idx_tensor.item()
+            if sq_idx == target_piece_square_for_plot2 and piece_labels_for_plot[i] == target_piece_symbol_for_plot2:
+                piece_index_for_plot2 = i
+                break
+        
+        if piece_index_for_plot2 == -1:
+             self.fail(f"Could not find piece '{target_piece_symbol_for_plot2}' on square {chess.square_name(target_piece_square_for_plot2)} in piece_labels_for_plot.")
+
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 8))
+        
+        # Plot 1: Bar chart for one square's attention to all pieces
+        plot_square_attention_to_pieces(
+            attention_weights[square_index_to_plot, :], # Attention from e4 to all pieces
+            square_to_plot,
+            piece_labels_for_plot,
+            ax=ax1
+        )
+        
+        # Plot 2: Heatmap of all squares' attention to one piece (black pawn on e5)
+        plot_all_squares_attention_to_piece(
+            attention_weights, # Full attention matrix (64, num_pieces)
+            f"{target_piece_symbol_for_plot2} on {chess.square_name(target_piece_square_for_plot2)}",
+            piece_index_for_plot2, # Index of the black pawn on e5 in the piece_graph
+            ax=ax2
+        )
+
+        plt.suptitle(f"Cross-Attention Visualization for FEN: {fen}", fontsize=16)
+        output_filename = "attention_visualization_real_converter_and_network.png" # New name
+        plt.savefig(output_filename)
+        print(f"Generated visualization and saved to {output_filename}")
+        plt.close(fig) # Close the figure to prevent it from displaying in interactive environments
 
 if __name__ == '__main__':
-    run_fen_test()
+    unittest.main()

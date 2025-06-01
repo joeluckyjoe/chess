@@ -71,7 +71,7 @@ _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 
 # --- Main Conversion Function ---
 
-def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
+def convert_to_gnn_input(board: chess.Board, device) -> Tuple[GNNInput, List[str]]:
     """
     Converts a python-chess board state into the GNNInput format.
     """
@@ -101,6 +101,10 @@ def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
 
     # 2. Piece-based Graph (G_pc)
     piece_map = board.piece_map()
+
+    # <-- NEW LINE: Create the list of piece symbols in the correct order
+    piece_labels_for_plot = [board.piece_at(sq).symbol() for sq in piece_map.keys()]
+
 
     # Handle empty board case for piece graph
     if not piece_map:
@@ -154,4 +158,7 @@ def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
             edge_index=piece_edge_index
         )
 
-    return GNNInput(square_graph=square_graph, piece_graph=piece_graph, piece_to_square_map=piece_to_square_map)
+    return (
+        GNNInput(square_graph=square_graph, piece_graph=piece_graph, piece_to_square_map=piece_to_square_map),
+        piece_labels_for_plot
+    )
