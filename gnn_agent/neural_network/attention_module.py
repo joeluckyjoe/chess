@@ -1,7 +1,7 @@
 # attention_module.py
 import torch
 import torch.nn as nn
-from typing import Optional
+from typing import Optional, Tuple, Union
 
 class CrossAttentionModule(nn.Module):
     def __init__(self, sq_embed_dim: int, pc_embed_dim: int, num_heads: int, dropout_rate: float = 0.1):
@@ -48,7 +48,9 @@ class CrossAttentionModule(nn.Module):
     def forward(self,
                 square_embeddings: torch.Tensor,
                 piece_embeddings: torch.Tensor,
-                piece_padding_mask: Optional[torch.Tensor] = None):
+                piece_padding_mask: Optional[torch.Tensor] = None,
+                return_attention_weights: bool = False
+                ) -> Union[torch.Tensor, Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         """
         Forward pass for the CrossAttentionModule.
 
@@ -56,26 +58,44 @@ class CrossAttentionModule(nn.Module):
             square_embeddings (torch.Tensor): Shape (num_squares, batch_size, sq_embed_dim)
             piece_embeddings (torch.Tensor): Shape (num_current_pieces, batch_size, pc_embed_dim)
             piece_padding_mask (torch.Tensor, optional): Boolean tensor for key padding.
-                                                        Shape (batch_size, num_current_pieces).
-                                                        True indicates a position to be masked.
-                                                        Defaults to None.
+                                                         Shape (batch_size, num_current_pieces).
+                                                         True indicates a position to be masked.
+                                                         Defaults to None.
+            return_attention_weights (bool): If True, returns the attention weights along with the output.
+                                             Defaults to False.
 
         Returns:
-            torch.Tensor: Attended square embeddings. Shape (num_squares, batch_size, sq_embed_dim)
+            Union[torch.Tensor, Tuple[torch.Tensor, Optional[torch.Tensor]]]:
+            - If return_attention_weights is False:
+                processed_attended_squares (torch.Tensor): Attended square embeddings.
+                                                            Shape (num_squares, batch_size, sq_embed_dim)
+            - If return_attention_weights is True:
+                Tuple containing:
+                - processed_attended_squares (torch.Tensor): As above.
+                - attn_output_weights (torch.Tensor): Attention weights.
+                                                      Shape (batch_size, num_squares, num_current_pieces).
+                                                      Will be None if not computed.
         """
         # square_embeddings: (L_target, N, E_query) -> (64, B, D_sq)
         # piece_embeddings: (L_source, N, E_kv) -> (N_pieces, B, D_pc)
 
         # Apply multi-head attention
         # attn_output: (L_target, N, E_query)
-        # attn_output_weights: (N, L_target, L_source) - not used here but available
-        attn_output, _ = self.multi_head_attention(
+        # attn_output_weights: (N, L_target, L_source) if need_weights=True
+        #                      (batch_size, num_squares, num_current_pieces)
+        
+        # Determine if weights are needed for the underlying call
+        # This avoids computing them if not requested by the caller of this forward method
+        _need_weights = return_attention_weights 
+
+        attn_output, attn_output_weights = self.multi_head_attention(
             query=square_embeddings,
             key=piece_embeddings,
             value=piece_embeddings,
-            key_padding_mask=piece_padding_mask, # (N, S)
-            need_weights=False # We can set this to True if we want to inspect attention weights later
+            key_padding_mask=piece_padding_mask, # (N, S_key)
+            need_weights=_need_weights # Only compute if explicitly asked
         )
+        # If _need_weights was False, attn_output_weights will be None.
 
         # Add & Norm (Residual connection)
         attended_squares = self.layer_norm1(square_embeddings + self.dropout(attn_output))
@@ -86,4 +106,7 @@ class CrossAttentionModule(nn.Module):
         # Add & Norm (Residual connection)
         processed_attended_squares = self.layer_norm2(attended_squares + self.dropout(ff_output))
 
-        return processed_attended_squares
+        if return_attention_weights:
+            return processed_attended_squares, attn_output_weights
+        else:
+            return processed_attended_squares
