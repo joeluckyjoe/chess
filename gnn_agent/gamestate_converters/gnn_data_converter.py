@@ -1,8 +1,8 @@
 #
-# File: gnn_data_converter.py (Corrected)
+# File: gnn_data_converter.py (Refactored)
 #
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import torch
 import chess
@@ -32,6 +32,7 @@ class GNNGraph:
     """Represents the structure of a single graph for the GNN."""
     x: torch.Tensor
     edge_index: torch.Tensor
+
 @dataclass
 class GNNInput:
     """The complete input for our dual-GNN model for a single board state."""
@@ -72,12 +73,26 @@ def _create_square_adjacency_edges() -> torch.Tensor:
 _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 
 
-# --- Main Conversion Function (Corrected) ---
+# --- Main Conversion Function (Refactored) ---
 
-def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
+def convert_to_gnn_input(
+    board: chess.Board,
+    device: torch.device,
+    for_visualization: bool = False
+) -> Union[GNNInput, Tuple[GNNInput, List[str]]]:
     """
     Converts a python-chess board state into the GNNInput format.
-    This version returns ONLY the GNNInput object for the training loop.
+
+    Args:
+        board: The python-chess board object.
+        device: The torch device to move tensors to.
+        for_visualization: If True, also returns labels for plotting.
+
+    Returns:
+        If for_visualization is False, returns the GNNInput object.
+        If for_visualization is True, returns a tuple containing:
+            - The GNNInput object.
+            - A list of strings representing piece labels for visualization.
     """
     # 1. Square-based Graph (G_sq)
     square_features_list = []
@@ -105,6 +120,7 @@ def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
 
     # 2. Piece-based Graph (G_pc)
     piece_map = board.piece_map()
+    piece_labels_for_plot = []
 
     # Handle empty board case for piece graph
     if not piece_map:
@@ -114,20 +130,29 @@ def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
         )
         piece_to_square_map = torch.empty((0), dtype=torch.long, device=device)
     else:
-        piece_node_indices = {sq: i for i, sq in enumerate(piece_map.keys())}
-        square_indices_for_pieces = list(piece_map.keys())
-        piece_to_square_map = torch.tensor(square_indices_for_pieces, dtype=torch.long, device=device)
+        # Important: Sort keys to ensure consistent node ordering
+        sorted_squares = sorted(piece_map.keys())
+        piece_node_indices = {sq: i for i, sq in enumerate(sorted_squares)}
+        piece_to_square_map = torch.tensor(sorted_squares, dtype=torch.long, device=device)
 
         piece_features_list = []
         piece_edges = []
 
         legal_moves = list(board.legal_moves)
-        piece_mobilities = {sq: 0 for sq in piece_map.keys()}
+        piece_mobilities = {sq: 0 for sq in sorted_squares}
         for move in legal_moves:
             if move.from_square in piece_mobilities:
                 piece_mobilities[move.from_square] += 1
 
-        for from_sq, piece in piece_map.items():
+        for from_sq in sorted_squares:
+            piece = board.piece_at(from_sq)
+
+            # Generate labels for visualization if requested
+            if for_visualization:
+                color_str = 'w' if piece.color == chess.WHITE else 'b'
+                piece_str = piece.symbol().upper()
+                piece_labels_for_plot.append(f"{color_str}{piece_str}")
+
             piece_type_one_hot = np.zeros(NUM_PIECE_TYPES, dtype=np.float32)
             piece_type_one_hot[PIECE_TYPE_MAP[piece.piece_type]] = 1.0
             piece_color = [1.0 if piece.color == chess.WHITE else 0.0]
@@ -158,9 +183,13 @@ def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
             edge_index=piece_edge_index
         )
 
-    # Corrected return statement
-    return GNNInput(
+    gnn_input = GNNInput(
         square_graph=square_graph,
         piece_graph=piece_graph,
         piece_to_square_map=piece_to_square_map
     )
+
+    if for_visualization:
+        return gnn_input, piece_labels_for_plot
+    else:
+        return gnn_input

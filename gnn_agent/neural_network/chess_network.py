@@ -42,65 +42,61 @@ class ChessNetwork(nn.Module):
 
 
     def forward(self,
-                square_features: torch.Tensor,
-                square_edge_index: torch.Tensor,
-                piece_features: torch.Tensor,
-                piece_edge_index: torch.Tensor,
-                piece_to_square_map: Optional[torch.Tensor] = None,
-                return_attention: bool = False
-               ) -> Union[Tuple[torch.Tensor, torch.Tensor],
-                          Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]:
-        """
-        Forward pass for the full network.
-        """
-        square_embeddings = self.square_gnn(square_features, square_edge_index)
-        piece_embeddings = self.piece_gnn(piece_features, piece_edge_index)
+                    square_features: torch.Tensor,
+                    square_edge_index: torch.Tensor,
+                    piece_features: torch.Tensor,
+                    piece_edge_index: torch.Tensor,
+                    piece_to_square_map: Optional[torch.Tensor] = None,
+                    return_attention: bool = False
+                ) -> Union[Tuple[torch.Tensor, torch.Tensor],
+                            Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]:
+            """
+            Forward pass for the full network.
+            """
+            square_embeddings = self.square_gnn(square_features, square_edge_index)
+            piece_embeddings = self.piece_gnn(piece_features, piece_edge_index)
 
-        batched_attention_weights = None
-        attended_square_embeddings = torch.zeros_like(square_embeddings)
-
-        if piece_embeddings.numel() > 0:
-            # Add a batch dimension of 1 for the attention module
-            square_embeddings_b = square_embeddings.unsqueeze(1)
-            piece_embeddings_b = piece_embeddings.unsqueeze(1)
-
-            # --- CORRECTED LOGIC ---
-            # Call the attention module and handle its output based on the flag.
-            attention_output = self.cross_attention(
-                square_embeddings=square_embeddings_b,
-                piece_embeddings=piece_embeddings_b,
-                return_attention_weights=return_attention
-            )
+            batched_attention_weights = None
             
+            final_square_representation = square_embeddings
+
+            if piece_embeddings.numel() > 0 and piece_to_square_map is not None:
+                # CORRECTED: Use unsqueeze(1) for batch_first=False attention modules.
+                # This creates the shape (seq_len, batch_size=1, embed_dim).
+                query_b = piece_embeddings.unsqueeze(1)
+                key_b = square_embeddings.unsqueeze(1)
+                value_b = square_embeddings.unsqueeze(1)
+
+                attention_output = self.cross_attention(
+                    square_embeddings=key_b,
+                    piece_embeddings=query_b,
+                    return_attention_weights=return_attention
+                )
+                
+                if return_attention:
+                    attended_piece_embeddings_b, weights_b = attention_output
+                    if weights_b is not None:
+                        batched_attention_weights = weights_b.squeeze(0)
+                else:
+                    attended_piece_embeddings_b = attention_output
+
+                # Squeeze the batch dimension after attention.
+                attended_piece_embeddings = attended_piece_embeddings_b.squeeze(1)
+
+                final_square_representation = torch.zeros_like(square_embeddings)
+                final_square_representation.index_add_(0, piece_to_square_map, attended_piece_embeddings)
+
+            # Add a batch dimension for the policy and value heads.
+            final_representation_for_heads = final_square_representation.unsqueeze(0)
+
+            policy_logits_b = self.policy_head(final_representation_for_heads)
+            value_b = self.value_head(final_representation_for_heads)
+
+            # Remove batch dimension for the final output.
+            policy_logits = policy_logits_b.squeeze(0)
+            final_value = value_b.squeeze(0)
+
             if return_attention:
-                # If we asked for weights, unpack the two results
-                attention_result, weights_b = attention_output
-                if weights_b is not None:
-                    batched_attention_weights = weights_b
+                return policy_logits, final_value, batched_attention_weights
             else:
-                # Otherwise, the single result is the tensor
-                attention_result = attention_output
-            
-            # Remove the batch dimension
-            attended_square_embeddings = attention_result.squeeze(1)
-
-        # The original plan included a fusion layer. A simpler starting point is
-        # to just use the attended square embeddings directly. This is a common
-        # architecture (e.g., "use the output of the transformer").
-        # The heads are designed to take this embedding dimension.
-        fused_embeddings = attended_square_embeddings
-        
-        # Add a batch dimension for the heads
-        fused_embeddings_for_heads = fused_embeddings.unsqueeze(0)
-
-        policy_logits_b = self.policy_head(fused_embeddings_for_heads)
-        value_b = self.value_head(fused_embeddings_for_heads)
-
-        # Remove batch dimension for the final output
-        policy_logits = policy_logits_b.squeeze(0)
-        final_value = value_b.squeeze(0)
-
-        if return_attention:
-            return policy_logits, final_value, batched_attention_weights
-        else:
-            return policy_logits, final_value
+                return policy_logits, final_value
