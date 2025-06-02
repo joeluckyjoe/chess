@@ -26,7 +26,7 @@ class SelfPlay:
         self.training_data: List[Tuple[torch.Tensor, Dict[chess.Move, float], float]] = []
         self.num_simulations = num_simulations
 
-    def play_game(self, num_simulations: int) -> List[Tuple[torch.Tensor, Dict[chess.Move, float], float]]:
+    def play_game(self) -> List[Tuple[torch.Tensor, Dict[chess.Move, float], float]]:
         """
         Plays a full game, returning the generated training data.
 
@@ -48,7 +48,7 @@ class SelfPlay:
             
             # Run the MCTS search to get the best move and the policy
             # The tensor representation is captured inside the MCTS search
-            policy, best_move, board_tensor = current_player_mcts.run_search(self.game.board, num_simulations)
+            policy, best_move, board_tensor = current_player_mcts.run_search(self.game.board, self.num_simulations)
             
             if best_move is None:
                 # This can happen in a terminal state that MCTS didn't catch, break the loop

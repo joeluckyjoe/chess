@@ -1,4 +1,6 @@
 import torch
+import os
+from datetime import datetime
 import torch.optim as optim
 import torch.nn.functional as F # For policy loss if using raw logits
 from torch.nn import CrossEntropyLoss, MSELoss # CrossEntropyLoss might need adjustment for direct policy vector
@@ -119,7 +121,7 @@ class Trainer:
             # pred_value is shape [1]
             #value_loss = self.value_criterion(pred_value.unsqueeze(0), value_target_tensor) # Ensure pred_value is also [1] like target
             value_loss = self.value_criterion(pred_value, value_target_tensor)
-            
+
             current_total_loss = policy_loss + value_loss
 
             # Backward pass and optimization
@@ -135,3 +137,75 @@ class Trainer:
         
         # print(f"  Batch Avg Policy Loss: {avg_policy_loss:.4f}, Avg Value Loss: {avg_value_loss:.4f}")
         return avg_policy_loss, avg_value_loss
+    
+    # --- Start: New Checkpointing Methods ---
+
+    def save_checkpoint(self, directory, game_number):
+        """
+        Saves the model and optimizer state to a checkpoint file.
+
+        Args:
+            directory (str): The directory where checkpoints will be saved.
+            game_number (int): The current game number, used for naming the checkpoint.
+        """
+        if not os.path.isdir(directory):
+            os.makedirs(directory)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"checkpoint_game_{game_number}_{timestamp}.pth.tar"
+        filepath = os.path.join(directory, filename)
+
+        state = {
+            'game_number': game_number,
+            'model_state_dict': self.network.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+        }
+
+        torch.save(state, filepath)
+        print(f"Checkpoint saved to {filepath}")
+
+    def load_checkpoint(self, directory):
+        """
+        Loads the most recent checkpoint from a directory.
+
+        Args:
+            directory (str): The directory containing checkpoint files.
+
+        Returns:
+            int: The game number from the loaded checkpoint, or 0 if no checkpoint is found.
+        """
+        if not os.path.isdir(directory):
+            print(f"Checkpoint directory not found: {directory}")
+            return 0
+
+        files = [f for f in os.listdir(directory) if f.endswith('.pth.tar')]
+        if not files:
+            print("No checkpoints found.")
+            return 0
+
+        # Find the most recent checkpoint file
+        latest_file = max(files, key=lambda f: os.path.getmtime(os.path.join(directory, f)))
+        filepath = os.path.join(directory, latest_file)
+
+        try:
+            checkpoint = torch.load(filepath, map_location=self.device)
+            self.network.load_state_dict(checkpoint['model_state_dict'])
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            game_number = checkpoint.get('game_number', 0)
+
+            # Move model to the correct device
+            self.network.to(self.device)
+
+            # Manually move optimizer states to the correct device
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(self.device)
+
+            print(f"Checkpoint loaded from {filepath}")
+            return game_number
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            return 0
+
+    # --- End: New Checkpointing Methods ---    

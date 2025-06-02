@@ -8,6 +8,35 @@ import torch
 import chess
 import numpy as np
 
+def get_move_to_index_map():
+    """
+    Creates a comprehensive mapping from every possible chess move to a unique integer index.
+    This includes regular moves and all possible promotion pieces.
+
+    Returns:
+        dict: A dictionary mapping chess.Move objects to integer indices.
+    """
+    move_to_index = {}
+    index = 0
+    for from_square in chess.SQUARES:
+        for to_square in chess.SQUARES:
+            # Handle regular moves
+            move = chess.Move(from_square, to_square)
+            if move not in move_to_index:
+                move_to_index[move] = index
+                index += 1
+            
+            # Handle promotions
+            for promotion_piece in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]:
+                promo_move = chess.Move(from_square, to_square, promotion=promotion_piece)
+                if promo_move not in move_to_index:
+                    move_to_index[promo_move] = index
+                    index += 1
+    return move_to_index
+
+# You can also add this for convenience, so other modules can import it directly
+MOVE_TO_INDEX_MAP = get_move_to_index_map()
+
 # --- Constants for Feature Engineering ---
 # NOTE: The feature dimension is determined by the feature engineering below.
 # It is 2 (pos) + 6 (type) + 2 (color) + 2 (control) = 12 for squares
