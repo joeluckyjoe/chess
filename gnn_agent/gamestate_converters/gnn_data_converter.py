@@ -9,7 +9,10 @@ import chess
 import numpy as np
 
 # --- Constants for Feature Engineering ---
-GNN_INPUT_FEATURE_DIM = 12 
+# NOTE: The feature dimension is determined by the feature engineering below.
+# It is 2 (pos) + 6 (type) + 2 (color) + 2 (control) = 12 for squares
+# and 6 (type) + 1 (color) + 2 (loc) + 1 (mob) + 2 (atk/def) = 12 for pieces.
+GNN_INPUT_FEATURE_DIM = 12
 
 # Mapping piece types to an index for one-hot encoding
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
@@ -69,11 +72,12 @@ def _create_square_adjacency_edges() -> torch.Tensor:
 _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 
 
-# --- Main Conversion Function ---
+# --- Main Conversion Function (Corrected) ---
 
-def convert_to_gnn_input(board: chess.Board, device) -> Tuple[GNNInput, List[str]]:
+def convert_to_gnn_input(board: chess.Board, device) -> GNNInput:
     """
     Converts a python-chess board state into the GNNInput format.
+    This version returns ONLY the GNNInput object for the training loop.
     """
     # 1. Square-based Graph (G_sq)
     square_features_list = []
@@ -101,10 +105,6 @@ def convert_to_gnn_input(board: chess.Board, device) -> Tuple[GNNInput, List[str
 
     # 2. Piece-based Graph (G_pc)
     piece_map = board.piece_map()
-
-    # <-- NEW LINE: Create the list of piece symbols in the correct order
-    piece_labels_for_plot = [board.piece_at(sq).symbol() for sq in piece_map.keys()]
-
 
     # Handle empty board case for piece graph
     if not piece_map:
@@ -158,7 +158,9 @@ def convert_to_gnn_input(board: chess.Board, device) -> Tuple[GNNInput, List[str
             edge_index=piece_edge_index
         )
 
-    return (
-        GNNInput(square_graph=square_graph, piece_graph=piece_graph, piece_to_square_map=piece_to_square_map),
-        piece_labels_for_plot
+    # Corrected return statement
+    return GNNInput(
+        square_graph=square_graph,
+        piece_graph=piece_graph,
+        piece_to_square_map=piece_to_square_map
     )

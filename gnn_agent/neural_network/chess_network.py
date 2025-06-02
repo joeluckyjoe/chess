@@ -1,4 +1,4 @@
-# gnn_agent/neural_network/chess_network.py
+# gnn_agent/neural_network/chess_network.py (Corrected)
 
 import torch
 import torch.nn as nn
@@ -33,8 +33,12 @@ class ChessNetwork(nn.Module):
         self.policy_head = policy_head
         self.value_head = value_head
 
-        embed_dim = cross_attention.sq_embed_dim
-        self.embedding_layer = nn.Linear(embed_dim * 2, embed_dim)
+        # This layer was in the original plan but might not be needed if
+        # the heads can handle the fused embedding dimension directly.
+        # Let's assume the heads take the raw concatenated dimension.
+        # For now, we will bypass this extra layer as it might complicate things.
+        # embed_dim = cross_attention.sq_embed_dim
+        # self.embedding_layer = nn.Linear(embed_dim * 2, embed_dim)
 
 
     def forward(self,
@@ -48,42 +52,55 @@ class ChessNetwork(nn.Module):
                           Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]]:
         """
         Forward pass for the full network.
-        Assumes inputs are unbatched and handles batching internally.
         """
         square_embeddings = self.square_gnn(square_features, square_edge_index)
         piece_embeddings = self.piece_gnn(piece_features, piece_edge_index)
 
-        batched_attention_weights = None # Will hold shape (1, 64, N_pc)
+        batched_attention_weights = None
         attended_square_embeddings = torch.zeros_like(square_embeddings)
 
         if piece_embeddings.numel() > 0:
+            # Add a batch dimension of 1 for the attention module
             square_embeddings_b = square_embeddings.unsqueeze(1)
             piece_embeddings_b = piece_embeddings.unsqueeze(1)
 
-            attention_result, weights_b = self.cross_attention(
+            # --- CORRECTED LOGIC ---
+            # Call the attention module and handle its output based on the flag.
+            attention_output = self.cross_attention(
                 square_embeddings=square_embeddings_b,
                 piece_embeddings=piece_embeddings_b,
                 return_attention_weights=return_attention
             )
+            
+            if return_attention:
+                # If we asked for weights, unpack the two results
+                attention_result, weights_b = attention_output
+                if weights_b is not None:
+                    batched_attention_weights = weights_b
+            else:
+                # Otherwise, the single result is the tensor
+                attention_result = attention_output
+            
+            # Remove the batch dimension
             attended_square_embeddings = attention_result.squeeze(1)
 
-            if return_attention and weights_b is not None:
-                # *** CORRECTION: Keep the batched weights ***
-                batched_attention_weights = weights_b # This is already shape (1, 64, N_pc)
-
-        combined_embeddings = torch.cat([square_embeddings, attended_square_embeddings], dim=1)
-        fused_embeddings = self.embedding_layer(combined_embeddings)
-
+        # The original plan included a fusion layer. A simpler starting point is
+        # to just use the attended square embeddings directly. This is a common
+        # architecture (e.g., "use the output of the transformer").
+        # The heads are designed to take this embedding dimension.
+        fused_embeddings = attended_square_embeddings
+        
+        # Add a batch dimension for the heads
         fused_embeddings_for_heads = fused_embeddings.unsqueeze(0)
 
         policy_logits_b = self.policy_head(fused_embeddings_for_heads)
         value_b = self.value_head(fused_embeddings_for_heads)
 
+        # Remove batch dimension for the final output
         policy_logits = policy_logits_b.squeeze(0)
         final_value = value_b.squeeze(0)
 
         if return_attention:
-            # Return the batched weights as the model's raw output
             return policy_logits, final_value, batched_attention_weights
         else:
             return policy_logits, final_value
