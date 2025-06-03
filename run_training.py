@@ -1,6 +1,6 @@
 import os
 import torch
-from pathlib import Path # Import Path for the data manager
+from pathlib import Path
 
 # Core components from the gnn_agent package
 from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
@@ -24,9 +24,8 @@ def main():
         "learning_rate": 0.001,
         "mcts_simulations": 50,
         "epochs_per_batch": 1,
-        
-        # NOTE: batch_size is now implicit, as we train on one game's data at a time.
-        # "batch_size": 64, # This is no longer used by the data manager logic
+        "temperature": 1.0,  # NEW: For exploration during self-play
+        "temp_decay_moves": 30, # NEW: Number of moves to use temperature for
 
         # Checkpointing
         "checkpoint_dir": "checkpoints/",
@@ -34,10 +33,9 @@ def main():
 
         # Data Management
         "training_data_dir": "training_data/",
-        # "max_data_files": 20, # This is no longer used by the data manager logic
 
         # Stockfish Engine - IMPORTANT: UPDATE THIS PATH
-        "stockfish_path": "/usr/games/stockfish", # CHANGE THIS
+        "stockfish_path": "/usr/games/stockfish",
 
         # Neural Network Architecture
         "gnn_input_features": 12,
@@ -64,10 +62,17 @@ def main():
     # Instantiate MCTS
     mcts = MCTS(network=chess_network, device=config["device"])
 
-    # Instantiate SelfPlay (assuming the fix from last turn is applied)
-    self_play = SelfPlay(mcts_white=mcts, mcts_black=mcts, stockfish_path=config["stockfish_path"], num_simulations=config["mcts_simulations"])
+    # MODIFIED: Instantiate SelfPlay with new temperature parameters
+    self_play = SelfPlay(
+        mcts_white=mcts, 
+        mcts_black=mcts, 
+        stockfish_path=config["stockfish_path"], 
+        num_simulations=config["mcts_simulations"],
+        temperature=config["temperature"],
+        temp_decay_moves=config["temp_decay_moves"]
+    )
 
-    # Instantiate TrainingDataManager with the correct parameter name and type
+    # Instantiate TrainingDataManager
     training_data_manager = TrainingDataManager(
         data_directory=Path(config["training_data_dir"])
     )
@@ -84,7 +89,7 @@ def main():
         print("Starting training from scratch.")
         start_game = 0
 
-    # --- 4. Main Training Loop (adapted for the simpler TrainingDataManager) ---
+    # --- 4. Main Training Loop ---
     for game_num in range(start_game + 1, config["total_games"] + 1):
         print(f"\n--- Starting Game {game_num} of {config['total_games']} ---")
 
@@ -96,14 +101,13 @@ def main():
             continue
         print(f"Self-play complete. Generated {len(training_examples)} examples.")
 
-        # b. Save the new data with a unique filename
+        # b. Save the new data
         data_filename = f"game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
 
-        # c. For training, we will use the data from the game we just played
+        # c. Train the network on the data from the game just played
         batch_data = training_examples
         
-        # d. Train the network on the batch
         print(f"Training on the {len(batch_data)} examples from game {game_num}...")
         for epoch in range(config["epochs_per_batch"]):
             print(f"Starting training epoch {epoch + 1}/{config['epochs_per_batch']}...")
