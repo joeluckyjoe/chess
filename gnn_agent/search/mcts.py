@@ -55,12 +55,10 @@ class MCTS:
             return
         children_moves = sorted(node.children.keys(), key=lambda m: m.uci())
         children_nodes = [node.children[move] for move in children_moves]
-        # THIS IS THE FIX: Using .P instead of .prior_p
         priors = np.array([child.P for child in children_nodes])
         noise = np.random.dirichlet([self.dirichlet_alpha] * len(priors))
         noisy_priors = (1 - self.dirichlet_epsilon) * priors + self.dirichlet_epsilon * noise
         for i, child in enumerate(children_nodes):
-            # THIS IS THE FIX: Using .P instead of .prior_p
             child.P = noisy_priors[i]
 
     def _backpropagate(self, node: MCTSNode, value: float):
@@ -88,7 +86,9 @@ class MCTS:
                 best_move = max(current_node.children, key=lambda move: current_node.children[move].uct_value(self.c_puct))
                 sim_board.push(best_move)
                 current_node = current_node.children[best_move]
-            if not sim_board.is__game_over():
+
+            # --- MODIFIED: Corrected the typo from is__game_over to is_game_over ---
+            if not sim_board.is_game_over():
                 self._expand_and_evaluate(current_node, sim_board)
             else:
                 outcome = sim_board.outcome()
@@ -113,7 +113,6 @@ class MCTS:
                 else:
                     mcts_policy_dict[move] = 0.0
         else:
-            # Fallback logic simplified for brevity
             if root_legal_moves:
                 prob = 1.0 / len(root_legal_moves)
                 for move in root_legal_moves:
