@@ -1,6 +1,5 @@
-# config.py
+# config.py (Simplified for Colab Workflow)
 
-import sys
 import os
 from pathlib import Path
 
@@ -8,29 +7,32 @@ def get_paths():
     """
     Detects if running in Google Colab and returns appropriate paths for data and checkpoints.
     
-    If in Colab, it mounts Google Drive and sets paths to a 'ChessMCTS_RL' folder
-    within Drive. If not in Colab, it uses local paths.
+    This version ASSUMES that if running in Colab, Google Drive has already been
+    mounted to /content/drive in an interactive notebook cell.
     
     Returns:
         tuple: A tuple containing (checkpoints_path, training_data_path)
     """
-    # More robust check for Google Colab
+    # Check for a Colab environment variable
     if 'COLAB_GPU' in os.environ:
-        print("Running in Google Colab. Mounting Google Drive...")
-        from google.colab import drive
-        drive.mount('/content/drive')
+        print("Colab environment detected. Using pre-mounted Google Drive paths.")
         
-        # Define a base path in your Google Drive
+        # We assume the drive is already mounted at /content/drive
         base_drive_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
         checkpoints_path = base_drive_path / 'checkpoints'
         training_data_path = base_drive_path / 'training_data'
         
-        print(f"Data will be saved to: {base_drive_path}")
-        
+        if not Path('/content/drive').is_dir():
+             raise IOError(
+                "Google Drive is not mounted. Please mount it in a Colab cell "
+                "before running the script using: from google.colab import drive; "
+                "drive.mount('/content/drive')"
+            )
+            
     else:
         print("Running locally.")
         # Use local paths relative to the project root
-        base_path = Path(__file__).resolve().parent.parent # Resolves to project root from config/
+        base_path = Path(__file__).resolve().parent.parent
         checkpoints_path = base_path / 'checkpoints'
         training_data_path = base_path / 'training_data'
 
