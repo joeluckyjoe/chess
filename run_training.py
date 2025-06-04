@@ -34,6 +34,7 @@ def main():
         "epochs_per_batch": 1,
         "temperature": 1.0,
         "temp_decay_moves": 30,
+        "print_move_timers": False, # NEW: Set to False for cleaner logs
 
         # Checkpointing
         "save_checkpoint_every_n_games": 10,
@@ -49,7 +50,6 @@ def main():
         "policy_head_out_moves": 4672,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
     }
-    # MODIFIED: Removed hardcoded "checkpoint_dir" and "training_data_dir"
     print(f"Using device: {config['device']}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     print(f"Training data will be saved to: {training_data_path}")
@@ -69,17 +69,18 @@ def main():
     # Instantiate MCTS
     mcts = MCTS(network=chess_network, device=config["device"])
 
-    # Instantiate SelfPlay with temperature parameters
+    # MODIFIED: Instantiate SelfPlay with new timer parameter
     self_play = SelfPlay(
         mcts_white=mcts, 
         mcts_black=mcts, 
         stockfish_path=config["stockfish_path"], 
         num_simulations=config["mcts_simulations"],
         temperature=config["temperature"],
-        temp_decay_moves=config["temp_decay_moves"]
+        temp_decay_moves=config["temp_decay_moves"],
+        print_move_timers=config["print_move_timers"] # NEW
     )
 
-    # --- MODIFIED: Instantiate TrainingDataManager with the dynamic path ---
+    # Instantiate TrainingDataManager with the dynamic path
     training_data_manager = TrainingDataManager(
         data_directory=training_data_path
     )
@@ -89,7 +90,6 @@ def main():
 
     # --- 4. Load Checkpoint to Resume Training ---
     print("Attempting to load the latest checkpoint...")
-    # --- MODIFIED: Use the dynamic path variable ---
     start_game = trainer.load_checkpoint(checkpoints_path)
     if start_game > 0:
         print(f"Resuming training from game {start_game + 1}")
@@ -125,7 +125,6 @@ def main():
         # d. Save a checkpoint periodically
         if game_num % config["save_checkpoint_every_n_games"] == 0:
             print(f"Saving checkpoint at game {game_num}...")
-            # --- MODIFIED: Use the dynamic path variable ---
             trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
 
     print("\n--- Training Run Finished ---")

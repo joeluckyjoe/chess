@@ -4,7 +4,7 @@ from typing import List, Tuple, Dict, Any
 import time
 import chess.pgn
 from datetime import datetime
-import random # NEW: For temperature sampling
+import random 
 
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
@@ -14,8 +14,8 @@ class SelfPlay:
     Orchestrates a single game of self-play between two MCTS agents,
     generating training data.
     """
-    # MODIFIED: __init__ to accept temperature parameters
-    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str, num_simulations: int, temperature: float = 1.0, temp_decay_moves: int = 30):
+    # MODIFIED: __init__ to accept timer configuration
+    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str, num_simulations: int, temperature: float = 1.0, temp_decay_moves: int = 30, print_move_timers: bool = False):
         """
         Initializes a self-play game.
 
@@ -26,14 +26,16 @@ class SelfPlay:
             num_simulations: The number of MCTS simulations to run per move.
             temperature (float): The temperature for sampling moves, encouraging exploration.
             temp_decay_moves (int): The number of moves after which temperature becomes 0 (greedy).
+            print_move_timers (bool): Whether to print timing information for each move.
         """
         self.mcts_white = mcts_white
         self.mcts_black = mcts_black
         self.game = StockfishCommunicator(stockfish_path)
         self.game.perform_handshake()
         self.num_simulations = num_simulations
-        self.temperature = temperature # NEW
-        self.temp_decay_moves = temp_decay_moves # NEW
+        self.temperature = temperature 
+        self.temp_decay_moves = temp_decay_moves
+        self.print_move_timers = print_move_timers # NEW
 
     def play_game(self) -> List[Tuple[Any, Dict[chess.Move, float], float]]:
         """
@@ -50,20 +52,27 @@ class SelfPlay:
 
         while not self.game.is_game_over():
             move_count += 1
-            loop_start_time = time.time()
+            
+            # Conditionally time the move loop
+            if self.print_move_timers:
+                loop_start_time = time.time()
 
             current_player_mcts = self.mcts_white if self.game.board.turn == chess.WHITE else self.mcts_black
             turn_before_move = self.game.board.turn
 
-            mcts_start_time = time.time()
+            if self.print_move_timers:
+                mcts_start_time = time.time()
+
             # MCTS search returns the policy (move probabilities) and the raw GNN input
             policy, _, board_tensor = current_player_mcts.run_search(
                 self.game.board.copy(),
                 self.num_simulations
             )
-            mcts_duration = time.time() - mcts_start_time
             
-            # --- START: NEW Temperature-based Move Selection ---
+            if self.print_move_timers:
+                mcts_duration = time.time() - mcts_start_time
+            
+            # --- START: Temperature-based Move Selection ---
             move_to_play = None
             if policy: # Ensure the policy dictionary is not empty
                 moves = list(policy.keys())
@@ -71,23 +80,24 @@ class SelfPlay:
 
                 if move_count <= self.temp_decay_moves:
                     # EXPLORATION: Sample a move based on the policy probabilities
-                    # The random.choices function is perfect for weighted sampling
                     move_to_play = random.choices(moves, weights=move_probs, k=1)[0]
                 else:
                     # EXPLOITATION: Choose the best move (highest probability)
                     best_move_index = move_probs.index(max(move_probs))
                     move_to_play = moves[best_move_index]
-            # --- END: NEW Temperature-based Move Selection ---
+            # --- END: Temperature-based Move Selection ---
             
             if move_to_play is None:
                 print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
                 break
             
             game_history.append((board_tensor, policy, turn_before_move))
-            self.game.make_move(move_to_play.uci()) # MODIFIED: Use the move we selected
+            self.game.make_move(move_to_play.uci())
 
-            loop_duration = time.time() - loop_start_time
-            print(f"[TIMER] Move {move_count}: MCTS search took {mcts_duration:.4f}s. Full loop took {loop_duration:.4f}s.")
+            # MODIFIED: Wrap the timer print statement in a conditional block
+            if self.print_move_timers:
+                loop_duration = time.time() - loop_start_time
+                print(f"[TIMER] Move {move_count}: MCTS search took {mcts_duration:.4f}s. Full loop took {loop_duration:.4f}s.")
 
         # --- Game is Over ---
         
