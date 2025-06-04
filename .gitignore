@@ -1,26 +1,63 @@
-# Python
+# =================================================================
+# Standard Python, IDE, and OS Files (from your original file)
+# =================================================================
+
+# Python Byte-compiled / optimized files
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
 .Python
 
-# Virtual environment
+# Virtual environments
 .venv/
 venv/
 ENV/
 env/
-# If you use pipenv or poetry
+
+# Dependency manager lock files
 Pipfile.lock
 poetry.lock
+
 # IDEs and editors
+# Your custom VSCode rules are preserved
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 *.sublime-workspace
+.idea/
+*.swp
 
-# Secrets - better to use environment variables or a .env file that's gitignored
+# Secrets
 .env
-```
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =================================================================
+# Project-Specific Generated Files (NEW)
+# =================================================================
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Generated training data from self-play
+training_data/
+
+# Saved model checkpoints
+checkpoints/
+
+# Generated visualizations and test outputs
+# This will ignore the .png files in your root directory
+*.png
+test_outputs/
