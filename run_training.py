@@ -2,6 +2,9 @@ import os
 import torch
 from pathlib import Path
 
+# --- NEW: Import the environment-aware path utility ---
+from config import get_paths
+
 # Core components from the gnn_agent package
 from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
 from gnn_agent.neural_network.attention_module import CrossAttentionModule
@@ -17,24 +20,25 @@ def main():
     Main training loop for the MCTS RL Chess Agent.
     Orchestrates self-play, data management, and network training.
     """
-    # --- 1. Configuration ---
+    # --- 1. Get Environment-Aware Paths ---
+    # This will detect if we are in Colab, mount Google Drive if necessary,
+    # and return the correct paths for data and checkpoints.
+    checkpoints_path, training_data_path = get_paths()
+
+    # --- 2. Configuration ---
     config = {
         # Training Run Parameters
         "total_games": 1000,
         "learning_rate": 0.001,
         "mcts_simulations": 50,
         "epochs_per_batch": 1,
-        "temperature": 1.0,  # NEW: For exploration during self-play
-        "temp_decay_moves": 30, # NEW: Number of moves to use temperature for
+        "temperature": 1.0,
+        "temp_decay_moves": 30,
 
         # Checkpointing
-        "checkpoint_dir": "checkpoints/",
         "save_checkpoint_every_n_games": 10,
 
-        # Data Management
-        "training_data_dir": "training_data/",
-
-        # Stockfish Engine - IMPORTANT: UPDATE THIS PATH
+        # Stockfish Engine - IMPORTANT: UPDATE THIS PATH IF NEEDED
         "stockfish_path": "/usr/games/stockfish",
 
         # Neural Network Architecture
@@ -45,9 +49,12 @@ def main():
         "policy_head_out_moves": 4672,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
     }
+    # MODIFIED: Removed hardcoded "checkpoint_dir" and "training_data_dir"
     print(f"Using device: {config['device']}")
+    print(f"Checkpoints will be saved to: {checkpoints_path}")
+    print(f"Training data will be saved to: {training_data_path}")
 
-    # --- 2. Initialize All Components ---
+    # --- 3. Initialize All Components ---
 
     # Instantiate network sub-modules
     square_gnn = SquareGNN(in_features=config["gnn_input_features"], hidden_features=config["gnn_hidden_features"], out_features=config["gnn_output_features"], heads=config["attention_heads"])
@@ -62,7 +69,7 @@ def main():
     # Instantiate MCTS
     mcts = MCTS(network=chess_network, device=config["device"])
 
-    # MODIFIED: Instantiate SelfPlay with new temperature parameters
+    # Instantiate SelfPlay with temperature parameters
     self_play = SelfPlay(
         mcts_white=mcts, 
         mcts_black=mcts, 
@@ -72,24 +79,25 @@ def main():
         temp_decay_moves=config["temp_decay_moves"]
     )
 
-    # Instantiate TrainingDataManager
+    # --- MODIFIED: Instantiate TrainingDataManager with the dynamic path ---
     training_data_manager = TrainingDataManager(
-        data_directory=Path(config["training_data_dir"])
+        data_directory=training_data_path
     )
     
     # Instantiate Trainer
     trainer = Trainer(network=chess_network, learning_rate=config["learning_rate"], device=config["device"])
 
-    # --- 3. Load Checkpoint to Resume Training ---
+    # --- 4. Load Checkpoint to Resume Training ---
     print("Attempting to load the latest checkpoint...")
-    start_game = trainer.load_checkpoint(config["checkpoint_dir"])
+    # --- MODIFIED: Use the dynamic path variable ---
+    start_game = trainer.load_checkpoint(checkpoints_path)
     if start_game > 0:
         print(f"Resuming training from game {start_game + 1}")
     else:
         print("Starting training from scratch.")
         start_game = 0
 
-    # --- 4. Main Training Loop ---
+    # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config["total_games"] + 1):
         print(f"\n--- Starting Game {game_num} of {config['total_games']} ---")
 
@@ -114,10 +122,11 @@ def main():
             policy_loss, value_loss = trainer.train_on_batch(batch_data)
             print(f"Epoch {epoch + 1} complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
 
-        # e. Save a checkpoint periodically
+        # d. Save a checkpoint periodically
         if game_num % config["save_checkpoint_every_n_games"] == 0:
             print(f"Saving checkpoint at game {game_num}...")
-            trainer.save_checkpoint(directory=config["checkpoint_dir"], game_number=game_num)
+            # --- MODIFIED: Use the dynamic path variable ---
+            trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
 
     print("\n--- Training Run Finished ---")
 
