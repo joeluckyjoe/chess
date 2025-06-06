@@ -1,4 +1,4 @@
-# evaluate_agent.py (Final Version)
+# evaluate_agent.py (Final, Refactored Version)
 
 import torch
 import chess
@@ -7,6 +7,7 @@ import datetime
 import os
 from pathlib import Path
 import time
+import argparse # <<< NEW: Import library for command-line arguments
 
 # --- Module Imports ---
 from config import get_paths
@@ -22,19 +23,16 @@ CHECKPOINTS_DIR, DATA_DIR = get_paths()
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- Evaluation Parameters ---
-# The checkpoint you want to evaluate
-MODEL_CHECKPOINT_FILENAME = "checkpoint_game_1000_20250605_184448.pth.tar" 
-# Note: For this script to work, this checkpoint MUST have been saved with the updated Trainer
-# that includes 'config_params'. If not, you must regenerate it or use the hardcoding method.
+# <<< REMOVED: The hardcoded MODEL_CHECKPOINT_FILENAME is now a command-line argument >>>
 
-MCTS_SIMULATIONS_PER_MOVE = 100   # For our agent
-STOCKFISH_GO_COMMAND_DEPTH = 5    # Using "go depth X" for Stockfish
-STOCKFISH_TIMEOUT_SECONDS = 20    # Timeout for Stockfish to find a move
-NUM_EVALUATION_GAMES = 20         # Total games (will be split for colors)
+MCTS_SIMULATIONS_PER_MOVE = 100      # For our agent
+STOCKFISH_GO_COMMAND_DEPTH = 5      # Using "go depth X" for Stockfish
+STOCKFISH_TIMEOUT_SECONDS = 20      # Timeout for Stockfish to find a move
+NUM_EVALUATION_GAMES = 20           # Total games (will be split for colors)
 
 # --- Helper Functions ---
 
-def load_agent_from_checkpoint(checkpoint_path: Path) -> ChessNetwork:
+def load_agent_from_checkpoint(checkpoint_path: Path) -> tuple[ChessNetwork, dict]:
     """
     Loads the ChessNetwork model from a checkpoint by first reconstructing
     its architecture from the saved configuration parameters.
@@ -94,7 +92,7 @@ def load_agent_from_checkpoint(checkpoint_path: Path) -> ChessNetwork:
 def initialize_stockfish_player(stockfish_exe_path: str) -> StockfishCommunicator:
     """Initializes StockfishCommunicator and performs handshake."""
     if not stockfish_exe_path or not Path(stockfish_exe_path).is_file():
-         raise FileNotFoundError(f"Stockfish executable not found at '{stockfish_exe_path}'")
+           raise FileNotFoundError(f"Stockfish executable not found at '{stockfish_exe_path}'")
 
     print(f"Initializing Stockfish (path: {stockfish_exe_path})...")
     sf_comm = StockfishCommunicator(stockfish_path=stockfish_exe_path)
@@ -128,13 +126,11 @@ def play_evaluation_game(our_agent_color_is_white, mcts_player, stockfish_player
     pgn_game_handler.headers["White"] = "MCTS_Agent" if our_agent_color_is_white else f"Stockfish_D{STOCKFISH_GO_COMMAND_DEPTH}"
     pgn_game_handler.headers["Black"] = f"Stockfish_D{STOCKFISH_GO_COMMAND_DEPTH}" if our_agent_color_is_white else "MCTS_Agent"
     
-    current_pgn_node = pgn_game_handler 
+    current_pgn_node = pgn_game_handler
 
-    move_counter = 0
     while not game_board.is_game_over(claim_draw=True):
-        move_counter += 1
         is_mcts_turn = (game_board.turn == chess.WHITE and our_agent_color_is_white) or \
-                       (game_board.turn == chess.BLACK and not our_agent_color_is_white)
+                         (game_board.turn == chess.BLACK and not our_agent_color_is_white)
         
         player_name = "MCTS Agent" if is_mcts_turn else f"Stockfish_D{STOCKFISH_GO_COMMAND_DEPTH}"
         
@@ -166,9 +162,10 @@ def play_evaluation_game(our_agent_color_is_white, mcts_player, stockfish_player
     elif final_result_str == "0-1": return -1 if our_agent_color_is_white else 1
     return 0
 
-def run_evaluation():
+# <<< NEW: `run_evaluation` now accepts the checkpoint filename as an argument >>>
+def run_evaluation(checkpoint_filename: str):
     """Main function to run the full evaluation process."""
-    eval_run_name = f"eval_g1000_vs_sf_depth{STOCKFISH_GO_COMMAND_DEPTH}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    eval_run_name = f"eval_{Path(checkpoint_filename).stem}_vs_sf_depth{STOCKFISH_GO_COMMAND_DEPTH}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     pgn_save_dir = DATA_DIR / "evaluation_runs" / eval_run_name
 
     print(f"Starting evaluation run: {eval_run_name}")
@@ -178,7 +175,8 @@ def run_evaluation():
 
     stockfish_player = None
     try:
-        model_checkpoint_path = CHECKPOINTS_DIR / MODEL_CHECKPOINT_FILENAME
+        # <<< MODIFIED: Use the function argument instead of the global variable >>>
+        model_checkpoint_path = CHECKPOINTS_DIR / checkpoint_filename
         agent_model, loaded_config = load_agent_from_checkpoint(model_checkpoint_path)
         
         stockfish_path = loaded_config.get("stockfish_path", "/usr/games/stockfish")
@@ -224,5 +222,15 @@ def run_evaluation():
             stockfish_player.close()
         print("Evaluation script finished.")
 
+# <<< NEW: Main execution block to parse command-line arguments >>>
 if __name__ == "__main__":
-    run_evaluation()
+    parser = argparse.ArgumentParser(description="Evaluate a trained chess agent against Stockfish.")
+    parser.add_argument(
+        "-c", "--checkpoint",
+        type=str,
+        required=True,
+        help="Filename of the agent's checkpoint file (must be in the checkpoints directory)."
+    )
+    args = parser.parse_args()
+    
+    run_evaluation(checkpoint_filename=args.checkpoint)

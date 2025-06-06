@@ -1,12 +1,13 @@
-# gnn_agent/rl_loop/trainer.py (Updated)
+# gnn_agent/rl_loop/trainer.py (Corrected)
 
 import torch
 import os
 from datetime import datetime
+from pathlib import Path # <<< FIX: Added the missing import
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import MSELoss
-from typing import Dict, List, Tuple, Any, Optional # Added Optional
+from typing import Dict, List, Tuple, Any, Optional
 import chess
 
 from ..neural_network.chess_network import ChessNetwork
