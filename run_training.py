@@ -86,7 +86,7 @@ def main():
     )
     
     # Instantiate Trainer
-    trainer = Trainer(network=chess_network, learning_rate=config["learning_rate"], device=config["device"])
+    trainer = Trainer(network=chess_network, model_config=config, learning_rate=config["learning_rate"], device=config["device"])
 
     # --- 4. Load Checkpoint to Resume Training ---
     print("Attempting to load the latest checkpoint...")
