@@ -3,11 +3,11 @@ import pickle
 import pandas as pd
 from tqdm import tqdm
 import re
+import torch # <--- ADD THIS IMPORT
 
 def get_project_root():
     """
     Determines the project root directory based on the execution environment.
-    Checks for a Google Colab environment, otherwise assumes a local environment.
     """
     colab_path = '/content/drive/MyDrive/ChessMCTS_RL'
     if os.path.exists('/content/drive'):
@@ -15,7 +15,6 @@ def get_project_root():
         return colab_path
     else:
         print("Local environment detected.")
-        # Assumes the script is run from the project's root directory
         return '.'
 
 # --- Configuration ---
@@ -24,7 +23,7 @@ TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, 'training_data')
 OUTPUT_CSV = os.path.join(PROJECT_ROOT, 'training_losses.csv')
 
 def get_game_number_from_filename(filename):
-    """Extracts the game number from a filename like 'game_123_data.pkl'."""
+    """Extracts the game number from a filename."""
     match = re.search(r'game_(\d+)_data\.pkl', filename)
     if match:
         return int(match.group(1))
@@ -60,17 +59,19 @@ def aggregate_loss_data(data_dir, output_file):
 
         file_path = os.path.join(data_dir, filename)
         try:
-            with open(file_path, 'rb') as f:
-                game_data = pickle.load(f)
-                
-                if 'policy_loss' in game_data and 'value_loss' in game_data:
-                    loss_records.append({
-                        'game': game_num,
-                        'policy_loss': game_data['policy_loss'],
-                        'value_loss': game_data['value_loss']
-                    })
-                else:
-                    print(f"Warning: Loss data not found in {filename}")
+            # --- THIS IS THE FIX ---
+            # Use torch.load with map_location to handle GPU/CPU mismatch
+            game_data = torch.load(file_path, map_location=torch.device('cpu'))
+            # --- END OF FIX ---
+            
+            if 'policy_loss' in game_data and 'value_loss' in game_data:
+                loss_records.append({
+                    'game': game_num,
+                    'policy_loss': game_data['policy_loss'],
+                    'value_loss': game_data['value_loss']
+                })
+            else:
+                print(f"Warning: Loss data not found in {filename}")
 
         except Exception as e:
             print(f"Warning: Could not process file {filename}. Error: {e}. Skipping.")
