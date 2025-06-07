@@ -52,7 +52,7 @@ dist/
 *.egg-info/
 
 # Generated training data from self-play
-training_data/
+#training_data/
 
 # Saved model checkpoints
 checkpoints/
