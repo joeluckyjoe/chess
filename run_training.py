@@ -9,7 +9,7 @@ from config import get_paths, config_params
 from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
 from gnn_agent.neural_network.attention_module import CrossAttentionModule
 from gnn_agent.neural_network.policy_value_heads import PolicyHead, ValueHead
-from gnn_agent.neural_network.chess_network import ChessNetwork
+from gn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
@@ -68,7 +68,8 @@ def main():
     ).to(device)
 
     # Instantiate MCTS
-    mcts = MCTS(network=chess_network, device=device, cpuct=config_params['CPUCT'])
+    # --- MODIFIED: Changed 'cpuct' to 'c_puct' to match the MCTS class constructor ---
+    mcts = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'])
 
     # Instantiate SelfPlay
     self_play = SelfPlay(
