@@ -4,9 +4,24 @@ import pandas as pd
 from tqdm import tqdm
 import re
 
+def get_project_root():
+    """
+    Determines the project root directory based on the execution environment.
+    Checks for a Google Colab environment, otherwise assumes a local environment.
+    """
+    colab_path = '/content/drive/MyDrive/ChessMCTS_RL'
+    if os.path.exists('/content/drive'):
+        print("Colab environment detected.")
+        return colab_path
+    else:
+        print("Local environment detected.")
+        # Assumes the script is run from the project's root directory
+        return '.'
+
 # --- Configuration ---
-TRAINING_DATA_DIR = 'training_data'
-OUTPUT_CSV = 'training_losses.csv'
+PROJECT_ROOT = get_project_root()
+TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, 'training_data')
+OUTPUT_CSV = os.path.join(PROJECT_ROOT, 'training_losses.csv')
 
 def get_game_number_from_filename(filename):
     """Extracts the game number from a filename like 'game_123_data.pkl'."""
@@ -23,17 +38,20 @@ def aggregate_loss_data(data_dir, output_file):
     
     if not os.path.exists(data_dir):
         print(f"Error: Data directory '{data_dir}' not found.")
+        if '/content/drive' in data_dir:
+             print("Please check that your Google Drive is mounted and the project path is correct.")
+        else:
+            print("Please ensure you are running this script from the project's root directory.")
         return
 
     try:
         filenames = [f for f in os.listdir(data_dir) if f.startswith('game_') and f.endswith('_data.pkl')]
-        # Sort files numerically based on the extracted game number
         filenames.sort(key=get_game_number_from_filename)
     except FileNotFoundError:
-        print(f"Error: Could not list files in '{data_dir}'. Make sure the path is correct.")
+        print(f"Error: Could not list files in '{data_dir}'.")
         return
 
-    print(f"Found {len(filenames)} game data files. Aggregating...")
+    print(f"Found {len(filenames)} game data files in '{data_dir}'. Aggregating...")
 
     for filename in tqdm(filenames, desc="Processing Game Files"):
         game_num = get_game_number_from_filename(filename)
@@ -43,7 +61,6 @@ def aggregate_loss_data(data_dir, output_file):
         file_path = os.path.join(data_dir, filename)
         try:
             with open(file_path, 'rb') as f:
-                # The training script saves a dictionary containing the losses
                 game_data = pickle.load(f)
                 
                 if 'policy_loss' in game_data and 'value_loss' in game_data:
@@ -62,7 +79,6 @@ def aggregate_loss_data(data_dir, output_file):
         print("No loss records were aggregated. Cannot create CSV.")
         return
 
-    # Create a DataFrame and save to the specified CSV file
     df = pd.DataFrame(loss_records)
     df.to_csv(output_file, index=False)
     print(f"\nSuccessfully aggregated data from {len(df)} games into {output_file}")
