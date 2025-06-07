@@ -3,6 +3,37 @@
 import os
 from pathlib import Path
 
+# =================================================================
+# 1. Hyperparameter Configuration
+# =================================================================
+
+config_params = {
+    # -- General & Path Settings --
+    "DEVICE": "auto",  # Use "auto" to detect CUDA, or force "cpu"
+    "STOCKFISH_PATH": "/usr/games/stockfish",
+
+    # -- Self-Play & MCTS Settings --
+    "NUM_SELF_PLAY_GAMES": 1000,
+    "CHECKPOINT_INTERVAL": 10,  # Save a checkpoint every N games
+    "MCTS_SIMULATIONS": 50,     # Number of MCTS simulations per move
+    "CPUCT": 1.25,              # Exploration constant in MCTS
+
+    # -- Neural Network & Training Settings --
+    "LEARNING_RATE": 0.0001,  # LEARNING_RATE changed from 0.001 to 0.0001
+    "WEIGHT_DECAY": 0.0001,   # L2 regularization
+    "TRAINING_EPOCHS": 1,     # Epochs per training session (after each game)
+    "BATCH_SIZE": 64,
+
+    # -- Evaluation Settings --
+    "EVALUATION_GAMES": 20,
+    "EVALUATION_STOCKFISH_DEPTH": 5,
+}
+
+
+# =================================================================
+# 2. Path Configuration (Colab-aware)
+# =================================================================
+
 def get_paths():
     """
     Detects if running in Google Colab and returns appropriate paths for data and checkpoints.
@@ -23,16 +54,16 @@ def get_paths():
         training_data_path = base_drive_path / 'training_data'
         
         if not Path('/content/drive').is_dir():
-             raise IOError(
-                "Google Drive is not mounted. Please mount it in a Colab cell "
-                "before running the script using: from google.colab import drive; "
-                "drive.mount('/content/drive')"
-            )
+                raise IOError(
+                    "Google Drive is not mounted. Please mount it in a Colab cell "
+                    "before running the script using: from google.colab import drive; "
+                    "drive.mount('/content/drive')"
+                )
             
     else:
         print("Running locally.")
         # Use local paths relative to the project root
-        base_path = Path(__file__).resolve().parent.parent
+        base_path = Path(__file__).resolve().parent
         checkpoints_path = base_path / 'checkpoints'
         training_data_path = base_path / 'training_data'
 

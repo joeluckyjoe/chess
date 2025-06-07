@@ -2,8 +2,8 @@ import os
 import torch
 from pathlib import Path
 
-# --- NEW: Import the environment-aware path utility ---
-from config import get_paths
+# --- MODIFIED: Import both config_params and get_paths from config ---
+from config import get_paths, config_params
 
 # Core components from the gnn_agent package
 from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
@@ -21,72 +21,79 @@ def main():
     Orchestrates self-play, data management, and network training.
     """
     # --- 1. Get Environment-Aware Paths ---
-    # This will detect if we are in Colab, mount Google Drive if necessary,
-    # and return the correct paths for data and checkpoints.
     checkpoints_path, training_data_path = get_paths()
+    
+    # --- 2. Configuration is now loaded from config.py ---
+    # The local 'config' dictionary has been removed. We now use 'config_params'.
+    device = config_params['DEVICE']
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # --- 2. Configuration ---
-    config = {
-        # Training Run Parameters
-        "total_games": 1000,
-        "learning_rate": 0.001,
-        "mcts_simulations": 50,
-        "epochs_per_batch": 1,
-        "temperature": 1.0,
-        "temp_decay_moves": 30,
-        "print_move_timers": False, # NEW: Set to False for cleaner logs
-
-        # Checkpointing
-        "save_checkpoint_every_n_games": 10,
-
-        # Stockfish Engine - IMPORTANT: UPDATE THIS PATH IF NEEDED
-        "stockfish_path": "/usr/games/stockfish",
-
-        # Neural Network Architecture
-        "gnn_input_features": 12,
-        "gnn_hidden_features": 256,
-        "gnn_output_features": 128,
-        "attention_heads": 4,
-        "policy_head_out_moves": 4672,
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
-    }
-    print(f"Using device: {config['device']}")
+    print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     print(f"Training data will be saved to: {training_data_path}")
 
-    # --- 3. Initialize All Components ---
+    # --- 3. Initialize All Components (using config_params) ---
 
-    # Instantiate network sub-modules
-    square_gnn = SquareGNN(in_features=config["gnn_input_features"], hidden_features=config["gnn_hidden_features"], out_features=config["gnn_output_features"], heads=config["attention_heads"])
-    piece_gnn = PieceGNN(in_channels=config["gnn_input_features"], hidden_channels=config["gnn_hidden_features"], out_channels=config["gnn_output_features"])
-    cross_attention = CrossAttentionModule(sq_embed_dim=config["gnn_output_features"], pc_embed_dim=config["gnn_output_features"], num_heads=config["attention_heads"])
-    policy_head = PolicyHead(embedding_dim=config["gnn_output_features"], num_possible_moves=config["policy_head_out_moves"])
-    value_head = ValueHead(embedding_dim=config["gnn_output_features"])
+    # Instantiate network sub-modules based on architecture params in config
+    square_gnn = SquareGNN(
+        in_features=12,  # Hardcoded for now, standard for our setup
+        hidden_features=256,
+        out_features=128,
+        heads=4
+    )
+    piece_gnn = PieceGNN(
+        in_channels=12, # Hardcoded for now
+        hidden_channels=256,
+        out_channels=128
+    )
+    cross_attention = CrossAttentionModule(
+        sq_embed_dim=128,
+        pc_embed_dim=128,
+        num_heads=4
+    )
+    policy_head = PolicyHead(
+        embedding_dim=128,
+        num_possible_moves=4672 # Hardcoded for now
+    )
+    value_head = ValueHead(embedding_dim=128)
 
     # Instantiate the main network
-    chess_network = ChessNetwork(square_gnn=square_gnn, piece_gnn=piece_gnn, cross_attention=cross_attention, policy_head=policy_head, value_head=value_head).to(config["device"])
+    chess_network = ChessNetwork(
+        square_gnn=square_gnn, 
+        piece_gnn=piece_gnn, 
+        cross_attention=cross_attention, 
+        policy_head=policy_head, 
+        value_head=value_head
+    ).to(device)
 
     # Instantiate MCTS
-    mcts = MCTS(network=chess_network, device=config["device"])
+    mcts = MCTS(network=chess_network, device=device, cpuct=config_params['CPUCT'])
 
-    # MODIFIED: Instantiate SelfPlay with new timer parameter
+    # Instantiate SelfPlay
     self_play = SelfPlay(
-        mcts_white=mcts, 
-        mcts_black=mcts, 
-        stockfish_path=config["stockfish_path"], 
-        num_simulations=config["mcts_simulations"],
-        temperature=config["temperature"],
-        temp_decay_moves=config["temp_decay_moves"],
-        print_move_timers=config["print_move_timers"] # NEW
+        mcts_white=mcts,
+        mcts_black=mcts,
+        stockfish_path=config_params['STOCKFISH_PATH'],
+        num_simulations=config_params['MCTS_SIMULATIONS'],
+        temperature=1.0, # Initial temperature, can be made configurable if needed
+        temp_decay_moves=30, # Can be made configurable
+        print_move_timers=False # Can be made configurable
     )
 
-    # Instantiate TrainingDataManager with the dynamic path
+    # Instantiate TrainingDataManager
     training_data_manager = TrainingDataManager(
         data_directory=training_data_path
     )
     
-    # Instantiate Trainer
-    trainer = Trainer(network=chess_network, model_config=config, learning_rate=config["learning_rate"], device=config["device"])
+    # Instantiate Trainer, passing the full config_params for checkpointing
+    trainer = Trainer(
+        network=chess_network,
+        model_config=config_params, 
+        learning_rate=config_params['LEARNING_RATE'],
+        weight_decay=config_params['WEIGHT_DECAY'],
+        device=device
+    )
 
     # --- 4. Load Checkpoint to Resume Training ---
     print("Attempting to load the latest checkpoint...")
@@ -98,8 +105,8 @@ def main():
         start_game = 0
 
     # --- 5. Main Training Loop ---
-    for game_num in range(start_game + 1, config["total_games"] + 1):
-        print(f"\n--- Starting Game {game_num} of {config['total_games']} ---")
+    for game_num in range(start_game + 1, config_params['NUM_SELF_PLAY_GAMES'] + 1):
+        print(f"\n--- Starting Game {game_num} of {config_params['NUM_SELF_PLAY_GAMES']} ---")
 
         # a. Generate data via self-play
         print("Generating training data through self-play...")
@@ -117,13 +124,13 @@ def main():
         batch_data = training_examples
         
         print(f"Training on the {len(batch_data)} examples from game {game_num}...")
-        for epoch in range(config["epochs_per_batch"]):
-            print(f"Starting training epoch {epoch + 1}/{config['epochs_per_batch']}...")
-            policy_loss, value_loss = trainer.train_on_batch(batch_data)
+        for epoch in range(config_params['TRAINING_EPOCHS']):
+            print(f"Starting training epoch {epoch + 1}/{config_params['TRAINING_EPOCHS']}...")
+            policy_loss, value_loss = trainer.train_on_batch(batch_data, batch_size=config_params['BATCH_SIZE'])
             print(f"Epoch {epoch + 1} complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
 
         # d. Save a checkpoint periodically
-        if game_num % config["save_checkpoint_every_n_games"] == 0:
+        if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
             trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
 
