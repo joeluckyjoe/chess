@@ -1,5 +1,3 @@
-# config.py (Simplified for Colab Workflow)
-
 import os
 from pathlib import Path
 
@@ -13,7 +11,8 @@ config_params = {
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Self-Play & MCTS Settings --
-    "NUM_SELF_PLAY_GAMES": 1000,
+    # --- MODIFIED: Increased game count for the second training run ---
+    "NUM_SELF_PLAY_GAMES": 2000,
     "CHECKPOINT_INTERVAL": 10,  # Save a checkpoint every N games
     "MCTS_SIMULATIONS": 50,     # Number of MCTS simulations per move
     "CPUCT": 1.25,              # Exploration constant in MCTS
