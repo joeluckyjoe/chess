@@ -49,7 +49,7 @@ def plot_changepoints(data: pd.Series, changepoints: list, title: str, ylabel: s
 
     Args:
         data (pd.Series): The data series that was analyzed.
-        changepoints (list): The list of changepoint indices.
+        changepoints (list): The list of changepoint game numbers.
         title (str): The title for the plot.
         ylabel (str): The label for the y-axis.
         output_filename (str): The filename to save the plot.
@@ -58,8 +58,8 @@ def plot_changepoints(data: pd.Series, changepoints: list, title: str, ylabel: s
     plt.figure(figsize=(16, 6))
     plt.plot(data.index, data.values, label=ylabel, alpha=0.8)
     
-    # The result includes the end of the series, so we exclude it for plotting
-    for cp in changepoints[:-1]:
+    # CORRECTED: The changepoints list passed here is already processed, so we iterate through all of it.
+    for cp in changepoints:
         plt.axvline(x=cp, color='r', linestyle='--', lw=2, label=f'Changepoint at Game {cp}')
 
     plt.title(title, fontsize=16)
@@ -91,24 +91,23 @@ def main():
     if df.empty:
         return
 
-    # For this univariate analysis, we focus on the value_loss.
-    # We use the game_number from the CSV as the index.
+    # Use the game_number from the CSV as the index.
     df.set_index('game_number', inplace=True)
     signal = df[TARGET_COLUMN].values
 
     # Analyze for Changepoints
     # The penalty `pen` is a hyperparameter. A higher value leads to fewer changepoints.
-    # We can tune this later, but 3 is a reasonable starting point.
-    changepoints = analyze_changepoints(signal, model="l2", pen=3)
+    changepoints_indices = analyze_changepoints(signal, model="l2", pen=3)
 
-    # Convert detected indices back to game numbers for clarity
-    changepoint_games = [df.index[i-1] for i in changepoints if i < len(df.index)]
+    # Convert detected indices back to game numbers for clarity.
+    # The result from ruptures includes an index for the end of the series, which we can ignore.
+    changepoint_games = [df.index[i-1] for i in changepoints_indices if i < len(df.index)]
     print(f"Changepoints detected near games: {changepoint_games}")
 
     # Plot Results
     plot_changepoints(
         data=df[TARGET_COLUMN],
-        changepoints=changepoint_games,
+        changepoints=changepoint_games, # Pass the final list of game numbers
         title=f'Changepoint Analysis of {TARGET_COLUMN.replace("_", " ").title()}',
         ylabel=TARGET_COLUMN.replace("_", " ").title(),
         output_filename=PLOT_OUTPUT_FILE
