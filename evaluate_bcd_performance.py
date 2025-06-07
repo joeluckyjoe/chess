@@ -1,125 +1,55 @@
 import pandas as pd
-import numpy as np
 import ruptures as rpt
 import matplotlib.pyplot as plt
 import time
-import os
 
-def load_training_data(filepath: str) -> pd.DataFrame:
+# --- Configuration ---
+CSV_PATH = 'training_losses.csv'
+TARGET_COLUMN = 'value_loss'
+# A smaller penalty value is more sensitive and better for finding subtle shifts,
+# which is ideal for our value_loss, as it's mostly zero.
+PENALTY_VALUE = 0.001 
+FIGURE_PATH = 'bcd_analysis_plot.png'
+
+def analyze_changepoints(csv_path, column_name, pen, figure_path):
     """
-    Loads training log data from a CSV file.
-
-    Args:
-        filepath (str): The path to the CSV file.
-
-    Returns:
-        pd.DataFrame: A DataFrame with training data.
+    Performs and visualizes Bayesian Changepoint Detection on training data.
     """
-    if not os.path.exists(filepath):
-        print(f"Error: File not found at {filepath}")
-        return pd.DataFrame() # Return empty dataframe
-
-    print(f"Loading training data from {filepath}...")
-    df = pd.read_csv(filepath)
-    print("Data loaded successfully.")
-    return df
-
-def analyze_changepoints(data: np.ndarray, model: str = "l2", pen: int = 3) -> list:
-    """
-    Performs changepoint detection on the provided data series.
-
-    Args:
-        data (np.ndarray): The 1D numpy array of data to analyze (e.g., value_loss).
-        model (str): The model to use for cost function (e.g., "l2", "rbf").
-        pen (int): The penalty value for the detection algorithm.
-
-    Returns:
-        list: A list of indices where changepoints are detected.
-    """
-    print("Performing Bayesian Changepoint Detection...")
-    # Using the Pelt search method for its efficiency and accuracy
-    algo = rpt.Pelt(model=model).fit(data)
-    result = algo.predict(pen=pen)
-    print(f"Changepoint detection complete. Found {len(result)-1} changepoint(s).")
-    return result
-
-def plot_changepoints(data: pd.Series, changepoints: list, title: str, ylabel: str, output_filename: str):
-    """
-    Plots the data series and marks the detected changepoints.
-
-    Args:
-        data (pd.Series): The data series that was analyzed.
-        changepoints (list): The list of changepoint game numbers.
-        title (str): The title for the plot.
-        ylabel (str): The label for the y-axis.
-        output_filename (str): The filename to save the plot.
-    """
-    print(f"Generating plot and saving to {output_filename}...")
-    plt.figure(figsize=(16, 6))
-    plt.plot(data.index, data.values, label=ylabel, alpha=0.8)
-    
-    # CORRECTED: The changepoints list passed here is already processed, so we iterate through all of it.
-    for cp in changepoints:
-        plt.axvline(x=cp, color='r', linestyle='--', lw=2, label=f'Changepoint at Game {cp}')
-
-    plt.title(title, fontsize=16)
-    plt.xlabel("Game Number", fontsize=12)
-    plt.ylabel(ylabel, fontsize=12)
-    # Improve legend handling to avoid duplicate labels
-    handles, labels = plt.gca().get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys())
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    plt.tight_layout()
-    plt.savefig(output_filename)
-    plt.close()
-    print("Plot generated successfully.")
-
-def main():
-    """
-    Main function to run the BCD analysis on training loss data.
-    """
+    print(f"--- Starting BCD Analysis on '{column_name}' from '{csv_path}' ---")
     start_time = time.time()
-    
-    # Configuration
-    DATA_FILE = 'training_log_sample.csv'
-    TARGET_COLUMN = 'value_loss'
-    PLOT_OUTPUT_FILE = 'value_loss_changepoints.png'
 
-    # Load Data
-    df = load_training_data(DATA_FILE)
-    if df.empty:
+    # 1. Load the aggregated data
+    try:
+        df = pd.read_csv(csv_path)
+        print(f"Successfully loaded {csv_path}. Found {len(df)} game records.")
+    except FileNotFoundError:
+        print(f"Error: The file '{csv_path}' was not found.")
+        print("Please ensure you have run the `aggregate_losses.py` script first.")
         return
 
-    # Use the game_number from the CSV as the index.
-    df.set_index('game_number', inplace=True)
-    signal = df[TARGET_COLUMN].values
+    points = df[column_name].values
 
-    # Analyze for Changepoints
-    # The penalty `pen` is a hyperparameter. A higher value leads to fewer changepoints.
-    changepoints_indices = analyze_changepoints(signal, model="l2", pen=3)
-
-    # Convert detected indices back to game numbers for clarity.
-    # The result from ruptures includes an index for the end of the series, which we can ignore.
-    changepoint_games = [df.index[i-1] for i in changepoints_indices if i < len(df.index)]
-    print(f"Changepoints detected near games: {changepoint_games}")
-
-    # Plot Results
-    plot_changepoints(
-        data=df[TARGET_COLUMN],
-        changepoints=changepoint_games, # Pass the final list of game numbers
-        title=f'Changepoint Analysis of {TARGET_COLUMN.replace("_", " ").title()}',
-        ylabel=TARGET_COLUMN.replace("_", " ").title(),
-        output_filename=PLOT_OUTPUT_FILE
-    )
+    # 2. Perform changepoint detection using the Pelt algorithm
+    print(f"Performing changepoint detection with penalty={pen}...")
+    algo = rpt.Pelt(model="l2").fit(points)
+    result = algo.predict(pen=pen)
     
-    end_time = time.time()
-    execution_time = end_time - start_time
-    
-    print("\n--- BCD Analyzer Performance ---")
-    print(f"Execution Time: {execution_time:.4f} seconds")
-    print("---------------------------------")
-    print(f"\nPhase 15a (V1) is complete. The script has run and produced a plot: {PLOT_OUTPUT_FILE}")
+    duration = time.time() - start_time
+    print(f"Detection complete in {duration:.4f} seconds.")
+    # The result includes the end of the series, so len(result)-1 is the number of changepoints.
+    print(f"Detected {len(result) - 1} changepoint(s). Indices: {result}")
+
+    # 3. Visualize and save the results
+    print(f"Generating and saving plot to {figure_path}...")
+    fig, (ax,) = rpt.display(points, result, figsize=(16, 7))
+    ax.set_title(f'Changepoint Analysis of {column_name.replace("_", " ").title()}', fontsize=16)
+    ax.set_xlabel('Game Number', fontsize=12)
+    ax.set_ylabel(column_name.replace("_", " ").title(), fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.savefig(figure_path)
+    plt.close(fig)
+    print("--- Analysis Finished ---")
 
 if __name__ == '__main__':
-    main()
+    analyze_changepoints(CSV_PATH, TARGET_COLUMN, PENALTY_VALUE, FIGURE_PATH)
