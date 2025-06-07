@@ -9,7 +9,8 @@ from config import get_paths, config_params
 from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
 from gnn_agent.neural_network.attention_module import CrossAttentionModule
 from gnn_agent.neural_network.policy_value_heads import PolicyHead, ValueHead
-from gn_agent.neural_network.chess_network import ChessNetwork
+# --- MODIFIED: Corrected the typo from 'gn_agent' back to 'gnn_agent' ---
+from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
@@ -22,7 +23,7 @@ def main():
     """
     # --- 1. Get Environment-Aware Paths ---
     checkpoints_path, training_data_path = get_paths()
-    
+
     # --- 2. Configuration is now loaded from config.py ---
     # The local 'config' dictionary has been removed. We now use 'config_params'.
     device = config_params['DEVICE']
@@ -60,15 +61,14 @@ def main():
 
     # Instantiate the main network
     chess_network = ChessNetwork(
-        square_gnn=square_gnn, 
-        piece_gnn=piece_gnn, 
-        cross_attention=cross_attention, 
-        policy_head=policy_head, 
+        square_gnn=square_gnn,
+        piece_gnn=piece_gnn,
+        cross_attention=cross_attention,
+        policy_head=policy_head,
         value_head=value_head
     ).to(device)
 
     # Instantiate MCTS
-    # --- MODIFIED: Changed 'cpuct' to 'c_puct' to match the MCTS class constructor ---
     mcts = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'])
 
     # Instantiate SelfPlay
@@ -86,11 +86,11 @@ def main():
     training_data_manager = TrainingDataManager(
         data_directory=training_data_path
     )
-    
+
     # Instantiate Trainer, passing the full config_params for checkpointing
     trainer = Trainer(
         network=chess_network,
-        model_config=config_params, 
+        model_config=config_params,
         learning_rate=config_params['LEARNING_RATE'],
         weight_decay=config_params['WEIGHT_DECAY'],
         device=device
@@ -123,7 +123,7 @@ def main():
 
         # c. Train the network on the data from the game just played
         batch_data = training_examples
-        
+
         print(f"Training on the {len(batch_data)} examples from game {game_num}...")
         for epoch in range(config_params['TRAINING_EPOCHS']):
             print(f"Starting training epoch {epoch + 1}/{config_params['TRAINING_EPOCHS']}...")
