@@ -29,7 +29,7 @@ def get_game_number_from_filename(filename):
         return int(match.group(1))
     return -1
 
-def aggregate_loss_.pydata(data_dir, output_file):
+def aggregate_loss_data(data_dir, output_file):
     """
     Aggregates training loss data from individual game .pkl files into a single CSV.
     """
@@ -59,11 +59,9 @@ def aggregate_loss_.pydata(data_dir, output_file):
 
         file_path = os.path.join(data_dir, filename)
         try:
-            # --- THIS IS THE FIX ---
             # Explicitly set weights_only=False as we are loading a dictionary, not just tensors.
             # This is safe because we trust the source of these files (we made them).
             game_data = torch.load(file_path, map_location=torch.device('cpu'), weights_only=False)
-            # --- END OF FIX ---
             
             if 'policy_loss' in game_data and 'value_loss' in game_data:
                 loss_records.append({
@@ -86,4 +84,5 @@ def aggregate_loss_.pydata(data_dir, output_file):
     print(f"\nSuccessfully aggregated data from {len(df)} games into {output_file}")
 
 if __name__ == '__main__':
+    # Corrected the function call to match the definition
     aggregate_loss_data(TRAINING_DATA_DIR, OUTPUT_CSV)
