@@ -11,22 +11,22 @@ config_params = {
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Training Run Settings --
-    "TOTAL_GAMES": 20,           # Total games to run in the training session
-    "CHECKPOINT_INTERVAL": 10,     # Save a checkpoint every N games
-    "TRAINING_EPOCHS": 1,          # Epochs per training session (after each game)
+    "TOTAL_GAMES": 2000,          # Total games to run in the training session (increased for full run)
+    "CHECKPOINT_INTERVAL": 50,    # Save a checkpoint every N games (adjusted for longer run)
+    "TRAINING_EPOCHS": 1,         # Epochs per training session (after each game)
     "BATCH_SIZE": 64,
 
     # -- MCTS Settings --
-    "MCTS_SIMULATIONS": 50,      # Number of MCTS simulations per move
-    "CPUCT": 1.25,               # Exploration constant in MCTS
+    "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move (increased for better move quality)
+    "CPUCT": 1.25,                # Exploration constant in MCTS
 
     # -- Mentor-Guided Training Settings (NEW) --
-    "MENTOR_GAME_INTERVAL": 5,           # Play a mentor game every 5 games (1 mentor, 4 self-play)
+    "MENTOR_GAME_INTERVAL": 5,        # Play a mentor game every 5 games (1 mentor, 4 self-play)
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
 
     # -- Opponent Settings --
-    "STOCKFISH_DEPTH_MENTOR": 5,      # Stockfish depth for mentor games
-    "STOCKFISH_DEPTH_EVAL": 5,        # Stockfish depth for formal evaluation
+    "STOCKFISH_DEPTH_MENTOR": 10,     # Stockfish depth for mentor games (increased for stronger guidance)
+    "STOCKFISH_DEPTH_EVAL": 10,       # Stockfish depth for formal evaluation (matched to mentor)
 
     # -- Neural Network & Training Settings --
     "LEARNING_RATE": 0.0001,
