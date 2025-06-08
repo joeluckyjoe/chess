@@ -4,7 +4,8 @@ import matplotlib.pyplot as plt
 import time
 
 # --- Configuration ---
-CSV_PATH = 'training_losses.csv'
+# --- FIX: Point to the new standard log file name ---
+CSV_PATH = 'loss_log.csv'
 TARGET_COLUMN = 'value_loss'
 # A smaller penalty value is more sensitive and better for finding subtle shifts,
 # which is ideal for our value_loss, as it's mostly zero.
@@ -24,8 +25,11 @@ def analyze_changepoints(csv_path, column_name, pen, figure_path):
         print(f"Successfully loaded {csv_path}. Found {len(df)} game records.")
     except FileNotFoundError:
         print(f"Error: The file '{csv_path}' was not found.")
-        print("Please ensure you have run the `aggregate_losses.py` script first.")
+        print("This file will be generated automatically when you run run_training.py.")
         return
+
+    # Group by game number and average losses, in case of multiple epochs per game
+    df = df.groupby('game').mean().reset_index()
 
     points = df[column_name].values
 
