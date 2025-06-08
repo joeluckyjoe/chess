@@ -1,0 +1,94 @@
+import chess
+import torch
+import random
+from typing import List, Tuple, Dict, Any
+
+from gnn_agent.search.mcts import MCTS
+from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
+
+class MentorPlay:
+    """
+    Orchestrates a single game between an MCTS agent and a Stockfish mentor,
+    generating training data from the agent's perspective.
+    """
+    def __init__(self, mcts_agent: MCTS, stockfish_path: str, stockfish_depth: int, agent_color_str: str = "random"):
+        """
+        Initializes a mentor game.
+
+        Args:
+            mcts_agent: The MCTS search instance for our agent.
+            stockfish_path: Path to the Stockfish executable.
+            stockfish_depth: The search depth for Stockfish.
+            agent_color_str: The color our agent plays ("white", "black", or "random").
+        """
+        self.mcts_agent = mcts_agent
+        self.stockfish_depth = stockfish_depth
+        
+        print("Initializing Stockfish for MentorPlay...")
+        self.stockfish_player = StockfishCommunicator(stockfish_path)
+        self.stockfish_player.perform_handshake()
+
+        if agent_color_str == "random":
+            self.agent_color = random.choice([chess.WHITE, chess.BLACK])
+        elif agent_color_str == "white":
+            self.agent_color = chess.WHITE
+        else:
+            self.agent_color = chess.BLACK
+
+        print(f"Mentor game setup: Agent plays as {chess.COLOR_NAMES[self.agent_color]}")
+
+    def play_game(self) -> List[Tuple[Any, Dict[chess.Move, float], float]]:
+        """
+        Plays a full game, returning training data from the agent's perspective.
+        """
+        print("Starting a new mentor game...")
+        self.stockfish_player.reset_board()
+        board = self.stockfish_player.board
+
+        game_history = [] # Stores (board_tensor, policy, turn_at_state)
+        
+        while not self.stockfish_player.is_game_over():
+            if board.turn == self.agent_color:
+                # --- Agent's Turn ---
+                # Run MCTS search to get policy and best move
+                policy, best_move, board_tensor = self.mcts_agent.run_search(
+                    board.copy(),
+                    self.mcts_agent.num_simulations
+                )
+                
+                # Store the state (as a board_tensor) and policy for training.
+                # The result (z) will be filled in at the end of the game.
+                game_history.append((board_tensor, policy, self.agent_color)) 
+                
+                move_uci = best_move.uci()
+                print(f"Agent plays: {move_uci}")
+                self.stockfish_player.make_move(move_uci)
+
+            else: # Stockfish's turn
+                print("Mentor's turn...")
+                move_uci = self.stockfish_player.get_best_move(self.stockfish_depth)
+                print(f"Mentor plays: {move_uci}")
+                self.stockfish_player.make_move(move_uci)
+
+        # --- Game Over ---
+        raw_outcome = self.stockfish_player.get_game_outcome()
+        print(f"Mentor game over. Raw outcome (White's perspective): {raw_outcome}")
+        
+        # Determine result from the agent's perspective
+        agent_perspective_result = 0.0
+        if raw_outcome is not None:
+            if self.agent_color == chess.WHITE:
+                agent_perspective_result = raw_outcome
+            else: # Agent was black
+                agent_perspective_result = -raw_outcome
+
+        # Backpropagate the final game result to all stored training examples
+        training_data = []
+        for board_tensor_hist, policy_hist, _ in game_history:
+            training_data.append((board_tensor_hist, policy_hist, agent_perspective_result))
+
+        return training_data
+
+    def close(self):
+        """Closes the Stockfish process."""
+        self.stockfish_player.close()

@@ -10,27 +10,27 @@ config_params = {
     "DEVICE": "auto",  # Use "auto" to detect CUDA, or force "cpu"
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
-    # -- Self-Play & MCTS Settings --
-    "NUM_SELF_PLAY_GAMES": 2000,
-    "CHECKPOINT_INTERVAL": 10,   # Save a checkpoint every N games
+    # -- Training Run Settings --
+    "TOTAL_GAMES": 20,           # Total games to run in the training session
+    "CHECKPOINT_INTERVAL": 10,     # Save a checkpoint every N games
+    "TRAINING_EPOCHS": 1,          # Epochs per training session (after each game)
+    "BATCH_SIZE": 64,
+
+    # -- MCTS Settings --
     "MCTS_SIMULATIONS": 50,      # Number of MCTS simulations per move
     "CPUCT": 1.25,               # Exploration constant in MCTS
 
-    # -- Mentor Game Settings (NEW) --
-    "NUM_MENTOR_GAMES": 100,             # Number of games to play against the mentor
-    "MENTOR_STOCKFISH_DEPTH": 5,         # Stockfish depth for mentor games
-    "MENTOR_GAME_AGENT_COLOR": "white",  # Color our agent plays in mentor games ("white", "black", or "random")
+    # -- Mentor-Guided Training Settings (NEW) --
+    "MENTOR_GAME_INTERVAL": 5,           # Play a mentor game every 5 games (1 mentor, 4 self-play)
+    "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
 
+    # -- Opponent Settings --
+    "STOCKFISH_DEPTH_MENTOR": 5,      # Stockfish depth for mentor games
+    "STOCKFISH_DEPTH_EVAL": 5,        # Stockfish depth for formal evaluation
 
     # -- Neural Network & Training Settings --
     "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
-    "TRAINING_EPOCHS": 1,
-    "BATCH_SIZE": 64,
-
-    # -- Evaluation Settings --
-    "EVALUATION_GAMES": 20,
-    "EVALUATION_STOCKFISH_DEPTH": 5,
 }
 
 
@@ -41,18 +41,11 @@ config_params = {
 def get_paths():
     """
     Detects if running in Google Colab and returns appropriate paths for data and checkpoints.
-    
-    This version ASSUMES that if running in Colab, Google Drive has already been
-    mounted to /content/drive in an interactive notebook cell.
-    
-    Returns:
-        tuple: A tuple containing (checkpoints_path, training_data_path)
     """
     # Check for a Colab environment variable
     if 'COLAB_GPU' in os.environ:
         print("Colab environment detected. Using pre-mounted Google Drive paths.")
         
-        # We assume the drive is already mounted at /content/drive
         base_drive_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
         checkpoints_path = base_drive_path / 'checkpoints'
         training_data_path = base_drive_path / 'training_data'
@@ -66,7 +59,6 @@ def get_paths():
             
     else:
         print("Running locally.")
-        # Use local paths relative to the project root
         base_path = Path(__file__).resolve().parent
         checkpoints_path = base_path / 'checkpoints'
         training_data_path = base_path / 'training_data'
@@ -76,4 +68,3 @@ def get_paths():
     training_data_path.mkdir(parents=True, exist_ok=True)
     
     return checkpoints_path, training_data_path
-
