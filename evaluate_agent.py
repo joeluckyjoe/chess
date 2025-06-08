@@ -1,4 +1,4 @@
-# evaluate_agent.py (Final, Refactored Version)
+# evaluate_agent.py (Final, Refactored and Corrected Version)
 
 import torch
 import chess
@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 import argparse
 
-# --- MODIFIED: Import both config_params and get_paths from config ---
+# --- Import from config ---
 from config import get_paths, config_params
 
 # Core component imports
@@ -20,9 +20,8 @@ from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
 
-# --- Configuration (now loaded from config.py) ---
+# --- Configuration ---
 CHECKPOINTS_DIR, DATA_DIR = get_paths()
-# <<< REMOVED: Hardcoded evaluation parameters are now in config.py >>>
 
 
 def load_agent_from_checkpoint(checkpoint_path: Path) -> tuple[ChessNetwork, dict]:
@@ -35,20 +34,16 @@ def load_agent_from_checkpoint(checkpoint_path: Path) -> tuple[ChessNetwork, dic
         
     print(f"Loading agent network from: {checkpoint_path}")
     
-    # Force loading to CPU first to avoid device mismatches
     device = "cuda" if torch.cuda.is_available() else "cpu"
     checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'))
     
     cfg = checkpoint.get('config_params')
     if cfg is None:
         raise ValueError("Critical Error: 'config_params' not found in checkpoint. "
-                         "Cannot reconstruct model architecture. Please use a checkpoint "
-                         "saved with the updated Trainer.")
+                         "Cannot reconstruct model architecture.")
 
     print("Reconstructing model from saved config_params...")
     
-    # Architecture params are now hardcoded in the ChessNetwork definition for simplicity
-    # but could be loaded from cfg if they were saved in the checkpoint.
     square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
     piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
     cross_attention = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4)
@@ -64,7 +59,7 @@ def load_agent_from_checkpoint(checkpoint_path: Path) -> tuple[ChessNetwork, dic
     )
     
     model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device) # Move model to the correct device
+    model.to(device)
     model.eval()
     print("Agent network loaded and reconstructed successfully.")
     return model, cfg
@@ -72,7 +67,7 @@ def load_agent_from_checkpoint(checkpoint_path: Path) -> tuple[ChessNetwork, dic
 def initialize_stockfish_player(stockfish_exe_path: str) -> StockfishCommunicator:
     """Initializes StockfishCommunicator and performs handshake."""
     if not stockfish_exe_path or not Path(stockfish_exe_path).is_file():
-            raise FileNotFoundError(f"Stockfish executable not found at '{stockfish_exe_path}'")
+        raise FileNotFoundError(f"Stockfish executable not found at '{stockfish_exe_path}'")
 
     print(f"Initializing Stockfish (path: {stockfish_exe_path})...")
     sf_comm = StockfishCommunicator(stockfish_path=stockfish_exe_path)
@@ -83,7 +78,7 @@ def initialize_stockfish_player(stockfish_exe_path: str) -> StockfishCommunicato
 
 def get_stockfish_move(sf_comm: StockfishCommunicator, board_fen: str, depth: int) -> str:
     """Gets Stockfish's best move for a given FEN and depth."""
-    timeout_sec = 20 # Can be made configurable
+    timeout_sec = 20
     sf_comm._send_command(f"position fen {board_fen}")
     isready_success, _ = sf_comm._raw_uci_command_exchange("isready", "readyok", timeout=timeout_sec)
     if not isready_success:
@@ -146,11 +141,12 @@ def play_evaluation_game(our_agent_color_is_white, mcts_player, stockfish_player
     elif final_result_str == "0-1": return -1 if our_agent_color_is_white else 1
     return 0
 
-def run_evaluation(checkpoint_filename: str):
+def run_evaluation(args):
     """Main function to run the full evaluation process."""
-    # Use parameters from the centralized config
-    num_eval_games = config_params['EVALUATION_GAMES']
-    stockfish_depth = config_params['EVALUATION_STOCKFISH_DEPTH']
+    num_eval_games = args.num_games
+    stockfish_depth = args.stockfish_depth
+    checkpoint_filename = args.checkpoint
+    
     device = config_params['DEVICE']
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -171,7 +167,8 @@ def run_evaluation(checkpoint_filename: str):
         stockfish_path = loaded_config.get("STOCKFISH_PATH", config_params['STOCKFISH_PATH'])
         print(f"Using Stockfish path from loaded config: {stockfish_path}")
 
-        mcts_player = MCTS(network=agent_model, device=device, cpuct=config_params['CPUCT'])
+        # --- FIX: Changed 'cpuct' to 'c_puct' to match the MCTS class definition ---
+        mcts_player = MCTS(network=agent_model, device=device, c_puct=config_params['CPUCT'])
         stockfish_player = initialize_stockfish_player(stockfish_path)
         
         board = chess.Board()
@@ -215,10 +212,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate a trained chess agent against Stockfish.")
     parser.add_argument(
         "-c", "--checkpoint",
+        dest="checkpoint", # Explicitly name the destination attribute
         type=str,
         required=True,
         help="Filename of the agent's checkpoint file (must be in the checkpoints directory)."
     )
+    # --- FIX: Changed command-line arguments to use the centralized config as default ---
+    parser.add_argument(
+        "-n", "--num_games",
+        dest="num_games",
+        type=int,
+        default=config_params['EVALUATION_GAMES'],
+        help=f"Number of games to play (default: {config_params['EVALUATION_GAMES']})."
+    )
+    parser.add_argument(
+        "-d", "--depth",
+        dest="stockfish_depth",
+        type=int,
+        default=config_params['EVALUATION_STOCKFISH_DEPTH'],
+        help=f"Stockfish search depth (default: {config_params['EVALUATION_STOCKFISH_DEPTH']})."
+    )
     args = parser.parse_args()
     
-    run_evaluation(checkpoint_filename=args.checkpoint)
+    run_evaluation(args)
