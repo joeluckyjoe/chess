@@ -10,12 +10,10 @@ from config import get_paths, config_params
 from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
-from gnn_agent.rl_loop.mentor_play import MentorPlay # <-- IMPORT NEW CLASS
+from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
 
-# NOTE: The model architecture is now defined inside Trainer.load_checkpoint or a new init function
-# This avoids defining it in multiple places. For now, we assume Trainer handles it.
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     """Appends a new row of loss data to a CSV file."""
@@ -29,7 +27,7 @@ def main():
     """
     # --- 1. Get Environment-Aware Paths & Config ---
     checkpoints_path, training_data_path = get_paths()
-    loss_log_filepath = training_data_path.parent / 'loss_log_v2.csv' # New log file
+    loss_log_filepath = training_data_path.parent / 'loss_log_v2.csv'
 
     device_str = config_params['DEVICE']
     device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
@@ -40,7 +38,6 @@ def main():
     print(f"Losses will be logged to: {loss_log_filepath}")
 
     # --- 2. Initialize Components ---
-    # The Trainer will now be responsible for initializing or loading the network
     trainer = Trainer(
         model_config=config_params, 
         learning_rate=config_params['LEARNING_RATE'], 
@@ -48,9 +45,8 @@ def main():
         device=device
     )
 
-    # --- 3. Load Checkpoint to Resume Training ---
+    # --- 3. Load Checkpoint or Initialize Network ---
     print("Attempting to load the latest checkpoint...")
-    # Trainer now returns the loaded network and the starting game number
     chess_network, start_game = trainer.load_or_initialize_network(checkpoints_path)
     
     if start_game > 0:
@@ -58,24 +54,27 @@ def main():
     else:
         print("Starting training from scratch.")
     
-    # --- 4. Initialize Game Players ---
+    # --- 4. Initialize Players (FIXED) ---
+    # --- MCTS is initialized WITHOUT num_simulations ---
     mcts_player = MCTS(
         network=chess_network, 
         device=device, 
-        c_puct=config_params['CPUCT'], 
-        num_simulations=config_params['MCTS_SIMULATIONS']
+        c_puct=config_params['CPUCT']
     )
     
+    # --- SelfPlay and MentorPlay are given num_simulations ---
     self_player = SelfPlay(
         mcts_white=mcts_player, 
         mcts_black=mcts_player, 
-        stockfish_path=config_params['STOCKFISH_PATH']
+        stockfish_path=config_params['STOCKFISH_PATH'],
+        num_simulations=config_params['MCTS_SIMULATIONS'] # <-- Pass simulations here
     )
     
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
         stockfish_depth=config_params['STOCKFISH_DEPTH_MENTOR'],
+        num_simulations=config_params['MCTS_SIMULATIONS'], # <-- Pass simulations here
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
 
@@ -87,7 +86,7 @@ def main():
         training_examples = []
         game_type = ""
 
-        # --- a. Alternate between Mentor and Self-Play Games ---
+        # a. Alternate between Mentor and Self-Play Games
         if game_num % config_params['MENTOR_GAME_INTERVAL'] == 0:
             game_type = "mentor"
             print(f"\n--- Starting Mentor Game {game_num}/{config_params['TOTAL_GAMES']} ---")
@@ -102,20 +101,19 @@ def main():
             continue
         print(f"{game_type.capitalize()} game complete. Generated {len(training_examples)} examples.")
 
-        # --- b. Save the new data ---
+        # b. Save the new data
         data_filename = f"{game_type}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
 
-        # --- c. Train the network ---
+        # c. Train the network
         print(f"Training on the {len(training_examples)} examples from game {game_num}...")
         for epoch in range(config_params['TRAINING_EPOCHS']):
             policy_loss, value_loss = trainer.train_on_batch(training_examples, batch_size=config_params['BATCH_SIZE'])
             print(f"Epoch {epoch + 1}/{config_params['TRAINING_EPOCHS']} complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
             
-            # Log the loss data after each training epoch
             write_loss_to_csv(loss_log_filepath, game_num, policy_loss, value_loss, game_type)
 
-        # --- d. Save a checkpoint periodically ---
+        # d. Save a checkpoint periodically
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
             trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
@@ -126,6 +124,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # To address a potential multiprocessing issue on some systems with PyTorch
-    torch.multiprocessing.set_start_method('spawn', force=True)
     main()

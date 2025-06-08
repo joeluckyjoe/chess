@@ -11,7 +11,8 @@ class MentorPlay:
     Orchestrates a single game between an MCTS agent and a Stockfish mentor,
     generating training data from the agent's perspective.
     """
-    def __init__(self, mcts_agent: MCTS, stockfish_path: str, stockfish_depth: int, agent_color_str: str = "random"):
+    # --- FIXED: Added num_simulations to the constructor ---
+    def __init__(self, mcts_agent: MCTS, stockfish_path: str, stockfish_depth: int, num_simulations: int, agent_color_str: str = "random"):
         """
         Initializes a mentor game.
 
@@ -19,10 +20,12 @@ class MentorPlay:
             mcts_agent: The MCTS search instance for our agent.
             stockfish_path: Path to the Stockfish executable.
             stockfish_depth: The search depth for Stockfish.
+            num_simulations: The number of MCTS simulations to run per agent move.
             agent_color_str: The color our agent plays ("white", "black", or "random").
         """
         self.mcts_agent = mcts_agent
         self.stockfish_depth = stockfish_depth
+        self.num_simulations = num_simulations # <-- STORE THE VALUE
         
         print("Initializing Stockfish for MentorPlay...")
         self.stockfish_player = StockfishCommunicator(stockfish_path)
@@ -50,15 +53,17 @@ class MentorPlay:
         while not self.stockfish_player.is_game_over():
             if board.turn == self.agent_color:
                 # --- Agent's Turn ---
-                # Run MCTS search to get policy and best move
+                # --- FIXED: Use self.num_simulations ---
                 policy, best_move, board_tensor = self.mcts_agent.run_search(
                     board.copy(),
-                    self.mcts_agent.num_simulations
+                    self.num_simulations
                 )
                 
-                # Store the state (as a board_tensor) and policy for training.
-                # The result (z) will be filled in at the end of the game.
                 game_history.append((board_tensor, policy, self.agent_color)) 
+                
+                if not best_move:
+                    print("MCTS returned no move, ending game.")
+                    break
                 
                 move_uci = best_move.uci()
                 print(f"Agent plays: {move_uci}")
@@ -74,15 +79,13 @@ class MentorPlay:
         raw_outcome = self.stockfish_player.get_game_outcome()
         print(f"Mentor game over. Raw outcome (White's perspective): {raw_outcome}")
         
-        # Determine result from the agent's perspective
         agent_perspective_result = 0.0
         if raw_outcome is not None:
             if self.agent_color == chess.WHITE:
                 agent_perspective_result = raw_outcome
-            else: # Agent was black
+            else:
                 agent_perspective_result = -raw_outcome
 
-        # Backpropagate the final game result to all stored training examples
         training_data = []
         for board_tensor_hist, policy_hist, _ in game_history:
             training_data.append((board_tensor_hist, policy_hist, agent_perspective_result))
