@@ -4,7 +4,7 @@ import queue
 import time
 import os
 import io
-import chess # <-- ADDED: Make sure this is imported
+import chess
 
 class StockfishCommunicator:
     def __init__(self, stockfish_path: str):
@@ -27,7 +27,7 @@ class StockfishCommunicator:
         self._stderr_thread = None
         self._running = False
         
-        # ADDED: Internal python-chess board to track game state
+        # Internal python-chess board to track game state
         self.board = chess.Board()
 
     def _enqueue_output(self, pipe, q, pipe_name):
@@ -37,11 +37,11 @@ class StockfishCommunicator:
                 if line_str:
                     q.put(line_str)
         except ValueError:
-            pass
+            pass # Ignore errors on pipe close
         except Exception as e:
-            pass
+            pass # Ignore other errors
         finally:
-            q.put(None)
+            q.put(None) # Sentinel to indicate pipe has closed
 
     def start_engine(self) -> bool:
         if self.is_process_alive():
@@ -131,6 +131,7 @@ class StockfishCommunicator:
 
         while time.time() - start_time < timeout:
             if not self.is_process_alive():
+                # Process died, try to read any remaining output
                 while True:
                     try:
                         line = self.stdout_queue.get_nowait()
@@ -225,15 +226,14 @@ class StockfishCommunicator:
 
     def reset_board(self):
         """
-        Resets the internal Stockfish game AND the python-chess board
-        to the standard starting position.
+        Resets the internal Stockfish game and the python-chess board.
         """
         if not self.is_process_alive():
             print("ERROR: Cannot reset board, Stockfish process is not running.")
             return
 
         self._send_command("position startpos")
-        self.board.reset() # MODIFIED: Reset the internal board as well
+        self.board.reset()
 
         success, _ = self._raw_uci_command_exchange("isready", "readyok")
         if not success:
@@ -241,7 +241,7 @@ class StockfishCommunicator:
 
     def make_move(self, uci_move: str):
         """
-        Makes a move on the internal python-chess board and updates Stockfish.
+        Makes a move on the internal board and updates Stockfish's position.
         """
         if not self.is_process_alive():
             print(f"ERROR: Cannot make move {uci_move}, Stockfish not running.")
@@ -251,9 +251,7 @@ class StockfishCommunicator:
             move = chess.Move.from_uci(uci_move)
             if move in self.board.legal_moves:
                 self.board.push(move)
-                # Inform Stockfish of the new position via FEN
                 self._send_command(f"position fen {self.board.fen()}")
-                # Wait for engine to be ready
                 success, _ = self._raw_uci_command_exchange("isready", "readyok")
                 if not success:
                     print(f"ERROR: Engine not ready after making move {uci_move}.")
@@ -263,20 +261,52 @@ class StockfishCommunicator:
             print(f"ERROR: {e}")
 
     def is_game_over(self) -> bool:
-        """
-        Checks if the game is over using the internal python-chess board.
-        """
-        return self.board.is_game_over()
+        """Checks if the game is over using the internal python-chess board."""
+        return self.board.is_game_over(claim_draw=True)
 
     def get_game_outcome(self) -> float:
         """
-        Gets the game outcome from the internal python-chess board.
+        Gets the game outcome from the internal board.
         Returns 1.0 for White win, -1.0 for Black win, 0.0 for Draw.
         """
-        outcome = self.board.outcome()
+        outcome = self.board.outcome(claim_draw=True)
         if outcome:
             if outcome.winner == chess.WHITE:
                 return 1.0
             elif outcome.winner == chess.BLACK:
                 return -1.0
         return 0.0
+
+    # --- NEW METHOD TO FIX THE ERROR ---
+    def get_best_move(self, depth: int, timeout: float = 20.0) -> str | None:
+        """
+        Asks Stockfish to calculate and return the best move from the current board state.
+        
+        Args:
+            depth (int): The search depth for Stockfish to use.
+            timeout (float): Max time in seconds to wait for a move.
+        
+        Returns:
+            str | None: The best move in UCI format (e.g., "e2e4") or None if failed.
+        """
+        if not self.is_process_alive():
+            print("ERROR: Cannot get best move, Stockfish is not running.")
+            return None
+
+        # The board position is already known by Stockfish from previous make_move calls.
+        # We just need to ask the engine to think about the current position.
+        self._send_command(f"go depth {depth}")
+        
+        # Read the output until we get the "bestmove" token.
+        token_found, lines = self._read_output_until("bestmove", timeout=timeout)
+
+        if token_found:
+            # The last line containing 'bestmove' is usually the definitive one.
+            for line in reversed(lines):
+                if line.startswith("bestmove"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        return parts[1] # The move is the second part, e.g., "bestmove e2e4"
+
+        print(f"ERROR: Stockfish did not return a 'bestmove' within {timeout}s for depth {depth}.")
+        return None
