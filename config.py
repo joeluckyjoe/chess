@@ -11,16 +11,21 @@ config_params = {
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Self-Play & MCTS Settings --
-    # --- MODIFIED: Increased game count for the second training run ---
     "NUM_SELF_PLAY_GAMES": 2000,
-    "CHECKPOINT_INTERVAL": 10,  # Save a checkpoint every N games
-    "MCTS_SIMULATIONS": 50,     # Number of MCTS simulations per move
-    "CPUCT": 1.25,              # Exploration constant in MCTS
+    "CHECKPOINT_INTERVAL": 10,   # Save a checkpoint every N games
+    "MCTS_SIMULATIONS": 50,      # Number of MCTS simulations per move
+    "CPUCT": 1.25,               # Exploration constant in MCTS
+
+    # -- Mentor Game Settings (NEW) --
+    "NUM_MENTOR_GAMES": 100,             # Number of games to play against the mentor
+    "MENTOR_STOCKFISH_DEPTH": 5,         # Stockfish depth for mentor games
+    "MENTOR_GAME_AGENT_COLOR": "white",  # Color our agent plays in mentor games ("white", "black", or "random")
+
 
     # -- Neural Network & Training Settings --
-    "LEARNING_RATE": 0.0001,  # LEARNING_RATE changed from 0.001 to 0.0001
-    "WEIGHT_DECAY": 0.0001,   # L2 regularization
-    "TRAINING_EPOCHS": 1,     # Epochs per training session (after each game)
+    "LEARNING_RATE": 0.0001,
+    "WEIGHT_DECAY": 0.0001,
+    "TRAINING_EPOCHS": 1,
     "BATCH_SIZE": 64,
 
     # -- Evaluation Settings --
@@ -71,3 +76,4 @@ def get_paths():
     training_data_path.mkdir(parents=True, exist_ok=True)
     
     return checkpoints_path, training_data_path
+
