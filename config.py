@@ -12,7 +12,7 @@ config_params = {
 
     # -- Training Run Settings --
     "TOTAL_GAMES": 2000,          # Total games to run in the training session (increased for full run)
-    "CHECKPOINT_INTERVAL": 50,    # Save a checkpoint every N games (adjusted for longer run)
+    "CHECKPOINT_INTERVAL": 10,    # Save a checkpoint every N games (adjusted for longer run)
     "TRAINING_EPOCHS": 1,         # Epochs per training session (after each game)
     "BATCH_SIZE": 64,
 
