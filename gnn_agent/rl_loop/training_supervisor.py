@@ -2,6 +2,8 @@
 
 import collections
 import logging
+import numpy as np
+import ruptures as rpt
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,23 +17,17 @@ class TrainingSupervisor:
     def __init__(self, config):
         """
         Initializes the TrainingSupervisor.
-
-        Args:
-            config (dict): A configuration dictionary containing parameters for the supervisor.
-                           Expected keys:
-                           - 'supervisor_loss_history_size': Max number of recent loss values to store.
-                           - 'bcp_threshold': The probability threshold for Bayesian Change Point detection.
         """
         self.config = config
-        self.loss_history_size = self.config.get('supervisor_loss_history_size', 200) # Default to 200 games
-        self.bcp_threshold = self.config.get('bcp_threshold', 0.8) # Default high-confidence threshold
+        self.loss_history_size = self.config.get('supervisor_loss_history_size', 200)
+        self.stagnation_window = self.config.get('stagnation_window', 0.25)
+        self.ruptures_model = self.config.get('ruptures_model', 'l2')
+        self.ruptures_penalty = self.config.get('ruptures_penalty', 3)
 
-        # Use a deque to automatically manage the size of the loss history
         self.self_play_policy_losses = collections.deque(maxlen=self.loss_history_size)
 
         logging.info("TrainingSupervisor initialized.")
-        logging.info(f"Loss history size set to: {self.loss_history_size}")
-        logging.info(f"Bayesian Change Point detection threshold set to: {self.bcp_threshold}")
+        logging.info(f"Ruptures model set to: {self.ruptures_model}")
 
     def record_self_play_loss(self, policy_loss):
         """
@@ -41,50 +37,51 @@ class TrainingSupervisor:
 
     def should_switch_to_mentor(self):
         """
-        Analyzes the history of self-play policy losses to detect stagnation.
-
-        This will eventually use a Bayesian Change Point detection model.
-        For now, it's a placeholder.
-
-        Returns:
-            bool: True if the agent appears to be stagnating and needs mentor guidance.
+        Analyzes the normalized derivative of the loss history to detect stagnation.
         """
-        # Placeholder logic: For now, we never switch automatically.
-        # In the future, this will contain the Bayesian Change Point analysis.
         if len(self.self_play_policy_losses) < self.loss_history_size:
-            # Not enough data to make a decision yet
             return False
 
-        logging.info("Analyzing self-play losses for stagnation...")
-        # --- FUTURE IMPLEMENTATION ---
-        # 1. Convert self.self_play_policy_losses to a numpy array.
-        # 2. Run the Bayesian Change Point detection algorithm on the array.
-        # 3. If the probability of a recent change point (stagnation) > self.bcp_threshold:
-        #    logging.info(f"Stagnation detected! Switching to mentor play.")
-        #    return True
-        # ---------------------------
+        logging.info("Analyzing self-play loss derivative for stagnation...")
+        
+        loss_array = np.array(self.self_play_policy_losses)
+        loss_derivative = np.diff(loss_array)
+
+        # --- FINAL STRATEGY: Normalize the signal to be scale-invariant ---
+        std_dev = np.std(loss_derivative)
+        if std_dev < 1e-6: # If standard deviation is zero, there are no changes.
+            logging.info("Loss derivative has zero standard deviation. No stagnation detected.")
+            return False
+        
+        normalized_derivative = (loss_derivative - np.mean(loss_derivative)) / std_dev
+
+        try:
+            algo = rpt.Pelt(model=self.ruptures_model).fit(normalized_derivative.reshape(-1, 1))
+            change_points = algo.predict(pen=self.ruptures_penalty)
+        except Exception as e:
+            logging.error(f"Ruptures change point detection failed: {e}")
+            return False
+
+        if len(change_points) > 1:
+            last_change_point = change_points[-2]
+            stagnation_start_index = (self.loss_history_size - 1) * (1 - self.stagnation_window)
+            
+            if last_change_point >= stagnation_start_index:
+                logging.warning(
+                    f"STAGNATION DETECTED! Change in loss rate found at index {last_change_point}."
+                )
+                return True
+
+        logging.info("No recent stagnation detected.")
         return False
 
     def should_switch_to_self_play(self, last_mentor_game_result):
         """
-        Analyzes the result of the last mentor game to see if the agent has improved.
-
-        Args:
-            last_mentor_game_result (dict): A dictionary with metrics from the last mentor game.
-                                            e.g., {'outcome': 0.5, 'game_length': 80} (0.5 for draw)
-
-        Returns:
-            bool: True if the agent shows improvement and should return to self-play.
+        Analyzes the result of the last mentor game.
         """
-        # Placeholder logic: For now, we never switch back automatically.
-        # In the future, this will check for draws/wins or improved quality of loss.
-        logging.info(f"Analyzing mentor game result: {last_mentor_game_result}")
-
-        # --- FUTURE IMPLEMENTATION ---
-        # Example logic: Switch back if the agent achieves a draw or a win.
-        # outcome = last_mentor_game_result.get('outcome', 0) # 1 for win, 0.5 for draw, 0 for loss
-        # if outcome >= 0.5:
-        #    logging.info("Agent achieved a draw or win against mentor. Switching back to self-play.")
-        #    return True
-        # ---------------------------
+        outcome = last_mentor_game_result.get('outcome', 0)
+        if outcome >= 0.5:
+           logging.info("Agent achieved a draw or win against mentor. Switching back to self-play.")
+           return True
+        
         return False

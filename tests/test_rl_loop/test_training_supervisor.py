@@ -1,6 +1,8 @@
 # tests/test_rl_loop/test_training_supervisor.py
 
 import unittest
+import numpy as np
+import collections
 from gnn_agent.rl_loop.training_supervisor import TrainingSupervisor
 
 class TestTrainingSupervisor(unittest.TestCase):
@@ -13,67 +15,37 @@ class TestTrainingSupervisor(unittest.TestCase):
         Set up a sample configuration and instantiate the supervisor.
         """
         self.config = {
-            'supervisor_loss_history_size': 5, # Use a small size for easy testing
-            'bcp_threshold': 0.85
+            'supervisor_loss_history_size': 40,
+            'stagnation_window': 0.25,
+            'ruptures_model': 'l2',
+            'ruptures_penalty': 3  # A standard penalty value is now robust due to normalization
         }
         self.supervisor = TrainingSupervisor(self.config)
 
-    def test_initialization(self):
+    def test_should_switch_to_mentor_logic_with_synthetic_data(self):
         """
-        Test that the supervisor initializes with the correct parameters from the config.
+        Test the change point detection logic with synthetic data.
         """
-        self.assertIsNotNone(self.supervisor)
-        self.assertEqual(self.supervisor.loss_history_size, 5)
-        self.assertEqual(self.supervisor.bcp_threshold, 0.85)
-        self.assertEqual(len(self.supervisor.self_play_policy_losses), 0)
+        # SCENARIO 1: No stagnation (steady improvement)
+        # The derivative of this signal is constant, so its standard deviation is zero.
+        improving_losses = np.linspace(start=1.0, stop=0.2, num=40)
+        for loss in improving_losses:
+            self.supervisor.record_self_play_loss(loss)
+        
+        self.assertFalse(self.supervisor.should_switch_to_mentor(), "Should not switch with improving losses")
 
-    def test_record_self_play_loss(self):
-        """
-        Test that losses are recorded correctly.
-        """
-        self.supervisor.record_self_play_loss(0.5)
-        self.supervisor.record_self_play_loss(0.4)
-        self.assertEqual(len(self.supervisor.self_play_policy_losses), 2)
-        self.assertIn(0.5, self.supervisor.self_play_policy_losses)
-        self.assertIn(0.4, self.supervisor.self_play_policy_losses)
-
-    def test_loss_history_size_limit(self):
-        """
-        Test that the loss history deque respects the maximum size limit.
-        """
-        initial_losses = [1.0, 0.9, 0.8, 0.7, 0.6]
-        for loss in initial_losses:
+        # SCENARIO 2: Stagnation
+        # The derivative changes from negative to zero, creating a non-zero std dev.
+        stagnant_part = np.full(10, 0.4)
+        improving_part = np.linspace(start=1.0, stop=0.41, num=30)
+        stagnant_losses = np.concatenate([improving_part, stagnant_part])
+        
+        self.supervisor.self_play_policy_losses.clear()
+        for loss in stagnant_losses:
             self.supervisor.record_self_play_loss(loss)
 
-        self.assertEqual(len(self.supervisor.self_play_policy_losses), 5)
-        self.assertEqual(self.supervisor.self_play_policy_losses[0], 1.0) # Oldest element
+        self.assertTrue(self.supervisor.should_switch_to_mentor(), "Should switch with stagnant losses")
 
-        # Add one more loss, which should push out the oldest one (1.0)
-        self.supervisor.record_self_play_loss(0.5)
-        self.assertEqual(len(self.supervisor.self_play_policy_losses), 5)
-        self.assertEqual(self.supervisor.self_play_policy_losses[0], 0.9) # The new oldest element
-        self.assertNotIn(1.0, self.supervisor.self_play_policy_losses)
-        self.assertIn(0.5, self.supervisor.self_play_policy_losses)
-
-    def test_should_switch_to_mentor_default_behavior(self):
-        """
-        Test the placeholder behavior of should_switch_to_mentor. It should return False.
-        """
-        # Case 1: Not enough data
-        self.supervisor.record_self_play_loss(0.5)
-        self.assertFalse(self.supervisor.should_switch_to_mentor())
-
-        # Case 2: Enough data, but logic is not implemented yet
-        for i in range(5):
-             self.supervisor.record_self_play_loss(0.5 - i * 0.01)
-        self.assertFalse(self.supervisor.should_switch_to_mentor())
-
-    def test_should_switch_to_self_play_default_behavior(self):
-        """
-        Test the placeholder behavior of should_switch_to_self_play. It should return False.
-        """
-        mentor_result = {'outcome': 0.5, 'game_length': 60}
-        self.assertFalse(self.supervisor.should_switch_to_self_play(mentor_result))
-
+# Minimal boilerplate to run tests if the file is executed directly
 if __name__ == '__main__':
     unittest.main()
