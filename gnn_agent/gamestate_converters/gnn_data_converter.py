@@ -108,7 +108,7 @@ def convert_to_gnn_input(
     board: chess.Board,
     device: torch.device,
     for_visualization: bool = False
-) -> Union[GNNInput, Tuple[GNNInput, List[str]]]:
+) -> Union[GNNInput, Tuple[GNNInput, List[int]]]: # Changed return type hint
     """
     Converts a python-chess board state into the GNNInput format.
 
@@ -121,7 +121,7 @@ def convert_to_gnn_input(
         If for_visualization is False, returns the GNNInput object.
         If for_visualization is True, returns a tuple containing:
             - The GNNInput object.
-            - A list of strings representing piece labels for visualization.
+            - A list of integer square indices for the pieces.
     """
     # 1. Square-based Graph (G_sq)
     square_features_list = []
@@ -176,11 +176,10 @@ def convert_to_gnn_input(
         for from_sq in sorted_squares:
             piece = board.piece_at(from_sq)
 
-            # Generate labels for visualization if requested
+            # --- THIS IS THE FIX ---
+            # For visualization, we need the actual square index, not a string label.
             if for_visualization:
-                color_str = 'w' if piece.color == chess.WHITE else 'b'
-                piece_str = piece.symbol().upper()
-                piece_labels_for_plot.append(f"{color_str}{piece_str}")
+                piece_labels_for_plot.append(from_sq)
 
             piece_type_one_hot = np.zeros(NUM_PIECE_TYPES, dtype=np.float32)
             piece_type_one_hot[PIECE_TYPE_MAP[piece.piece_type]] = 1.0
