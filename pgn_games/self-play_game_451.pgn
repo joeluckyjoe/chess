@@ -1,0 +1,10 @@
+[Event "Self-Play Training Game"]
+[Site "Colab Environment"]
+[Date "2025.06.12"]
+[Round "?"]
+[White "MCTS_Agent"]
+[Black "MCTS_Agent"]
+[Result "1/2-1/2"]
+
+1. e4 a6 2. g3 f6 3. Qe2 d6 4. d3 h6 5. a3 Bd7 6. Nc3 e6 7. Qg4 Kf7 8. Bh3 Rh7 9. Rb1 g5 10. Kd2 f5 11. Nd5 Rg7 12. exf5 b5 13. c3 Qe7 14. b4 Bc8 15. Nxc7 Bb7 16. a4 Bc8 17. a5 Bd7 18. Nf3 d5 19. Bb2 Bc8 20. Kc1 Bb7 21. Kd2 Bc8 22. Rbc1 Bb7 23. Ke1 Bc8 24. Kd1 Bb7 25. Rf1 Bc8 26. Ke2 Bb7 27. Ke3 Bc8 28. Ba1 Bb7 29. Rg1 Bc8 30. c4 Bb7 31. Kd2 Bc8 32. Ke1 Bb7 33. Kd1 Bc8 34. c5 Bb7 35. Ne5+ Kf6 36. Kd2 Nd7 37. Ke1 Bc8 38. Kd1 Rb8 39. d4 Bb7 40. Kd2 Bc8 41. f3 Bb7 42. Ke1 Bc8 43. Kd1 Bb7 44. Kd2 Bc8 45. Kc2 Bb7 46. f4 Bc8 47. Kc3 Bb7 48. Rgf1 Bc8 49. Rg1 exf5 50. Rcd1 Bb7 51. Rgf1 Bc8 52. Rd2 Bb7 53. Rg1 Bc8 54. Rf1 Ra8 55. Rg1 Rb8 1/2-1/2
+

@@ -2,6 +2,7 @@ import os
 import torch
 import pandas as pd
 from pathlib import Path
+import chess.pgn
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -27,7 +28,13 @@ def main():
     """
     # --- 1. Get Environment-Aware Paths & Config ---
     checkpoints_path, training_data_path = get_paths()
-    loss_log_filepath = training_data_path.parent / 'loss_log_v2.csv'
+    
+    # --- ADDED: Create and print a path for PGNs ---
+    project_root = training_data_path.parent
+    pgn_path = project_root / 'pgn_games'
+    pgn_path.mkdir(exist_ok=True)
+    
+    loss_log_filepath = project_root / 'loss_log_v2.csv'
 
     device_str = config_params['DEVICE']
     device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
@@ -35,6 +42,7 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     print(f"Training data will be saved to: {training_data_path}")
+    print(f"PGN games will be saved to: {pgn_path}")
     print(f"Losses will be logged to: {loss_log_filepath}")
 
     # --- 2. Initialize Components ---
@@ -54,27 +62,25 @@ def main():
     else:
         print("Starting training from scratch.")
     
-    # --- 4. Initialize Players (FIXED) ---
-    # --- MCTS is initialized WITHOUT num_simulations ---
+    # --- 4. Initialize Players ---
     mcts_player = MCTS(
         network=chess_network, 
         device=device, 
         c_puct=config_params['CPUCT']
     )
     
-    # --- SelfPlay and MentorPlay are given num_simulations ---
     self_player = SelfPlay(
         mcts_white=mcts_player, 
         mcts_black=mcts_player, 
         stockfish_path=config_params['STOCKFISH_PATH'],
-        num_simulations=config_params['MCTS_SIMULATIONS'] # <-- Pass simulations here
+        num_simulations=config_params['MCTS_SIMULATIONS']
     )
     
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
         stockfish_depth=config_params['STOCKFISH_DEPTH_MENTOR'],
-        num_simulations=config_params['MCTS_SIMULATIONS'], # <-- Pass simulations here
+        num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
 
@@ -84,26 +90,39 @@ def main():
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         training_examples = []
+        pgn_data = None
         game_type = ""
 
         # a. Alternate between Mentor and Self-Play Games
         if game_num % config_params['MENTOR_GAME_INTERVAL'] == 0:
             game_type = "mentor"
             print(f"\n--- Starting Mentor Game {game_num}/{config_params['TOTAL_GAMES']} ---")
-            training_examples = mentor_player.play_game()
+            # --- UPDATED: Handle two return values ---
+            training_examples, pgn_data = mentor_player.play_game()
         else:
             game_type = "self-play"
             print(f"\n--- Starting Self-Play Game {game_num}/{config_params['TOTAL_GAMES']} ---")
-            training_examples = self_player.play_game()
+            # --- UPDATED: Handle two return values ---
+            training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
             print(f"Game type '{game_type}' resulted in no training examples. Skipping.")
             continue
         print(f"{game_type.capitalize()} game complete. Generated {len(training_examples)} examples.")
 
-        # b. Save the new data
+        # b. Save the new data and PGN
         data_filename = f"{game_type}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
+        
+        # --- ADDED: Save PGN to file ---
+        if pgn_data:
+            pgn_filename = pgn_path / f"{game_type}_game_{game_num}.pgn"
+            try:
+                with open(pgn_filename, "w", encoding="utf-8") as f:
+                    print(pgn_data, file=f, end="\n\n")
+                print(f"Successfully saved PGN to {pgn_filename}")
+            except Exception as e:
+                print(f"[ERROR] Could not save PGN file: {e}")
 
         # c. Train the network
         print(f"Training on the {len(training_examples)} examples from game {game_num}...")

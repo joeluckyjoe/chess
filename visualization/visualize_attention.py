@@ -4,9 +4,8 @@
 """
 An interactive script to visualize the cross-attention weights of a ChessNetwork model.
 
-This tool loads a model from a checkpoint, takes a FEN string, and launches an
-interactive Pygame window. Users can click on pieces to see their specific
-attention patterns visualized as lines on the board.
+This tool loads a model from a checkpoint and a PGN file, allowing a user to
+step through the game and visualize attention patterns.
 """
 import sys
 import os
@@ -19,6 +18,7 @@ if project_root not in sys.path:
 import argparse
 import torch
 import chess
+import chess.pgn
 import pygame
 import numpy as np
 
@@ -64,22 +64,22 @@ def load_model_from_checkpoint(model_path, device):
 
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model checkpoint not found at: {model_path}")
-        
+
     checkpoint = torch.load(model_path, map_location=device)
-    
+
     if 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
     elif 'state_dict' in checkpoint:
         state_dict = checkpoint['state_dict']
     else:
         state_dict = checkpoint
-    
+
     network.load_state_dict(state_dict)
     network.eval()
     print(f"Successfully loaded model from {model_path}")
     return network
 
-def get_attention_from_fen(board, network, device):
+def get_attention_for_board(board, network, device):
     """
     Takes a board object, processes it, and returns attention weights and piece labels.
     """
@@ -116,8 +116,7 @@ def draw_board(screen, board, piece_images, total_attention_per_square):
     """
     Draws the basic board, heatmap, and pieces.
     """
-    # Draw squares and heatmap
-    if np.max(total_attention_per_square) > 0:
+    if total_attention_per_square is not None and np.max(total_attention_per_square) > 0:
         normalized_attention = total_attention_per_square / np.max(total_attention_per_square)
     else:
         normalized_attention = np.zeros(64)
@@ -147,100 +146,145 @@ def draw_board(screen, board, piece_images, total_attention_per_square):
             img_rect = piece_img.get_rect(center=rect.center)
             screen.blit(piece_img, img_rect)
 
-def draw_attention_lines(screen, attention_weights, piece_labels, from_square_idx):
+def draw_attention_lines(screen, attention_weights, piece_labels, from_square_idx, top_k):
     """
-    Draws attention lines from a selected piece to all other squares.
+    Draws the top K attention lines from a selected piece to all other squares.
     """
-    # Find the index in the attention tensor corresponding to our selected piece
+    if attention_weights is None or piece_labels is None:
+        return
+
     try:
         piece_tensor_idx = piece_labels.index(from_square_idx)
-    except ValueError:
-        # The selected square has no piece or is not in the label list
+    except (ValueError, AttributeError):
         return
-        
-    # Get the specific attention vector for this piece
-    piece_attention = attention_weights[piece_tensor_idx].cpu().numpy()
+
+    piece_attention = attention_weights[piece_tensor_idx]
     
-    # Normalize for visual thickness
-    if np.max(piece_attention) > 0:
-        normalized_attention = piece_attention / np.max(piece_attention)
+    k = min(top_k, len(piece_attention))
+    if k == 0:
+        return
+
+    top_k_values, top_k_indices = torch.topk(piece_attention, k)
+    top_k_values = top_k_values.cpu().numpy()
+    top_k_indices = top_k_indices.cpu().numpy()
+
+    if np.max(top_k_values) > 0:
+        normalized_weights = top_k_values / np.max(top_k_values)
     else:
-        return # No attention to draw
+        return
 
     from_row, from_col = divmod(from_square_idx, 8)
     from_pos = ((from_col + 0.5) * SQUARE_SIZE, (7 - from_row + 0.5) * SQUARE_SIZE)
 
-    for to_square_idx in range(64):
-        weight = normalized_attention[to_square_idx]
-        if weight < 0.1: # Threshold to avoid clutter
-            continue
-
+    for i in range(k):
+        to_square_idx = top_k_indices[i]
+        weight = normalized_weights[i]
+        
         to_row, to_col = divmod(to_square_idx, 8)
         to_pos = ((to_col + 0.5) * SQUARE_SIZE, (7 - to_row + 0.5) * SQUARE_SIZE)
-        
-        # Line width based on attention weight
+
         line_width = int(1 + weight * 8)
-        
         pygame.draw.line(screen, COLOR_ATTENTION_LINE, from_pos, to_pos, line_width)
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Interactively visualize cross-attention weights from a ChessNetwork model."
+        description="Interactively visualize cross-attention weights from a ChessNetwork model using a PGN file."
     )
     parser.add_argument(
         "--model_path", type=str, required=True, help="Path to the model checkpoint (.pth.tar file)."
     )
     parser.add_argument(
-        "--fen",
+        "--pgn_path",
         type=str,
-        default="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        help="FEN string of the initial board position to analyze."
+        required=True,
+        help="Path to the PGN file to visualize."
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=5,
+        help="Display the top K attention lines for a selected piece."
     )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- Initialization ---
-    network = load_model_from_checkpoint(args.model_path, device)
-    board = chess.Board(args.fen)
-    attention_weights, piece_labels = get_attention_from_fen(board, network, device)
-
-    if attention_weights is None or not piece_labels:
-        print("Could not retrieve attention weights or piece labels. Exiting.")
+    try:
+        with open(args.pgn_path) as pgn:
+            game = chess.pgn.read_game(pgn)
+    except FileNotFoundError:
+        print(f"Error: PGN file not found at {args.pgn_path}")
         return
+        
+    if game is None:
+        print("Error: Could not read a valid game from the PGN file.")
+        return
+
+    moves = list(game.mainline_moves())
+    board = game.board() 
+    move_index = -1 
+
+    network = load_model_from_checkpoint(args.model_path, device)
+    
+    # --- This block now gets updated in the loop ---
+    attention_weights, piece_labels, total_attention_per_square = None, None, None
+    
+    def update_attention_data():
+        nonlocal attention_weights, piece_labels, total_attention_per_square
+        attention_weights, piece_labels = get_attention_for_board(board, network, device)
+        if attention_weights is not None:
+            total_attention_per_square = attention_weights.sum(dim=0).cpu().numpy()
+        else:
+            total_attention_per_square = None
+
+    update_attention_data() # Initial call for starting position
 
     pygame.init()
     pygame.display.set_caption("Chess Network Attention Visualization")
     screen = pygame.display.set_mode((BOARD_SIZE, BOARD_SIZE))
     piece_images = load_piece_images()
 
-    total_attention_per_square = attention_weights.sum(dim=0).cpu().numpy()
-    
     selected_square_idx = None
     running = True
 
-    # --- Main Game Loop ---
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            
+            elif event.type == pygame.KEYDOWN:
+                board_changed = False
+                if event.key == pygame.K_RIGHT:
+                    if move_index < len(moves) - 1:
+                        move_index += 1
+                        board.push(moves[move_index])
+                        board_changed = True
+                elif event.key == pygame.K_LEFT:
+                    if move_index > -1:
+                        board.pop()
+                        move_index -= 1
+                        board_changed = True
+                
+                if board_changed:
+                    print(f"Moved to board state after: {board.peek() if board.move_stack else 'Start'}")
+                    selected_square_idx = None # Deselect piece on move
+                    update_attention_data() # Recalculate attention for new position
+
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 clicked_square = pixel_to_square(event.pos)
-                
-                # Deselect if clicking the same square or an empty square
+
                 if clicked_square == selected_square_idx or not board.piece_at(clicked_square):
                     selected_square_idx = None
                 else:
                     selected_square_idx = clicked_square
 
         # --- Drawing ---
-        # Draw the board with the overall attention heatmap
         draw_board(screen, board, piece_images, total_attention_per_square)
 
-        # If a piece is selected, draw its specific attention lines over the board
         if selected_square_idx is not None:
-            draw_attention_lines(screen, attention_weights, piece_labels, selected_square_idx)
+            draw_attention_lines(screen, attention_weights, piece_labels, selected_square_idx, args.top_k)
 
         pygame.display.flip()
 

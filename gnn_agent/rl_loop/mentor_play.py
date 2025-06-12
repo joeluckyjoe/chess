@@ -2,6 +2,8 @@ import chess
 import torch
 import random
 from typing import List, Tuple, Dict, Any
+import chess.pgn
+from datetime import datetime
 
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
@@ -9,23 +11,15 @@ from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommu
 class MentorPlay:
     """
     Orchestrates a single game between an MCTS agent and a Stockfish mentor,
-    generating training data from the agent's perspective.
+    generating training data and a PGN of the game.
     """
-    # --- FIXED: Added num_simulations to the constructor ---
     def __init__(self, mcts_agent: MCTS, stockfish_path: str, stockfish_depth: int, num_simulations: int, agent_color_str: str = "random"):
         """
         Initializes a mentor game.
-
-        Args:
-            mcts_agent: The MCTS search instance for our agent.
-            stockfish_path: Path to the Stockfish executable.
-            stockfish_depth: The search depth for Stockfish.
-            num_simulations: The number of MCTS simulations to run per agent move.
-            agent_color_str: The color our agent plays ("white", "black", or "random").
         """
         self.mcts_agent = mcts_agent
         self.stockfish_depth = stockfish_depth
-        self.num_simulations = num_simulations # <-- STORE THE VALUE
+        self.num_simulations = num_simulations
         
         print("Initializing Stockfish for MentorPlay...")
         self.stockfish_player = StockfishCommunicator(stockfish_path)
@@ -40,20 +34,19 @@ class MentorPlay:
 
         print(f"Mentor game setup: Agent plays as {chess.COLOR_NAMES[self.agent_color]}")
 
-    def play_game(self) -> List[Tuple[Any, Dict[chess.Move, float], float]]:
+    def play_game(self) -> Tuple[List[Tuple[Any, Dict[chess.Move, float], float]], chess.pgn.Game]:
         """
-        Plays a full game, returning training data from the agent's perspective.
+        Plays a full game, returning training data and the PGN object.
         """
         print("Starting a new mentor game...")
         self.stockfish_player.reset_board()
         board = self.stockfish_player.board
 
-        game_history = [] # Stores (board_tensor, policy, turn_at_state)
+        game_history = [] 
         
         while not self.stockfish_player.is_game_over():
             if board.turn == self.agent_color:
                 # --- Agent's Turn ---
-                # --- FIXED: Use self.num_simulations ---
                 policy, best_move, board_tensor = self.mcts_agent.run_search(
                     board.copy(),
                     self.num_simulations
@@ -90,7 +83,26 @@ class MentorPlay:
         for board_tensor_hist, policy_hist, _ in game_history:
             training_data.append((board_tensor_hist, policy_hist, agent_perspective_result))
 
-        return training_data
+        # --- ADDED: Generate PGN ---
+        pgn = None
+        try:
+            pgn = chess.pgn.Game()
+            pgn.headers["Event"] = "Mentor Training Game"
+            pgn.headers["Site"] = "Colab Environment"
+            pgn.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
+            pgn.headers["White"] = "MCTS_Agent" if self.agent_color == chess.WHITE else "Stockfish_Mentor"
+            pgn.headers["Black"] = "MCTS_Agent" if self.agent_color == chess.BLACK else "Stockfish_Mentor"
+            pgn.headers["Result"] = self.stockfish_player.board.result(claim_draw=True)
+            
+            if self.stockfish_player.board.move_stack:
+                node = pgn.add_main_variation(self.stockfish_player.board.move_stack[0])
+                for i in range(1, len(self.stockfish_player.board.move_stack)):
+                    node = node.add_main_variation(self.stockfish_player.board.move_stack[i])
+        except Exception as e:
+            print(f"[ERROR] Could not generate PGN for the game: {e}")
+
+        # --- RETURN BOTH TRAINING DATA AND PGN OBJECT ---
+        return training_data, pgn
 
     def close(self):
         """Closes the Stockfish process."""
