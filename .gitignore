@@ -1,5 +1,5 @@
 # =================================================================
-# Standard Python, IDE, and OS Files (from your original file)
+# Standard Python, IDE, and OS Files
 # =================================================================
 
 # Python Byte-compiled / optimized files
@@ -43,7 +43,7 @@ ehthumbs.db
 Thumbs.db
 
 # =================================================================
-# Project-Specific Generated Files (NEW)
+# Project-Specific Generated Files
 # =================================================================
 
 # Build artifacts
@@ -51,11 +51,18 @@ build/
 dist/
 *.egg-info/
 
-# Generated training data from self-play
+# Generated training data from self-play and mentor-play
 training_data/
 
 # Saved model checkpoints
 checkpoints/
+
+# Generated PGN game files
+pgn_games/
+
+# Log files and analysis output
+loss_log_v2.csv
+supervisor_log.txt
 
 # Generated visualizations and test outputs
 # This will ignore the .png files in your root directory

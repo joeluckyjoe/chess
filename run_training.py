@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 from pathlib import Path
 import chess.pgn
+import datetime
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -14,6 +15,7 @@ from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
+from gnn_agent.rl_loop.training_supervisor import TrainingSupervisor
 
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
@@ -22,19 +24,37 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
+def get_mentor_game_outcome(pgn_data, agent_color_str):
+    """
+    Parses the PGN result and determines the outcome from the agent's perspective.
+    Returns: 1.0 for win, 0.5 for draw, 0.0 for loss.
+    """
+    result = pgn_data.headers.get("Result")
+    agent_is_white = agent_color_str.lower() == 'white'
+
+    if result == "1-0": # White won
+        return 1.0 if agent_is_white else 0.0
+    elif result == "0-1": # Black won
+        return 0.0 if agent_is_white else 1.0
+    elif result == "1/2-1/2": # Draw
+        return 0.5
+    else: # In case of '*' or other results
+        return 0.5 # Default to draw if result is inconclusive
+
 def main():
     """
-    Main training loop that orchestrates self-play, mentor-play, and network training.
+    Main training loop that orchestrates self-play, mentor-play, and network training,
+    now correctly guided by a stateful TrainingSupervisor.
     """
     # --- 1. Get Environment-Aware Paths & Config ---
     checkpoints_path, training_data_path = get_paths()
     
-    # --- ADDED: Create and print a path for PGNs ---
     project_root = training_data_path.parent
     pgn_path = project_root / 'pgn_games'
     pgn_path.mkdir(exist_ok=True)
     
     loss_log_filepath = project_root / 'loss_log_v2.csv'
+    supervisor_log_filepath = project_root / 'supervisor_log.txt'
 
     device_str = config_params['DEVICE']
     device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
@@ -44,6 +64,7 @@ def main():
     print(f"Training data will be saved to: {training_data_path}")
     print(f"PGN games will be saved to: {pgn_path}")
     print(f"Losses will be logged to: {loss_log_filepath}")
+    print(f"Supervisor decisions will be logged to: {supervisor_log_filepath}")
 
     # --- 2. Initialize Components ---
     trainer = Trainer(
@@ -62,7 +83,7 @@ def main():
     else:
         print("Starting training from scratch.")
     
-    # --- 4. Initialize Players ---
+    # --- 4. Initialize Players & Supervisor ---
     mcts_player = MCTS(
         network=chess_network, 
         device=device, 
@@ -86,23 +107,50 @@ def main():
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
+    # --- MODIFIED: Initialize the Training Supervisor correctly ---
+    print("Initializing Training Supervisor...")
+    supervisor = TrainingSupervisor(config=config_params)
+    
+    # --- MODIFIED: Initialize the training mode ---
+    current_mode = "self-play" 
+    print(f"Starting training in '{current_mode}' mode.")
+
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
+        print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Current Mode: {current_mode}) ---")
+        
+        # --- MODIFIED: Supervisor decision logic ---
+        reason_for_switch = ""
+        if current_mode == "self-play":
+            if supervisor.should_switch_to_mentor():
+                current_mode = "mentor"
+                reason_for_switch = "Stagnation detected. Switching to mentor play."
+        elif current_mode == "mentor":
+            if supervisor.should_switch_to_self_play():
+                current_mode = "self-play"
+                reason_for_switch = "Improvement detected. Switching to self-play."
+
+        # Log if a switch occurred
+        if reason_for_switch:
+            with open(supervisor_log_filepath, 'a') as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                log_message = f"[{timestamp}] Game {game_num}: {reason_for_switch}\n"
+                f.write(log_message)
+            print(log_message.strip())
+        
+        # Set the game_type based on the (potentially updated) mode
+        game_type = current_mode
+        
+        # a. Play the selected game type
         training_examples = []
         pgn_data = None
-        game_type = ""
-
-        # a. Alternate between Mentor and Self-Play Games
-        if game_num % config_params['MENTOR_GAME_INTERVAL'] == 0:
-            game_type = "mentor"
-            print(f"\n--- Starting Mentor Game {game_num}/{config_params['TOTAL_GAMES']} ---")
-            # --- UPDATED: Handle two return values ---
+        
+        if game_type == "mentor":
+            print(f"--- Starting Mentor Game ---")
             training_examples, pgn_data = mentor_player.play_game()
         else:
-            game_type = "self-play"
-            print(f"\n--- Starting Self-Play Game {game_num}/{config_params['TOTAL_GAMES']} ---")
-            # --- UPDATED: Handle two return values ---
+            print(f"--- Starting Self-Play Game ---")
             training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
@@ -114,7 +162,6 @@ def main():
         data_filename = f"{game_type}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
         
-        # --- ADDED: Save PGN to file ---
         if pgn_data:
             pgn_filename = pgn_path / f"{game_type}_game_{game_num}.pgn"
             try:
@@ -124,15 +171,26 @@ def main():
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
-        # c. Train the network
+        # c. Train the network and record the final loss for the supervisor
         print(f"Training on the {len(training_examples)} examples from game {game_num}...")
+        final_policy_loss = 0
         for epoch in range(config_params['TRAINING_EPOCHS']):
             policy_loss, value_loss = trainer.train_on_batch(training_examples, batch_size=config_params['BATCH_SIZE'])
+            if epoch == config_params['TRAINING_EPOCHS'] - 1: # Last epoch
+                 final_policy_loss = policy_loss
             print(f"Epoch {epoch + 1}/{config_params['TRAINING_EPOCHS']} complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
-            
             write_loss_to_csv(loss_log_filepath, game_num, policy_loss, value_loss, game_type)
 
-        # d. Save a checkpoint periodically
+        # d. Feed results back to the supervisor
+        if game_type == "self-play":
+             supervisor.record_self_play_loss(final_policy_loss)
+             print(f"Recorded self-play loss for supervisor: {final_policy_loss:.4f}")
+        elif game_type == "mentor" and pgn_data:
+             outcome = get_mentor_game_outcome(pgn_data, config_params['MENTOR_GAME_AGENT_COLOR'])
+             supervisor.record_mentor_game_outcome(outcome)
+             print(f"Recorded mentor game outcome for supervisor: {outcome}")
+
+        # e. Save a checkpoint periodically
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
             trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)

@@ -11,22 +11,29 @@ config_params = {
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Training Run Settings --
-    "TOTAL_GAMES": 2000,          # Total games to run in the training session (increased for full run)
-    "CHECKPOINT_INTERVAL": 10,    # Save a checkpoint every N games (adjusted for longer run)
+    "TOTAL_GAMES": 2000,          # Total games to run in the training session
+    "CHECKPOINT_INTERVAL": 10,    # Save a checkpoint every N games
     "TRAINING_EPOCHS": 1,         # Epochs per training session (after each game)
     "BATCH_SIZE": 64,
 
     # -- MCTS Settings --
-    "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move (increased for better move quality)
+    "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
-    # -- Mentor-Guided Training Settings (NEW) --
-    "MENTOR_GAME_INTERVAL": 5,        # Play a mentor game every 5 games (1 mentor, 4 self-play)
-    "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
+    # -- Training Supervisor Settings (Tuned for Local Test) --
+    "supervisor_loss_history_size": 20, # Number of self-play games to analyze for stagnation (LOWERED for local test)
+    "stagnation_window": 0.25,          # % of the loss history to check for a recent changepoint
+    "ruptures_model": "l2",             # Model used by the ruptures library for changepoint detection
+    "ruptures_penalty": 1,              # (TUNED VALUE) Penalty for creating changepoints.
+    
+    "mentor_history_size": 5,           # Number of mentor games to analyze for improvement
+    "mentor_win_threshold": 1,          # Switch to self-play after this many WINS against mentor
+    "mentor_draw_threshold": 2,         # Switch to self-play after this many DRAWS against mentor
 
-    # -- Opponent Settings --
-    "STOCKFISH_DEPTH_MENTOR": 10,     # Stockfish depth for mentor games (increased for stronger guidance)
-    "STOCKFISH_DEPTH_EVAL": 10,       # Stockfish depth for formal evaluation (matched to mentor)
+    # -- Mentor & Opponent Settings --
+    "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
+    "STOCKFISH_DEPTH_MENTOR": 10,       # Stockfish depth for mentor games
+    "STOCKFISH_DEPTH_EVAL": 10,         # Stockfish depth for formal evaluation
 
     # -- Neural Network & Training Settings --
     "LEARNING_RATE": 0.0001,
