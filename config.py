@@ -20,20 +20,18 @@ config_params = {
     "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
-    # -- Training Supervisor Settings (Tuned for Local Test) --
-    "supervisor_loss_history_size": 20, # Number of self-play games to analyze for stagnation (LOWERED for local test)
-    "stagnation_window": 0.25,          # % of the loss history to check for a recent changepoint
-    "ruptures_model": "l2",             # Model used by the ruptures library for changepoint detection
-    "ruptures_penalty": 1,              # (TUNED VALUE) Penalty for creating changepoints.
+    # --- ThresholdSupervisor Parameters ---
+    'SUPERVISOR_WINDOW_SIZE': 20,           # Self-Play: Number of recent games to analyze for stagnation.
+    'SUPERVISOR_VOLATILITY_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
+    'SUPERVISOR_PERFORMANCE_THRESHOLD': 1.8,  # Self-Play: Average policy loss to trigger mentor mode.
+    'SUPERVISOR_GRADUATION_WINDOW': 10,       # Mentor-Play: Number of recent games to analyze for graduation.
+    'SUPERVISOR_GRADUATION_THRESHOLD': 0.05,  # Mentor-Play: Avg value loss to trigger graduation back to self-play.
+    'SUPERVISOR_MOVE_COUNT_THRESHOLD': 25,    # Mentor-Play: Avg number of moves to trigger graduation.
     
-    "mentor_history_size": 5,           # Number of mentor games to analyze for improvement
-    "mentor_win_threshold": 1,          # Switch to self-play after this many WINS against mentor
-    "mentor_draw_threshold": 2,         # Switch to self-play after this many DRAWS against mentor
-
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
-    "STOCKFISH_DEPTH_MENTOR": 10,       # Stockfish depth for mentor games
-    "STOCKFISH_DEPTH_EVAL": 10,         # Stockfish depth for formal evaluation
+    "STOCKFISH_DEPTH_MENTOR": 10,      # Stockfish depth for mentor games
+    "STOCKFISH_DEPTH_EVAL": 10,        # Stockfish depth for formal evaluation
 
     # -- Neural Network & Training Settings --
     "LEARNING_RATE": 0.0001,
