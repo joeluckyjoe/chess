@@ -1,5 +1,6 @@
 import torch
 import os
+import re # --- NEW: Import regular expressions ---
 from datetime import datetime
 from pathlib import Path
 import torch.optim as optim
@@ -16,7 +17,6 @@ class Trainer:
     """
     Manages the training process and checkpointing for the ChessNetwork.
     """
-    # --- MODIFIED: __init__ to handle optional network and store model_config ---
     def __init__(self, model_config: Dict[str, Any], network: ChessNetwork = None, learning_rate: float = 0.001, weight_decay: float = 0.0, device: torch.device = torch.device("cpu")):
         """
         Initializes the Trainer. The network can be provided later.
@@ -27,21 +27,17 @@ class Trainer:
         self.optimizer = None
         self.value_criterion = MSELoss()
         
-        # If a network is provided upon initialization, set it up
         if self.network:
             self.network.to(self.device)
             self.optimizer = optim.Adam(self.network.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
-    # --- NEW: Helper method to create a new network instance ---
     def _initialize_new_network(self) -> Tuple[ChessNetwork, int]:
         """Creates a new network instance based on config and initializes the optimizer."""
-        # These imports are local to this function to avoid circular dependencies if ever needed
         from ..neural_network.gnn_models import SquareGNN, PieceGNN
         from ..neural_network.attention_module import CrossAttentionModule
         from ..neural_network.policy_value_heads import PolicyHead, ValueHead
 
         print("Creating new network from scratch...")
-        # Reconstruct the model architecture based on known parameters
         square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
         piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
         cross_attention = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4)
@@ -56,20 +52,26 @@ class Trainer:
             value_head=value_head
         ).to(self.device)
 
-        # Initialize the optimizer for the new network
         self.optimizer = optim.Adam(
             self.network.parameters(), 
             lr=self.model_config['LEARNING_RATE'], 
             weight_decay=self.model_config['WEIGHT_DECAY']
         )
         
-        return self.network, 0 # Return network and game number 0 for a fresh start
+        return self.network, 0
 
-    # --- REPLACED: load_checkpoint is now this combined method ---
+    # --- NEW: Helper function to parse game number from filename ---
+    def _get_game_number_from_filename(self, filepath: Path) -> int:
+        """Extracts the game number from a checkpoint filename."""
+        match = re.search(r'checkpoint_game_(\d+)_', filepath.name)
+        if match:
+            return int(match.group(1))
+        return -1 # Return -1 if no match, so it won't be chosen as max
+
     def load_or_initialize_network(self, directory: Path) -> Tuple[ChessNetwork, int]:
         """
-        Loads the most recent checkpoint if available, otherwise initializes a new network.
-        Returns the network and the starting game number.
+        Loads the most recent checkpoint based on game number, 
+        otherwise initializes a new network.
         """
         if not directory.is_dir():
             print(f"Checkpoint directory not found: {directory}. Initializing new network.")
@@ -80,20 +82,22 @@ class Trainer:
             print("No checkpoints found. Initializing new network.")
             return self._initialize_new_network()
 
-        latest_file = max(files, key=lambda f: f.stat().st_mtime)
-        
+        # --- MODIFIED: Find the latest file by game number, not modification time ---
+        try:
+            latest_file = max(files, key=self._get_game_number_from_filename)
+        except ValueError:
+            print("Could not parse game numbers from any checkpoint files. Initializing new network.")
+            return self._initialize_new_network()
+
         try:
             print(f"Loading checkpoint: {latest_file}")
-            # First, create the network structure and optimizer. This is crucial.
-            self._initialize_new_network()
+            self._initialize_new_network() # Create the network structure first
 
-            # Now, load the saved states into the existing structures
             checkpoint = torch.load(latest_file, map_location=self.device)
             self.network.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             game_number = checkpoint.get('game_number', 0)
 
-            # Ensure optimizer state tensors are on the correct device
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
@@ -102,11 +106,9 @@ class Trainer:
             print(f"Checkpoint loaded successfully. Resuming from game {game_number + 1}.")
             return self.network, game_number
         except Exception as e:
-            print(f"Error loading checkpoint from {latest_file}: {e}. Initializing new network from scratch.")
+            print(f"Error loading checkpoint from {latest_file}: {e}. Initializing new network.")
             return self._initialize_new_network()
 
-    # --- UNCHANGED: The rest of the methods below are the same as your original file ---
-    
     def _convert_mcts_policy_to_tensor(self, mcts_policy_dict: Dict[chess.Move, float],
                                        action_space_size: int) -> torch.Tensor:
         """Converts an MCTS policy dictionary (move -> prob) to a dense tensor."""
@@ -129,7 +131,6 @@ class Trainer:
 
         self.network.train()
         
-        # Shuffle data for stochasticity
         indices = torch.randperm(len(batch_data))
         batch_data = [batch_data[i] for i in indices]
 
@@ -142,21 +143,12 @@ class Trainer:
             batch_chunk = batch_data[i:i+batch_size]
             if not batch_chunk:
                 continue
-
-            # This part has a slight inefficiency: it processes states one-by-one instead of in a true batch.
-            # This is a known limitation of handling complex graph data without a library like PyTorch Geometric.
-            # It still works correctly by accumulating gradients before the optimizer step.
             
-            # Unzip the batch chunk
             gnn_input_tuples, mcts_policies, game_outcomes = zip(*batch_chunk)
 
-            # Prepare targets
             action_space_size = get_action_space_size()
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, action_space_size) for p in mcts_policies])
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
-
-            # This is a simplification; a true batch forward pass would need to handle the list of tuples.
-            # For now, we process one-by-one and accumulate gradients.
             
             chunk_policy_loss = 0
             chunk_value_loss = 0
@@ -169,7 +161,6 @@ class Trainer:
                 value_loss = self.value_criterion(pred_value, value_targets[j])
                 
                 total_loss = policy_loss + value_loss
-                # Scale loss by chunk size to average it over the "mini-batch"
                 (total_loss / len(batch_chunk)).backward()
 
                 chunk_policy_loss += policy_loss.item()
