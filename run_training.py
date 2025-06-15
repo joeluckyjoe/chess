@@ -32,9 +32,12 @@ def main():
     # --- 1. Get Environment-Aware Paths & Config ---
     checkpoints_path, training_data_path = get_paths()
     
-    project_root = training_data_path.parent
+    # --- MODIFIED: Use the correct base path for logs ---
+    # In Colab, training_data_path will be on Google Drive. Its parent is the project root.
+    # In local, it's the local project root. This ensures logs are saved with the data.
+    project_root = training_data_path.parent 
     pgn_path = project_root / 'pgn_games'
-    pgn_path.mkdir(exist_ok=True)
+    pgn_path.mkdir(parents=True, exist_ok=True)
     
     loss_log_filepath = project_root / 'loss_log_v2.csv'
     supervisor_log_filepath = project_root / 'supervisor_log.txt'
@@ -44,10 +47,7 @@ def main():
 
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
-    print(f"Training data will be saved to: {training_data_path}")
-    print(f"PGN games will be saved to: {pgn_path}")
-    print(f"Losses will be logged to: {loss_log_filepath}")
-    print(f"Supervisor decisions will be logged to: {supervisor_log_filepath}")
+    print(f"Training data (and logs) will be saved to: {project_root}")
 
     # --- 2. Initialize Components ---
     trainer = Trainer(
@@ -111,9 +111,6 @@ def main():
             print(f"Game type '{current_mode}' resulted in no training examples. Skipping.")
             continue
         
-        # --- NEW: Get the number of moves played in the game ---
-        # The number of training examples corresponds to the number of moves played by the agent.
-        # For a full game, we multiply by 2 (approximately). We'll use len(pgn.mainline_moves()) for accuracy.
         num_moves = len(list(pgn_data.mainline_moves())) if pgn_data else 0
 
         print(f"{current_mode.capitalize()} game complete ({num_moves} moves). Generated {len(training_examples)} examples.")
@@ -146,7 +143,7 @@ def main():
         supervisor.update({
             'policy_loss': final_policy_loss,
             'value_loss': final_value_loss,
-            'num_moves': num_moves # --- NEW: Pass the move count to the supervisor ---
+            'num_moves': num_moves
         })
         
         if supervisor.mode != previous_mode:
