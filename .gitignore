@@ -63,8 +63,12 @@ pgn_games/
 # Log files and analysis output
 loss_log_v2.csv
 supervisor_log.txt
+# MODIFIED: Ignore the entire analysis output directory and specific generated files
+analysis_output/
+generate_gifs_*.sh
+combined_logs.txt
 
 # Generated visualizations and test outputs
-# This will ignore the .png files in your root directory
-*.png
+# REMOVED: The generic *.png rule is too broad.
+# We now ignore the specific directory above.
 test_outputs/

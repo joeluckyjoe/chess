@@ -8,7 +8,8 @@ from pathlib import Path
 config_params = {
     # -- General & Path Settings --
     "DEVICE": "auto",  # Use "auto" to detect CUDA, or force "cpu"
-    "STOCKFISH_PATH": "/usr/games/stockfish",
+    # CORRECTED: Path now points to the locally managed Stockfish engine
+    "STOCKFISH_PATH": "./stockfish/stockfish",
 
     # -- Training Run Settings --
     "TOTAL_GAMES": 2000,          # Total games to run in the training session
@@ -21,8 +22,8 @@ config_params = {
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
     # --- ThresholdSupervisor Parameters ---
-    'SUPERVISOR_WINDOW_SIZE': 20,           # Self-Play: Number of recent games to analyze for stagnation.
-    'SUPERVISOR_VOLATILITY_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
+    'SUPERVISOR_WINDOW_SIZE': 20,         # Self-Play: Number of recent games to analyze for stagnation.
+    'SUPERVISOR_VOLATility_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 1.8,  # Self-Play: Average policy loss to trigger mentor mode.
     'SUPERVISOR_GRADUATION_WINDOW': 10,       # Mentor-Play: Number of recent games to analyze for graduation.
     'SUPERVISOR_GRADUATION_THRESHOLD': 0.05,  # Mentor-Play: Avg value loss to trigger graduation back to self-play.
@@ -30,8 +31,8 @@ config_params = {
     
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
-    "STOCKFISH_DEPTH_MENTOR": 10,      # Stockfish depth for mentor games
-    "STOCKFISH_DEPTH_EVAL": 10,        # Stockfish depth for formal evaluation
+    "STOCKFISH_DEPTH_MENTOR": 10,        # Stockfish depth for mentor games
+    "STOCKFISH_DEPTH_EVAL": 10,          # Stockfish depth for formal evaluation
 
     # -- Neural Network & Training Settings --
     "LEARNING_RATE": 0.0001,
