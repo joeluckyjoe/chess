@@ -21,15 +21,16 @@ STOCKFISH_EXEC="${STOCKFISH_DIR}/stockfish"
 if [ -f "$STOCKFISH_EXEC" ]; then
     echo "Stockfish executable already found. Skipping download."
 else
-    echo "Stockfish not found. Downloading and setting up Stockfish 16..."
+    echo "Stockfish not found. Downloading and setting up Stockfish 16.1.1..."
     # Create the directory
     mkdir -p $STOCKFISH_DIR
     
-    # CORRECTED: Using a stable, direct download link to prevent errors.
-    wget https://abrok.eu/stockfish/stockfish-16-linux-x86-64-avx2.zip -O stockfish.zip
+    # CORRECTED: Using a new, stable, and official download link for Stockfish 16.1.1
+    wget https://stockfishchess.org/files/stockfish-16.1.1-linux-x64-avx2.zip -O stockfish.zip
     
     # Unzip the contents, placing the executable directly in our target directory
-    unzip -j stockfish.zip "stockfish-16-linux-x86-64-avx2/stockfish" -d $STOCKFISH_DIR
+    # The path inside the zip file has also been updated to match the new version.
+    unzip -j stockfish.zip "stockfish-16.1.1-linux-x64-avx2/stockfish" -d $STOCKFISH_DIR
     
     # Clean up the downloaded zip file
     rm stockfish.zip
