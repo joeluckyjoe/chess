@@ -8,8 +8,8 @@ from pathlib import Path
 config_params = {
     # -- General & Path Settings --
     "DEVICE": "auto",  # Use "auto" to detect CUDA, or force "cpu"
-    # CORRECTED: Path now points to the locally managed Stockfish engine
-    "STOCKFISH_PATH": "./stockfish/stockfish",
+    # CORRECTED: Path now points to the system-installed Stockfish from apt-get
+    "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Training Run Settings --
     "TOTAL_GAMES": 2000,          # Total games to run in the training session
@@ -23,7 +23,7 @@ config_params = {
 
     # --- ThresholdSupervisor Parameters ---
     'SUPERVISOR_WINDOW_SIZE': 20,         # Self-Play: Number of recent games to analyze for stagnation.
-    'SUPERVISOR_VOLATility_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
+    'SUPERVISOR_VOLATILITY_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 1.8,  # Self-Play: Average policy loss to trigger mentor mode.
     'SUPERVISOR_GRADUATION_WINDOW': 10,       # Mentor-Play: Number of recent games to analyze for graduation.
     'SUPERVISOR_GRADUATION_THRESHOLD': 0.05,  # Mentor-Play: Avg value loss to trigger graduation back to self-play.

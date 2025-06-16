@@ -14,35 +14,12 @@ sudo apt-get install -y imagemagick wget unzip
 echo "System dependencies installed."
 
 
-# --- 2. Install Specific Stockfish Version ---
-STOCKFISH_DIR="stockfish"
-STOCKFISH_EXEC="${STOCKFISH_DIR}/stockfish"
-
-if [ -f "$STOCKFISH_EXEC" ]; then
-    echo "Stockfish executable already found. Skipping download."
-else
-    echo "Stockfish not found. Downloading and setting up Stockfish 15.1..."
-    # Create the directory
-    mkdir -p $STOCKFISH_DIR
-    
-    # DEFINITIVE FIX #3: Using a permanent, direct download link from a reliable community mirror.
-    wget https://abrok.eu/stockfish/stockfish-15.1-linux-x86-64-avx2.zip -O stockfish.zip
-    
-    # Unzip the contents, placing the executable directly in our target directory
-    # The path inside the zip file is updated to match version 15.1.
-    unzip -j stockfish.zip "stockfish-15.1-linux-x86-64-avx2/stockfish_15.1_x64_avx2" -d $STOCKFISH_DIR
-    
-    # The unzipped file has a versioned name, so we rename it to the generic 'stockfish'
-    mv "${STOCKFISH_DIR}/stockfish_15.1_x64_avx2" "$STOCKFISH_EXEC"
-
-    # Clean up the downloaded zip file
-    rm stockfish.zip
-    
-    # Make the binary executable
-    chmod +x $STOCKFISH_EXEC
-    
-    echo "Stockfish setup complete. Executable at: ${STOCKFISH_EXEC}"
-fi
+# --- 2. Install Stockfish using the system package manager ---
+# REVERTED: Using the simple, robust 'apt-get' method as it is more reliable
+# than direct downloads which have been failing.
+echo "Installing Stockfish via apt-get for maximum reliability..."
+sudo apt-get install -y stockfish
+echo "Stockfish setup complete."
 
 
 # --- 3. Install Python Packages ---
