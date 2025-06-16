@@ -25,8 +25,8 @@ else
     # Create the directory
     mkdir -p $STOCKFISH_DIR
     
-    # CORRECTED: Using a new, stable, and official download link for Stockfish 16.1.1
-    wget https://stockfishchess.org/files/stockfish-16.1.1-linux-x64-avx2.zip -O stockfish.zip
+    # DEFINITIVE FIX: Using the stable, direct download link from the official GitHub release.
+    wget https://github.com/official-stockfish/Stockfish/releases/download/sf_16.1.1/stockfish-16.1.1-linux-x64-avx2.zip -O stockfish.zip
     
     # Unzip the contents, placing the executable directly in our target directory
     # The path inside the zip file has also been updated to match the new version.
