@@ -25,11 +25,11 @@ else
     # Create the directory
     mkdir -p $STOCKFISH_DIR
     
-    # Download the official Stockfish 16 for AVX2 CPUs (common on modern systems/Colab)
-    wget https://stockfishchess.org/files/stockfish_16_linux_x64_avx2.zip -O stockfish.zip
+    # CORRECTED: Using a stable, direct download link to prevent errors.
+    wget https://abrok.eu/stockfish/stockfish-16-linux-x86-64-avx2.zip -O stockfish.zip
     
-    # Unzip the contents
-    unzip -j stockfish.zip "stockfish_16_linux_x64_avx2/stockfish" -d $STOCKFISH_DIR
+    # Unzip the contents, placing the executable directly in our target directory
+    unzip -j stockfish.zip "stockfish-16-linux-x86-64-avx2/stockfish" -d $STOCKFISH_DIR
     
     # Clean up the downloaded zip file
     rm stockfish.zip
