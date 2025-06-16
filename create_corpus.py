@@ -7,7 +7,7 @@ A master script to automate the generation of an analysis corpus.
 This script finds the latest model checkpoint and the most recent N games,
 runs the export_game_analysis.py script for each one, and then automatically
 creates a new, executable shell script to assemble all the generated frames
-into GIFs using ImageMagick.
+into GIFs using ImageMagick with resource limits to prevent crashes.
 """
 import os
 import re
@@ -103,20 +103,18 @@ def main():
         print("⚠️ No 'convert' commands were generated. Nothing to do.")
         return
 
-    # Create the shell script automatically
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     script_name = f"generate_gifs_{timestamp}.sh"
     
     with open(script_name, "w") as f:
         f.write("#!/bin/bash\n")
-        f.write("# This script was generated automatically by create_corpus.py\n")
-        f.write("# It assembles all the generated PNG frames into GIFs.\n\n")
+        f.write("# This script was generated automatically by create_corpus.py\n\n")
         for cmd in all_convert_commands:
+            # Add robust resource limits to prevent ImageMagick from crashing
             parts = cmd.split(' ', 1)
-            command_with_limits = f"{parts[0]} -limit memory 256MiB -limit map 512MiB {parts[1]}"
+            command_with_limits = f"{parts[0]} -limit memory 1GiB -limit map 2GiB -define registry:temporary-path=/tmp {parts[1]}"
             f.write(command_with_limits + "\n")
             
-    # Make the script executable
     os.chmod(script_name, 0o775)
     
     print("✅ All PNG frames and log files have been generated.")

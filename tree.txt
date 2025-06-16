@@ -1,0 +1,126 @@
+.
+├── _archive
+│   ├── check_attackers.py
+│   ├── check_board_attacks.py
+│   ├── check_pinned_pawn.py
+│   ├── chess_environment.py
+│   ├── dual_gnn_agent.py
+│   ├── gnn_sq_input.py
+│   ├── gnn_sq_model.py
+│   ├── piece_features.py
+│   ├── square_features.py
+│   ├── temp_fen_test.py
+│   ├── test_chess_environment.py
+│   ├── test_gnn_sq_input.py
+│   ├── test_gnn_sq_model.py
+│   ├── test_piece_features.py
+│   ├── test_square_features.py
+│   ├── test_stockfish.py
+│   └── train_synthetic_gnn_sq.py
+├── analysis_logs.tar.gz
+├── assets
+│   └── pieces
+│       ├── bB.png
+│       ├── bK.png
+│       ├── bN.png
+│       ├── bP.png
+│       ├── bQ.png
+│       ├── bR.png
+│       ├── wB.png
+│       ├── wK.png
+│       ├── wN.png
+│       ├── wP.png
+│       ├── wQ.png
+│       └── wR.png
+├── attention_all_sq_to_Q_d1.png
+├── attention_all_sq_to_q_d8.png
+├── attention_sq_a1_to_pieces.png
+├── attention_sq_d4_to_pieces.png
+├── attention_visualization_real_converter_and_network.png
+├── combined_logs.txt
+├── config.py
+├── create_corpus.py
+├── evaluate_agent.py
+├── evaluate_bcd_performance.py
+├── generate_gifs.sh
+├── generate_gifs_20250615-223921.sh
+├── generate_gifs_20250615-231523.sh
+├── generate_gifs_20250616-200550.sh
+├── gnn_agent
+│   ├── __init__.py
+│   ├── gamestate_converters
+│   │   ├── __init__.py
+│   │   ├── action_space_converter.py
+│   │   ├── gnn_data_converter.py
+│   │   └── stockfish_communicator.py
+│   ├── neural_network
+│   │   ├── __init__.py
+│   │   ├── attention_module.py
+│   │   ├── chess_network.py
+│   │   ├── gnn_models.py
+│   │   └── policy_value_heads.py
+│   ├── rl_loop
+│   │   ├── __init__.py
+│   │   ├── bayesian_supervisor.py
+│   │   ├── mentor_play.py
+│   │   ├── self_play.py
+│   │   ├── threshold_supervisor.py
+│   │   ├── trainer.py
+│   │   ├── training_data_manager.py
+│   │   └── training_supervisor.py
+│   └── search
+│       ├── __init__.py
+│       ├── mcts.py
+│       └── mcts_node.py
+├── inspect_checkpoint.py
+├── loss_log_v2.csv
+├── models
+│   ├── chess_agent_v3.5.pth
+│   └── chess_agent_v3.8.pth
+├── play_mentor_game.py
+├── plot_training_analysis.py
+├── requirements.txt
+├── run_training.py
+├── setup.sh
+├── supervisor_analysis_plot.png
+├── supervisor_log.txt
+├── test_outputs
+│   ├── attention_map_start_pos.png
+│   └── start_pos_attention_board.png
+├── tests
+│   ├── __init__.py
+│   ├── gamestate_converters
+│   │   ├── __init__.py
+│   │   ├── test_gnn_data_converter.py
+│   │   └── test_stockfish_communicator.py
+│   ├── neural_network
+│   │   ├── __init__.py
+│   │   ├── test_attention_module.py
+│   │   ├── test_chess_network_attention.py
+│   │   ├── test_full_forward_pass.py
+│   │   ├── test_get_attention_from_fen.py
+│   │   └── test_gnn_models.py
+│   ├── search
+│   │   ├── __init__.py
+│   │   ├── test_mcts.py
+│   │   ├── test_mcts_node.py
+│   │   └── test_mcts_noise.py
+│   ├── test_evaluate_agent.py
+│   ├── test_rl_loop
+│   │   ├── __init__.py
+│   │   ├── test_bayesian_supervisor.py
+│   │   ├── test_self_play.py
+│   │   ├── test_threshold_supervisor.py
+│   │   ├── test_trainer.py
+│   │   ├── test_training_data_manager.py
+│   │   └── test_training_supervisor.py
+│   └── test_visualize_attention.py
+├── training_log_sample.csv
+├── tree.txt
+├── value_loss_changepoints.png
+└── visualization
+    ├── __init__.py
+    ├── export_game_analysis.py
+    └── visualize_attention.py
+
+17 directories, 107 files
