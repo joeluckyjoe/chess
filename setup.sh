@@ -21,17 +21,20 @@ STOCKFISH_EXEC="${STOCKFISH_DIR}/stockfish"
 if [ -f "$STOCKFISH_EXEC" ]; then
     echo "Stockfish executable already found. Skipping download."
 else
-    echo "Stockfish not found. Downloading and setting up Stockfish 16.1.1..."
+    echo "Stockfish not found. Downloading and setting up Stockfish 15.1..."
     # Create the directory
     mkdir -p $STOCKFISH_DIR
     
-    # DEFINITIVE FIX: Using the stable, direct download link from the official GitHub release.
-    wget https://github.com/official-stockfish/Stockfish/releases/download/sf_16.1.1/stockfish-16.1.1-linux-x64-avx2.zip -O stockfish.zip
+    # DEFINITIVE FIX #3: Using a permanent, direct download link from a reliable community mirror.
+    wget https://abrok.eu/stockfish/stockfish-15.1-linux-x86-64-avx2.zip -O stockfish.zip
     
     # Unzip the contents, placing the executable directly in our target directory
-    # The path inside the zip file has also been updated to match the new version.
-    unzip -j stockfish.zip "stockfish-16.1.1-linux-x64-avx2/stockfish" -d $STOCKFISH_DIR
+    # The path inside the zip file is updated to match version 15.1.
+    unzip -j stockfish.zip "stockfish-15.1-linux-x86-64-avx2/stockfish_15.1_x64_avx2" -d $STOCKFISH_DIR
     
+    # The unzipped file has a versioned name, so we rename it to the generic 'stockfish'
+    mv "${STOCKFISH_DIR}/stockfish_15.1_x64_avx2" "$STOCKFISH_EXEC"
+
     # Clean up the downloaded zip file
     rm stockfish.zip
     
