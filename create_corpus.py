@@ -10,7 +10,7 @@ the latest model. It also now combines all generated logs into a single file.
 """
 import os
 import re
-import sys # <--- CORRECTED: Added missing import
+import sys
 import argparse
 import subprocess
 from pathlib import Path
@@ -73,6 +73,19 @@ def main():
 
     # Get paths from config.py to be environment-aware (local vs Colab)
     checkpoints_dir, training_data_dir = get_paths()
+
+    # --- DEBUGGING STEP: List contents of the training_data directory ---
+    print(f"DEBUG: Checking contents of parent data directory: {training_data_dir.resolve()}")
+    try:
+        if training_data_dir.exists():
+            contents = list(training_data_dir.iterdir())
+            print(f"DEBUG: Found contents: {[item.name for item in contents]}")
+        else:
+            print(f"DEBUG: Directory does not exist: {training_data_dir}")
+    except Exception as e:
+        print(f"DEBUG: Error listing contents: {e}")
+    # --- END DEBUGGING ---
+
     pgn_dir = training_data_dir / 'pgn_games'
 
     # The logic to find the latest checkpoint is now handled by export_game_analysis.py
