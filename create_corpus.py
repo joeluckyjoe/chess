@@ -4,8 +4,9 @@
 """
 A master script to automate the generation of an analysis corpus.
 
-V5: Final path fix. Ensures combined_logs.txt is saved to the project root
-in both local and Colab environments.
+V7: Corrects the combine_logs function to prevent redundant headers,
+ensuring a clean, parsable combined_logs.txt file. This is the definitive
+fix for the log generation process.
 """
 import os
 import re
@@ -45,8 +46,11 @@ def find_recent_pgns(pgn_dir, num_games):
     return [p[1] for p in game_files[:num_games]]
 
 def combine_logs(output_dir, combined_log_path):
-    """Finds all individual log files and combines them into one."""
+    """
+    Finds all individual log files and combines them into one clean file.
+    """
     path = Path(output_dir)
+    # Use glob to find all log files and sort them to maintain order
     log_files = sorted(list(path.glob('*_log.txt')))
 
     if not log_files:
@@ -54,11 +58,20 @@ def combine_logs(output_dir, combined_log_path):
         return
 
     print(f"\n--- Combining {len(log_files)} Log Files ---")
-    with open(combined_log_path, 'w') as combined_file:
-        for log_file in log_files:
+    # Open with utf-8 encoding to handle characters correctly.
+    with open(combined_log_path, 'w', encoding='utf-8') as combined_file:
+        for i, log_file in enumerate(log_files):
             print(f"Adding: {log_file.name}")
-            header = f"\n{'='*40}\nAnalysis Log for: {log_file.name}\n{'='*40}\n\n"
-            combined_file.write(log_file.read_text())
+            
+            # Add a separator only BETWEEN files, not before the first one.
+            if i > 0:
+                # Using two newlines creates a clean visual break.
+                combined_file.write("\n\n") 
+            
+            # CORRECTED: Simply write the content of each individual log file.
+            # The individual logs already contain the necessary headers.
+            # This avoids creating redundant/corrupting headers.
+            combined_file.write(log_file.read_text(encoding='utf-8'))
     
     # Use resolve() to show the full, absolute path
     print(f"✅ Successfully created combined log file at: {Path(combined_log_path).resolve()}")
@@ -134,7 +147,6 @@ def main():
     print("\n\n--- Post-Processing ---")
     
     # 1. Combine all generated log files
-    # CORRECTED: Use the robust project_root to define the absolute output path
     combined_log_path = project_root / "combined_logs.txt"
     combine_logs(args.output_dir, combined_log_path)
 

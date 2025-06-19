@@ -52,6 +52,7 @@ pytz==2025.2
 requests==2.32.3
 ruptures==1.1.9
 scipy==1.15.3
+seaborn==0.13.2
 setuptools==80.7.1
 six==1.17.0
 sympy==1.14.0
