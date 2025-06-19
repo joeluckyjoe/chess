@@ -4,8 +4,8 @@
 """
 A master script to automate the generation of an analysis corpus.
 
-V4: Implements robust, environment-aware path logic to correctly locate
-directories in both local and Colab environments.
+V5: Final path fix. Ensures combined_logs.txt is saved to the project root
+in both local and Colab environments.
 """
 import os
 import re
@@ -58,10 +58,10 @@ def combine_logs(output_dir, combined_log_path):
         for log_file in log_files:
             print(f"Adding: {log_file.name}")
             header = f"\n{'='*40}\nAnalysis Log for: {log_file.name}\n{'='*40}\n\n"
-            combined_file.write(header)
             combined_file.write(log_file.read_text())
     
-    print(f"✅ Successfully created combined log file at: {combined_log_path}")
+    # Use resolve() to show the full, absolute path
+    print(f"✅ Successfully created combined log file at: {Path(combined_log_path).resolve()}")
 
 def main():
     parser = argparse.ArgumentParser(description="Automate the creation of an analysis corpus.")
@@ -85,7 +85,7 @@ def main():
 
     # Use the determined project_root to define paths
     checkpoints_dir = project_root / "checkpoints"
-    pgn_dir = project_root / args.pgn_dir 
+    pgn_dir = project_root / args.pgn_dir
     
     if not os.path.isdir(checkpoints_dir) or not any(Path(checkpoints_dir).iterdir()):
         print(f"Error: Checkpoint directory '{checkpoints_dir}' is empty or does not exist.")
@@ -100,7 +100,7 @@ def main():
     print("\n--- Processing Games ---")
     all_convert_commands = []
     
-    # Ensure output directory exists
+    # Ensure output directory exists (relative to the execution directory)
     os.makedirs(args.output_dir, exist_ok=True)
 
     for i, pgn_path in enumerate(recent_pgns):
@@ -134,7 +134,9 @@ def main():
     print("\n\n--- Post-Processing ---")
     
     # 1. Combine all generated log files
-    combine_logs(args.output_dir, "combined_logs.txt")
+    # CORRECTED: Use the robust project_root to define the absolute output path
+    combined_log_path = project_root / "combined_logs.txt"
+    combine_logs(args.output_dir, combined_log_path)
 
     # 2. Generate the GIF creation script
     if not all_convert_commands:
@@ -142,7 +144,7 @@ def main():
         return
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    script_name = f"generate_gifs_{timestamp}.sh"
+    script_name = project_root / f"generate_gifs_{timestamp}.sh"
     
     with open(script_name, "w") as f:
         f.write("#!/bin/bash\n")
