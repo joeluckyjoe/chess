@@ -4,9 +4,8 @@
 """
 A master script to automate the generation of an analysis corpus.
 
-V3: Now correctly locates the PGN directory at the project root.
-It automatically finds paths from config.py and relies on export_game_analysis.py 
-to find the latest model. It also now combines all generated logs into a single file.
+V4: Implements robust, environment-aware path logic to correctly locate
+directories in both local and Colab environments.
 """
 import os
 import re
@@ -17,9 +16,10 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path to allow importing from config
-project_root = Path(os.path.abspath(__file__)).parent
-if str(project_root) not in sys.path:
-    sys.path.insert(0, str(project_root))
+# Note: We determine the true project_root in main() for robustness.
+project_root_for_imports = Path(os.path.abspath(__file__)).parent
+if str(project_root_for_imports) not in sys.path:
+    sys.path.insert(0, str(project_root_for_imports))
 
 from config import get_paths, config_params
 
@@ -35,16 +35,13 @@ def find_recent_pgns(pgn_dir, num_games):
     
     game_files = []
     for pgn_file in pgn_files:
-        # Regex to find the game number in filenames like 'self-play_game_890.pgn'
         match = re.search(r'game_(\d+)\.pgn', pgn_file.name)
         if match:
             game_num = int(match.group(1))
             game_files.append((game_num, pgn_file))
             
-    # Sort by game number, descending
     game_files.sort(key=lambda x: x[0], reverse=True)
     
-    # Return the file paths for the top N games
     return [p[1] for p in game_files[:num_games]]
 
 def combine_logs(output_dir, combined_log_path):
@@ -76,16 +73,20 @@ def main():
 
     print("--- Starting Analysis Corpus Generation ---")
 
-    # Get paths from config.py to be environment-aware (local vs Colab)
-    checkpoints_dir, _ = get_paths()
-    
-    # CORRECTED: pgn_dir is now correctly located at the project root.
-    # In Colab, project_root will be /content/drive/MyDrive/ChessMCTS_RL/
-    # Locally, it will be the local project root.
-    pgn_dir = project_root / args.pgn_dir
+    # --- Robust Environment-Aware Path Configuration ---
+    if 'COLAB_GPU' in os.environ:
+        print("Colab environment detected.")
+        # In Colab, the project root is explicitly set to the Drive mount point
+        project_root = Path('/content/drive/MyDrive/ChessMCTS_RL')
+    else:
+        print("Local environment detected.")
+        # Locally, the project root is the parent of this script's file.
+        project_root = Path(__file__).resolve().parent
 
-    # The logic to find the latest checkpoint is now handled by export_game_analysis.py
-    # We just need to ensure the directory exists.
+    # Use the determined project_root to define paths
+    checkpoints_dir = project_root / "checkpoints"
+    pgn_dir = project_root / args.pgn_dir 
+    
     if not os.path.isdir(checkpoints_dir) or not any(Path(checkpoints_dir).iterdir()):
         print(f"Error: Checkpoint directory '{checkpoints_dir}' is empty or does not exist.")
         return
@@ -105,8 +106,6 @@ def main():
     for i, pgn_path in enumerate(recent_pgns):
         print(f"\nProcessing game {i+1}/{len(recent_pgns)}: {pgn_path.name}...")
         
-        # The --model_path is no longer needed, as the called script finds it automatically.
-        # The --stockfish_path is also no longer needed for the same reason.
         command = [
             "python",
             "visualization/export_game_analysis.py",
@@ -152,7 +151,6 @@ def main():
         f.write('sed -i \'s/<policy domain="resource" name="disk" value=".*"\/>/<policy domain="resource" name="disk" value="8GiB"\/>/g\' /etc/ImageMagick-6/policy.xml\n\n')
 
         for cmd in all_convert_commands:
-            # We no longer need to add limits here since we modify the policy file
             f.write(cmd + "\n")
             
     os.chmod(script_name, 0o775)
