@@ -4,9 +4,9 @@
 """
 A master script to automate the generation of an analysis corpus.
 
-V2: Now config-aware. It automatically finds the correct paths for checkpoints
-and PGN files from config.py and relies on export_game_analysis.py to find
-the latest model. It also now combines all generated logs into a single file.
+V3: Now correctly locates the PGN directory at the project root.
+It automatically finds paths from config.py and relies on export_game_analysis.py 
+to find the latest model. It also now combines all generated logs into a single file.
 """
 import os
 import re
@@ -17,9 +17,9 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path to allow importing from config
-project_root = os.path.dirname(os.path.abspath(__file__))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+project_root = Path(os.path.abspath(__file__)).parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 from config import get_paths, config_params
 
@@ -27,6 +27,10 @@ def find_recent_pgns(pgn_dir, num_games):
     """Finds the N most recent PGN files based on game number."""
     path = Path(pgn_dir)
     print(f"Searching for PGNs in: {path.resolve()}")
+    if not path.exists():
+        print(f"Error: PGN directory does not exist at {path.resolve()}")
+        return []
+        
     pgn_files = list(path.glob('*.pgn'))
     
     game_files = []
@@ -65,6 +69,7 @@ def combine_logs(output_dir, combined_log_path):
 def main():
     parser = argparse.ArgumentParser(description="Automate the creation of an analysis corpus.")
     parser.add_argument("--num-games", type=int, default=50, help="Number of recent games to process.")
+    parser.add_argument("--pgn-dir", type=str, default="pgn_games", help="Directory containing PGN files, relative to project root.")
     parser.add_argument("--output-dir", type=str, default="analysis_output", help="Directory to save analysis artifacts.")
     parser.add_argument("--no-loop-gif", action="store_true", help="Generate GIFs that play only once.")
     args = parser.parse_args()
@@ -72,25 +77,16 @@ def main():
     print("--- Starting Analysis Corpus Generation ---")
 
     # Get paths from config.py to be environment-aware (local vs Colab)
-    checkpoints_dir, training_data_dir = get_paths()
-
-    # --- DEBUGGING STEP: List contents of the training_data directory ---
-    print(f"DEBUG: Checking contents of parent data directory: {training_data_dir.resolve()}")
-    try:
-        if training_data_dir.exists():
-            contents = list(training_data_dir.iterdir())
-            print(f"DEBUG: Found contents: {[item.name for item in contents]}")
-        else:
-            print(f"DEBUG: Directory does not exist: {training_data_dir}")
-    except Exception as e:
-        print(f"DEBUG: Error listing contents: {e}")
-    # --- END DEBUGGING ---
-
-    pgn_dir = training_data_dir / 'pgn_games'
+    checkpoints_dir, _ = get_paths()
+    
+    # CORRECTED: pgn_dir is now correctly located at the project root.
+    # In Colab, project_root will be /content/drive/MyDrive/ChessMCTS_RL/
+    # Locally, it will be the local project root.
+    pgn_dir = project_root / args.pgn_dir
 
     # The logic to find the latest checkpoint is now handled by export_game_analysis.py
     # We just need to ensure the directory exists.
-    if not os.path.isdir(checkpoints_dir) or not any(checkpoints_dir.iterdir()):
+    if not os.path.isdir(checkpoints_dir) or not any(Path(checkpoints_dir).iterdir()):
         print(f"Error: Checkpoint directory '{checkpoints_dir}' is empty or does not exist.")
         return
 
@@ -102,7 +98,6 @@ def main():
 
     print("\n--- Processing Games ---")
     all_convert_commands = []
-    log_files_to_combine = []
     
     # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
