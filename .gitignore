@@ -52,23 +52,22 @@ dist/
 *.egg-info/
 
 # Generated training data from self-play and mentor-play
-training_data/
-
-# Saved model checkpoints
-checkpoints/
-
-# Generated PGN game files
-pgn_games/
+/training_data/
+/checkpoints/
+/pgn_games/
+/test_outputs/
 
 # Log files and analysis output
-loss_log_v2.csv
-supervisor_log.txt
-# MODIFIED: Ignore the entire analysis output directory and specific generated files
-analysis_output/
+/analysis_output/
 generate_gifs_*.sh
 combined_logs.txt
+supervisor_log.txt
+loss_log_v2.csv
 
-# Generated visualizations and test outputs
-# REMOVED: The generic *.png rule is too broad.
-# We now ignore the specific directory above.
-test_outputs/
+# CORRECTED: Add general rules for generated analysis files
+*.jsonl
+*.csv
+*.txt
+
+# Generated GIFs
+*.gif
