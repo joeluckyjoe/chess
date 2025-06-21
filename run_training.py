@@ -30,15 +30,11 @@ def main():
     guided by the ThresholdSupervisor.
     """
     # --- 1. Get Environment-Aware Paths & Config ---
-    checkpoints_path, training_data_path = get_paths()
+    # CORRECTED: Unpack all three paths returned by the get_paths function.
+    checkpoints_path, training_data_path, pgn_path = get_paths()
     
-    # --- MODIFIED: Use the correct base path for logs ---
-    # In Colab, training_data_path will be on Google Drive. Its parent is the project root.
-    # In local, it's the local project root. This ensures logs are saved with the data.
-    project_root = training_data_path.parent 
-    pgn_path = project_root / 'pgn_games'
-    pgn_path.mkdir(parents=True, exist_ok=True)
-    
+    # Get the project root from one of the returned paths for logging.
+    project_root = checkpoints_path.parent 
     loss_log_filepath = project_root / 'loss_log_v2.csv'
     supervisor_log_filepath = project_root / 'supervisor_log.txt'
 
@@ -47,7 +43,8 @@ def main():
 
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
-    print(f"Training data (and logs) will be saved to: {project_root}")
+    print(f"Training data will be saved to: {training_data_path}")
+    print(f"PGN files will be saved to: {pgn_path}")
 
     # --- 2. Initialize Components ---
     trainer = Trainer(
