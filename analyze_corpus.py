@@ -2,188 +2,167 @@
 # File: analyze_corpus.py
 #
 """
-A dedicated script to parse and analyze the 'combined_logs.txt' file.
-
-This tool is designed to programmatically search for patterns of weakness in
-the agent's play, with an initial focus on testing the "checkmate blindness"
-hypothesis. This version uses a robust line-by-line parsing method to handle
-inconsistencies and potential file encoding issues.
+Analyzes a structured JSONL corpus of game data to identify patterns
+of agent weakness.
 
 Usage:
-    python analyze_corpus.py --log-file path/to/your/combined_logs.txt
+python analyze_corpus.py --corpus_path /path/to/your/corpus.jsonl
 """
-
-import re
+import json
 import argparse
+import re
 from pathlib import Path
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import codecs
 
-def parse_log_file(log_path, debug=False):
+def parse_stockfish_mate_eval(eval_str: str):
     """
-    Parses the combined log file to extract game data, focusing on plies
-    where a forced mate is present. This version manually reconstructs game
-    blocks to be immune to file encoding issues and inconsistent separators.
+    Parses a Stockfish evaluation string to find a mate-in-N value.
+    Example: "Mate(3)" -> 3, "Mate(-2)" -> -2.
+    Returns None if no mate is found.
+    """
+    if not isinstance(eval_str, str):
+        return None
     
-    Args:
-        log_path (Path): The path to the combined_logs.txt file.
+    match = re.match(r"Mate\((-?\d+)\)", eval_str)
+    if match:
+        return int(match.group(1))
+    return None
 
-    Returns:
-        list: A list of dictionaries, where each dictionary represents a ply
-              with a forced mate and contains relevant information.
+def find_actual_mating_move(board):
     """
-    if not log_path.exists():
-        print(f"Error: Log file not found at '{log_path}'")
-        return []
+    Checks ALL legal moves on the board to find one that is an immediate checkmate.
+    This is only effective for finding a mate-in-1.
+    Returns the SAN of the mating move if found, otherwise None.
+    """
+    # Create a copy to not alter the original board passed to the function
+    board_copy = board.copy()
+    for move in board_copy.legal_moves:
+        # Create a second copy to test each move
+        temp_board = board_copy.copy()
+        temp_board.push(move)
+        if temp_board.is_checkmate():
+            # Return the Standard Algebraic Notation (SAN) of the move
+            return board_copy.san(move)
+    return None
 
+def analyze_checkmate_blindness(corpus_path: Path):
+    """
+    Scans the corpus for positions where a forced mate exists but the agent
+    does not select the move that continues the mating sequence.
+    """
+    print(f"--- Analyzing Corpus for Checkmate Blindness: {corpus_path.name} ---")
+
+    # This import is here because it's only needed for this analysis function
     try:
-        # DEFINITIVE FIX: Use utf-8-sig to automatically handle and strip a 
-        # potential Byte Order Mark (BOM) at the start of the file. This was
-        # the root cause of the previous parsing failures.
-        with open(log_path, 'r', encoding='utf-8-sig') as f:
-            lines = f.readlines()
-    except Exception as e:
-        print(f"Error reading log file: {e}")
-        return []
-
-    game_blocks = []
-    # Find the indices of all game headers using the robust startswith() method
-    start_indices = [i for i, line in enumerate(lines) if line.strip().startswith("Analysis Log for:")]
-    
-    if not start_indices:
-        print("ERROR: No lines starting with 'Analysis Log for:' were found in the log file.")
-        return []
-
-    if debug:
-        print(f"DEBUG: Found {len(start_indices)} game header lines.")
-
-    # Create game blocks by slicing the file content from one header to the next
-    for i in range(len(start_indices)):
-        start_line = start_indices[i]
-        end_line = start_indices[i+1] if i + 1 < len(start_indices) else len(lines)
-        game_blocks.append("".join(lines[start_line:end_line]))
-        
-    all_mate_plies = []
-    
-    for game_content in game_blocks:
-        game_name_match = re.search(r"Analysis Log for: (.*?)\n", game_content)
-        if not game_name_match:
-            continue
-        game_name = game_name_match.group(1).strip()
-        
-        # This regex robustly finds all ply blocks within a single game's content
-        ply_blocks = re.findall(r"--- Ply (\d+).*?---\n(.*?)(?=\n--- Ply|\Z)", game_content, re.DOTALL)
-        
-        for ply_num_str, ply_data in ply_blocks:
-            ply_num = int(ply_num_str)
-
-            # Use more flexible regex for stockfish eval
-            mate_match = re.search(r"Stockfish.+?Mate\(([-]?\d+)\)", ply_data)
-            
-            if mate_match:
-                mate_in_n = int(mate_match.group(1))
-                
-                # This regex now robustly handles both "Agent Evaluation:" and "Value:" formats
-                agent_value = None
-                new_format_match = re.search(r"Agent Evaluation: .*Pre-Move=([-]?\d+\.\d+)", ply_data)
-                old_format_match = re.search(r"Value: ([-]?\d+\.\d+)", ply_data)
-                
-                if new_format_match:
-                    agent_value = float(new_format_match.group(1))
-                elif old_format_match:
-                    agent_value = float(old_format_match.group(1))
-                
-                if agent_value is not None:
-                    all_mate_plies.append({
-                        'game_name': game_name,
-                        'ply': ply_num,
-                        'mate_in_n': mate_in_n,
-                        'agent_value': agent_value
-                    })
-
-    return all_mate_plies
-
-def analyze_checkmate_blindness(mate_data, blindness_threshold=0.95):
-    """
-    Analyzes the extracted mate data to identify instances of checkmate blindness.
-    """
-    if not mate_data:
-        return pd.DataFrame()
-    df = pd.DataFrame(mate_data)
-    df['is_blind'] = df['agent_value'].abs() < blindness_threshold
-    blind_events = df[df['is_blind']].copy()
-    blind_events['mating_side'] = blind_events['mate_in_n'].apply(lambda x: 'White' if x > 0 else 'Black')
-    return blind_events
-
-def generate_report(mate_data, blind_events):
-    """
-    Prints a summary report to the console and generates a visualization.
-    """
-    print("\n" + "="*50)
-    print("      Checkmate Blindness Analysis Report")
-    print("="*50 + "\n")
-    
-    if not mate_data:
-        print("No mate positions were found in the log file. Cannot generate a report.")
+        import chess
+    except ImportError:
+        print("Error: The 'python-chess' library is required. Please install it with 'pip install chess'")
         return
 
-    total_mate_positions = len(mate_data)
-    total_blind_instances = len(blind_events)
-    
-    print(f"Total forced mate positions found: {total_mate_positions}")
-    print(f"Instances of checkmate blindness found: {total_blind_instances}")
-    
-    if total_mate_positions > 0:
-        blindness_rate = (total_blind_instances / total_mate_positions) * 100
-        print(f"Blindness Rate: {blindness_rate:.2f}%")
-    
-    if not blind_events.empty:
-        print("\n--- Detailed Blindness Events ---\n")
-        pd.set_option('display.max_rows', 500)
-        pd.set_option('display.width', 1000)
-        print(blind_events.sort_values(by=['game_name', 'ply'])[['game_name', 'ply', 'mate_in_n', 'agent_value', 'mating_side']].to_string(index=False))
-        
-        plt.style.use('seaborn-v0_8-whitegrid')
-        fig, ax = plt.subplots(figsize=(12, 7))
-        sns.scatterplot(data=blind_events, x='ply', y='agent_value', hue='mating_side', s=100, ax=ax, palette={'White': '#4a90e2', 'Black': '#d0021b'})
-        ax.set_title('Checkmate Blindness: Agent Value vs. Ply Number in Forced Mate Positions', fontsize=16, pad=20)
-        ax.set_xlabel('Ply (Move Number)', fontsize=12)
-        ax.set_ylabel('Agent\'s Evaluation', fontsize=12)
-        ax.axhline(0.95, color='gray', linestyle='--', linewidth=1)
-        ax.axhline(-0.95, color='gray', linestyle='--', linewidth=1)
-        
-        try:
-            x_limit = ax.get_xlim()[1]
-            ax.text(x_limit, 0.95, '  Confidence Threshold', va='center', ha='left', color='gray')
-        except IndexError:
-            pass
+    if not corpus_path.exists():
+        print(f"Error: Corpus file not found at {corpus_path}")
+        return
+
+    blindness_events = []
+    current_pgn_file = "N/A"
+
+    with open(corpus_path, 'r', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            try:
+                log_entry = json.loads(line)
+
+                # Capture metadata. It applies to all subsequent log entries
+                # until a new metadata line is found.
+                if log_entry.get("type") == "analysis_metadata":
+                    current_pgn_file = log_entry.get("pgn_file", "N/A")
+                    continue # Skip to the next line
+
+                # --- Core Analysis Logic ---
+                stockfish_eval = log_entry.get("stockfish_eval")
+                mate_in_n = parse_stockfish_mate_eval(stockfish_eval)
+
+                # A mate is available if mate_in_n is not None
+                if mate_in_n is not None:
+                    board = chess.Board(log_entry.get("board_fen_before"))
+                    
+                    # Check if it's our agent's turn to deliver the mate
+                    is_agent_mate = (board.turn == chess.WHITE and mate_in_n > 0) or \
+                                    (board.turn == chess.BLACK and mate_in_n < 0)
+
+                    if is_agent_mate:
+                        agent_policy = log_entry.get("agent_eval", {}).get("policy_before", [])
+                        if not agent_policy:
+                            continue
+
+                        agent_top_move = agent_policy[0]["move"]
+                        
+                        # We determine blindness if the agent's move is not the mating move.
+                        # For mate-in-1, this means the move itself is not mate.
+                        # For mate-in-N, this is more complex, but we assume the agent's
+                        # top move should be the start of the sequence. A simple proxy for
+                        # blindness is that the agent's chosen move isn't mate itself.
+                        board_after_top_move = board.copy()
+                        try:
+                            board_after_top_move.push_san(agent_top_move)
+                        except (ValueError, chess.IllegalMoveError):
+                            pass # An illegal move is clearly not the mating move.
+
+                        if not board_after_top_move.is_checkmate():
+                            # BLINDNESS DETECTED!
+                            
+                            # CORRECTED: Differentiate reporting for mate-in-1 vs mate-in-N
+                            actual_mating_move = "Unknown"
+                            if abs(mate_in_n) == 1:
+                                # For M1, we can find the exact move.
+                                actual_mating_move = find_actual_mating_move(board) or "Error: Mate-in-1 move not found"
+                            else:
+                                # For M > 1, we can't know the exact move from the log alone.
+                                # The "correct" action was to start the mating sequence.
+                                actual_mating_move = f"(Should start Mate-in-{abs(mate_in_n)} sequence)"
+
+                            event = {
+                                "ply": log_entry.get("ply"),
+                                "fen": log_entry.get("board_fen_before"),
+                                "stockfish_eval": stockfish_eval,
+                                "agent_top_move": agent_top_move,
+                                "agent_top_prob": agent_policy[0]["prob"],
+                                "actual_mating_move": actual_mating_move,
+                                "pgn_source": current_pgn_file
+                            }
+                            blindness_events.append(event)
             
-        ax.set_ylim(-1.05, 1.05)
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-        plt.tight_layout()
-        plot_filename = "checkmate_blindness_analysis.png"
-        plt.savefig(plot_filename)
-        print(f"\n✅ Analysis plot saved as '{plot_filename}'")
+            except (json.JSONDecodeError, KeyError) as e:
+                print(f"Warning: Skipping malformed or incomplete log entry on line {line_num}. Error: {e}")
+
+    # --- Print Report ---
+    if not blindness_events:
+        print("\n✅ Analysis Complete. No checkmate blindness events found.")
     else:
-        print("\n✅ No instances of checkmate blindness were found based on the current threshold.")
-    print("\n" + "="*50)
+        print(f"\n🚨 Analysis Complete. Found {len(blindness_events)} checkmate blindness events:")
+        for i, event in enumerate(blindness_events, 1):
+            print(f"\n--- Event {i} (from PGN: {event['pgn_source']}) ---")
+            print(f"  Position (FEN): {event['fen']}")
+            print(f"  Ply: {event['ply']}")
+            print(f"  Stockfish found: {event['stockfish_eval']}")
+            print(f"  Agent's Top Move: '{event['agent_top_move']}' (Prob: {event['agent_top_prob']:.3f})")
+            print(f"  Correct Action: '{event['actual_mating_move']}'")
+            print("-" * (20 + len(event['pgn_source'])))
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze chess game logs for checkmate blindness.")
-    parser.add_argument("--log-file", type=str, default="combined_logs.txt", help="Path to the combined log file.")
-    parser.add_argument("--threshold", type=float, default=0.95, help="Confidence threshold below which the agent is considered 'blind' to a mate.")
-    parser.add_argument("--debug", action="store_true", help="Enable verbose diagnostic printing for the first game.")
+    parser = argparse.ArgumentParser(
+        description="Analyze a JSONL corpus for agent weaknesses.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        "--corpus_path",
+        type=Path,
+        default="minicorpus_for_testing.jsonl",
+        help="Path to the JSONL corpus file to analyze."
+    )
     args = parser.parse_args()
 
-    log_path = Path(args.log_file)
-    
-    print(f"--- Starting Analysis of '{log_path.name}' ---")
-    
-    mate_data = parse_log_file(log_path, args.debug)
-    blind_events = analyze_checkmate_blindness(mate_data, args.threshold)
-    generate_report(mate_data, blind_events)
+    analyze_checkmate_blindness(args.corpus_path)
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()

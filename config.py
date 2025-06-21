@@ -8,7 +8,6 @@ from pathlib import Path
 config_params = {
     # -- General & Path Settings --
     "DEVICE": "auto",  # Use "auto" to detect CUDA, or force "cpu"
-    # CORRECTED: Path now points to the system-installed Stockfish from apt-get
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Training Run Settings --
@@ -22,7 +21,7 @@ config_params = {
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
     # --- ThresholdSupervisor Parameters ---
-    'SUPERVISOR_WINDOW_SIZE': 20,         # Self-Play: Number of recent games to analyze for stagnation.
+    'SUPERVISOR_WINDOW_SIZE': 20,       # Self-Play: Number of recent games to analyze for stagnation.
     'SUPERVISOR_VOLATILITY_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 1.8,  # Self-Play: Average policy loss to trigger mentor mode.
     'SUPERVISOR_GRADUATION_WINDOW': 10,       # Mentor-Play: Number of recent games to analyze for graduation.
@@ -46,7 +45,8 @@ config_params = {
 
 def get_paths():
     """
-    Detects if running in Google Colab and returns appropriate paths for data and checkpoints.
+    Detects if running in Google Colab and returns appropriate paths for data,
+    checkpoints, and PGN files.
     """
     # Check for a Colab environment variable
     if 'COLAB_GPU' in os.environ:
@@ -55,6 +55,7 @@ def get_paths():
         base_drive_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
         checkpoints_path = base_drive_path / 'checkpoints'
         training_data_path = base_drive_path / 'training_data'
+        pgn_games_path = base_drive_path / 'pgn_games' # <-- ADDED FOR COLAB
         
         if not Path('/content/drive').is_dir():
                 raise IOError(
@@ -68,9 +69,13 @@ def get_paths():
         base_path = Path(__file__).resolve().parent
         checkpoints_path = base_path / 'checkpoints'
         training_data_path = base_path / 'training_data'
+        pgn_games_path = base_path / 'pgn_games' # <-- ADDED FOR LOCAL
 
     # Create the directories if they don't exist
     checkpoints_path.mkdir(parents=True, exist_ok=True)
     training_data_path.mkdir(parents=True, exist_ok=True)
+    pgn_games_path.mkdir(parents=True, exist_ok=True) # <-- ADDED
     
-    return checkpoints_path, training_data_path
+    # MODIFIED: Return all three essential paths
+    return checkpoints_path, training_data_path, pgn_games_path
+
