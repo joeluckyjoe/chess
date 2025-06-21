@@ -5,7 +5,7 @@
 A master script to automate the generation of a structured analysis corpus.
 
 This script orchestrates the analysis of multiple games by:
-1. Finding the most recent PGN files.
+1. Finding the most recent PGN files from the data directory.
 2. Calling 'visualization/export_game_analysis.py' for each game to generate
    PNG frames and a structured .jsonl analysis file.
 3. Consolidating all individual .jsonl files into a single, master
@@ -53,7 +53,6 @@ def combine_jsonl_logs(output_dir, corpus_path):
     Finds all individual JSON Lines log files and combines them into one corpus file.
     """
     path = Path(output_dir)
-    # Find all the new .jsonl analysis files
     log_files = sorted(list(path.glob('*_analysis.jsonl')))
 
     if not log_files:
@@ -64,9 +63,6 @@ def combine_jsonl_logs(output_dir, corpus_path):
     with open(corpus_path, 'w', encoding='utf-8') as corpus_file:
         for log_file in log_files:
             print(f"Adding: {log_file.name}")
-            # Simply append the content of each JSONL file.
-            # Each line is a self-contained JSON object, so no extra
-            # separators are needed.
             corpus_file.write(log_file.read_text(encoding='utf-8'))
 
     print(f"✅ Successfully created analysis corpus at: {Path(corpus_path).resolve()}")
@@ -74,44 +70,46 @@ def combine_jsonl_logs(output_dir, corpus_path):
 def main():
     parser = argparse.ArgumentParser(description="Automate the creation of a JSONL analysis corpus.")
     parser.add_argument("--num-games", type=int, default=50, help="Number of recent games to process.")
-    # pgn-dir is now handled automatically by config.py
     parser.add_argument("--output-dir", type=str, default="analysis_output", help="Directory to save analysis artifacts (relative to project root).")
     parser.add_argument("--no-loop-gif", action="store_true", help="Generate GIFs that play only once.")
     args = parser.parse_args()
 
     print("--- Starting Analysis Corpus Generation ---")
 
-    # --- Use config.py for Environment-Aware Path Configuration ---
-    # CORRECTED: Unpack all three values returned by get_paths.
-    # We only need pgn_dir for this script, so we discard the others with _.
-    _, _, pgn_dir = get_paths()
-    project_root = pgn_dir.parent
-    output_dir = project_root / args.output_dir
+    # --- CORRECTED PATH LOGIC ---
+    # 1. Determine the root path for CODE based on this script's location.
+    #    In Colab, this will be /content/chess
+    code_project_root = Path(__file__).resolve().parent
 
-    print(f"Project Root determined as: {project_root}")
-    print(f"PGN Source directory: {pgn_dir}")
-    print(f"Output directory: {output_dir}")
+    # 2. Get DATA paths from our centralized config function.
+    _, _, pgn_data_dir = get_paths()
 
-    recent_pgns = find_recent_pgns(pgn_dir, args.num_games)
+    # 3. The output directory is relative to the code's location.
+    output_dir = code_project_root / args.output_dir
+
+    print(f"Code Project Root: {code_project_root}")
+    print(f"PGN Data Source: {pgn_data_dir}")
+    print(f"Output Directory: {output_dir}")
+
+    # Use the correct data path to find PGNs
+    recent_pgns = find_recent_pgns(pgn_data_dir, args.num_games)
     if not recent_pgns:
-        print(f"Error: No PGN files with game numbers found in '{pgn_dir}'.")
+        print(f"Error: No PGN files with game numbers found in '{pgn_data_dir}'.")
         return
     print(f"Found {len(recent_pgns)} recent games to process (up to {args.num_games}).")
 
     print("\n--- Processing Games ---")
     all_convert_commands = []
-
-    # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
     for i, pgn_path in enumerate(recent_pgns):
         print(f"\nProcessing game {i+1}/{len(recent_pgns)}: {pgn_path.name}...")
 
-        # Construct path to the executable relative to the project root
-        export_script_path = project_root / "visualization" / "export_game_analysis.py"
+        # Construct path to the executable relative to the CODE project root
+        export_script_path = code_project_root / "visualization" / "export_game_analysis.py"
 
         command = [
-            sys.executable, # Use the same python interpreter running this script
+            sys.executable,
             str(export_script_path),
             "--pgn_path", str(pgn_path),
             "--output_dir", str(output_dir)
@@ -121,7 +119,6 @@ def main():
 
         try:
             result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
-
             for line in result.stdout.splitlines():
                 if "convert -delay" in line:
                     all_convert_commands.append(line)
@@ -137,17 +134,16 @@ def main():
 
     print("\n\n--- Post-Processing ---")
 
-    # 1. Combine all generated .jsonl log files into the master corpus
-    corpus_path = project_root / "analysis_corpus.jsonl"
+    # The corpus path is relative to the code project root
+    corpus_path = code_project_root / "analysis_corpus.jsonl"
     combine_jsonl_logs(output_dir, corpus_path)
 
-    # 2. Generate the GIF creation script
     if not all_convert_commands:
         print("⚠️ No 'convert' commands were generated. Skipping GIF script creation.")
         return
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    script_name = project_root / f"generate_gifs_{timestamp}.sh"
+    script_name = code_project_root / f"generate_gifs_{timestamp}.sh"
 
     with open(script_name, "w") as f:
         f.write("#!/bin/bash\n")
