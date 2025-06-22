@@ -15,7 +15,8 @@ from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
-from gnn_agent.rl_loop.threshold_supervisor import ThresholdSupervisor
+# --- CHANGE 1: Import the new StatisticalSupervisor ---
+from gnn_agent.rl_loop.statistical_supervisor import StatisticalSupervisor
 
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
@@ -27,13 +28,11 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
 def main():
     """
     Main training loop that orchestrates self-play, mentor-play, and network training,
-    guided by the ThresholdSupervisor.
+    guided by the new StatisticalSupervisor.
     """
     # --- 1. Get Environment-Aware Paths & Config ---
-    # CORRECTED: Unpack all three paths returned by the get_paths function.
     checkpoints_path, training_data_path, pgn_path = get_paths()
     
-    # Get the project root from one of the returned paths for logging.
     project_root = checkpoints_path.parent 
     loss_log_filepath = project_root / 'loss_log_v2.csv'
     supervisor_log_filepath = project_root / 'supervisor_log.txt'
@@ -87,14 +86,39 @@ def main():
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
-    print("Initializing Threshold Supervisor...")
-    supervisor = ThresholdSupervisor(config=config_params)
+    # --- CHANGE 2: Instantiate the new StatisticalSupervisor ---
+    print("Initializing Statistical Supervisor...")
+    supervisor = StatisticalSupervisor(config=config_params)
+    
+    # --- CHANGE 3: The main loop now manages the mode state ---
+    # The supervisor is now stateless. The loop decides the mode for the *next* game.
+    current_mode = "self-play" 
 
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        current_mode = supervisor.mode
-        print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Current Mode: {current_mode}) ---")
+        # --- CHANGE 4: The supervisor checks for stagnation BEFORE each game ---
+        # It reads the log file to determine if a switch to mentor-play is needed.
+        stagnation_detected = supervisor.check_for_stagnation(loss_log_filepath)
+        
+        previous_mode = current_mode
+        if stagnation_detected:
+            # If stagnation is found, switch to mentor-play for this game.
+            current_mode = "mentor-play"
+        else:
+            # Otherwise, always default to self-play.
+            current_mode = "self-play"
+
+        # Log the mode switch if it occurred
+        if current_mode != previous_mode:
+            reason_for_switch = f"Supervisor switched mode from '{previous_mode}' to '{current_mode}'."
+            print(reason_for_switch) # Print to console for immediate visibility
+            with open(supervisor_log_filepath, 'a') as f:
+                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                log_message = f"[{timestamp}] Game {game_num}: {reason_for_switch}\n"
+                f.write(log_message)
+        
+        print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode}) ---")
         
         training_examples = []
         pgn_data = None
@@ -109,9 +133,9 @@ def main():
             continue
         
         num_moves = len(list(pgn_data.mainline_moves())) if pgn_data else 0
-
         print(f"{current_mode.capitalize()} game complete ({num_moves} moves). Generated {len(training_examples)} examples.")
 
+        # Save data before training
         data_filename = f"{current_mode}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
         
@@ -124,6 +148,7 @@ def main():
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
+        # Train on the new data
         print(f"Training on the {len(training_examples)} examples from game {game_num}...")
         final_policy_loss = 0
         final_value_loss = 0
@@ -134,22 +159,13 @@ def main():
                 final_value_loss = value_loss
             print(f"Epoch {epoch + 1}/{config_params['TRAINING_EPOCHS']} complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
+        # Write the loss to the log AFTER training, so it's available for the next game's check
         write_loss_to_csv(loss_log_filepath, game_num, final_policy_loss, final_value_loss, current_mode)
 
-        previous_mode = supervisor.mode
-        supervisor.update({
-            'policy_loss': final_policy_loss,
-            'value_loss': final_value_loss,
-            'num_moves': num_moves
-        })
+        # --- CHANGE 5: The old supervisor.update() call is removed ---
+        # The new supervisor reads from the file, so no update call is needed.
         
-        if supervisor.mode != previous_mode:
-            reason_for_switch = f"Supervisor switched mode from '{previous_mode}' to '{supervisor.mode}'."
-            with open(supervisor_log_filepath, 'a') as f:
-                timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                log_message = f"[{timestamp}] Game {game_num}: {reason_for_switch}\n"
-                f.write(log_message)
-
+        # Save checkpoint periodically
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
             trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
