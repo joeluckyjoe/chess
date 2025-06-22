@@ -20,14 +20,15 @@ config_params = {
     "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
-    # --- ThresholdSupervisor Parameters ---
-    'SUPERVISOR_WINDOW_SIZE': 20,       # Self-Play: Number of recent games to analyze for stagnation.
-    'SUPERVISOR_VOLATILITY_THRESHOLD': 0.25, # Self-Play: Std deviation of policy loss to trigger mentor mode.
-    'SUPERVISOR_PERFORMANCE_THRESHOLD': 1.8,  # Self-Play: Average policy loss to trigger mentor mode.
-    'SUPERVISOR_GRADUATION_WINDOW': 10,       # Mentor-Play: Number of recent games to analyze for graduation.
-    'SUPERVISOR_GRADUATION_THRESHOLD': 0.05,  # Mentor-Play: Avg value loss to trigger graduation back to self-play.
-    'SUPERVISOR_MOVE_COUNT_THRESHOLD': 25,    # Mentor-Play: Avg number of moves to trigger graduation.
+    # --- StatisticalSupervisor Parameters ---
+    # NOTE: The performance threshold has been adjusted based on analysis of the
+    # initial 180-game training run of the symmetric-attention model. The previous
+    # value of 1.8 was too aggressive for the model's current learning stage.
     
+    'SUPERVISOR_WINDOW_SIZE': 20,
+    'SUPERVISOR_P_VALUE_THRESHOLD': 0.05, # Added for the new supervisor
+    'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,  # <-- CORRECTED VALUE
+
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
     "STOCKFISH_DEPTH_MENTOR": 10,        # Stockfish depth for mentor games
@@ -55,7 +56,7 @@ def get_paths():
         base_drive_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
         checkpoints_path = base_drive_path / 'checkpoints'
         training_data_path = base_drive_path / 'training_data'
-        pgn_games_path = base_drive_path / 'pgn_games' # <-- ADDED FOR COLAB
+        pgn_games_path = base_drive_path / 'pgn_games'
         
         if not Path('/content/drive').is_dir():
                 raise IOError(
@@ -69,13 +70,11 @@ def get_paths():
         base_path = Path(__file__).resolve().parent
         checkpoints_path = base_path / 'checkpoints'
         training_data_path = base_path / 'training_data'
-        pgn_games_path = base_path / 'pgn_games' # <-- ADDED FOR LOCAL
+        pgn_games_path = base_path / 'pgn_games'
 
     # Create the directories if they don't exist
     checkpoints_path.mkdir(parents=True, exist_ok=True)
     training_data_path.mkdir(parents=True, exist_ok=True)
-    pgn_games_path.mkdir(parents=True, exist_ok=True) # <-- ADDED
+    pgn_games_path.mkdir(parents=True, exist_ok=True)
     
-    # MODIFIED: Return all three essential paths
     return checkpoints_path, training_data_path, pgn_games_path
-
