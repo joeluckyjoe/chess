@@ -65,47 +65,49 @@ class CrossAttentionModule(nn.Module):
     def forward(self,
                 square_embeddings: torch.Tensor,
                 piece_embeddings: torch.Tensor,
-                piece_padding_mask: Optional[torch.Tensor] = None
-                ) -> Tuple[torch.Tensor, torch.Tensor]:
+                piece_padding_mask: Optional[torch.Tensor] = None,
+                return_attention: bool = False
+                ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass for the SymmetricCrossAttentionModule.
 
         Args:
             square_embeddings (torch.Tensor): Shape (num_squares, batch_size, sq_embed_dim)
             piece_embeddings (torch.Tensor): Shape (num_current_pieces, batch_size, pc_embed_dim)
-            piece_padding_mask (torch.Tensor, optional): Mask for padded pieces. 
-                                                         Shape (batch_size, num_current_pieces).
+            piece_padding_mask (torch.Tensor, optional): Mask for padded pieces.
+                                                          Shape (batch_size, num_current_pieces).
+            return_attention (bool): If True, returns the attention weight tensors.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-            - processed_attended_pieces (torch.Tensor):
-                Piece embeddings after attending to squares.
-                Shape (num_current_pieces, batch_size, pc_embed_dim).
-            - processed_attended_squares (torch.Tensor):
-                Square embeddings after attending to pieces.
-                Shape (num_squares, batch_size, sq_embed_dim).
+            Tuple: A tuple containing:
+            - processed_attended_pieces (torch.Tensor)
+            - processed_attended_squares (torch.Tensor)
+            - ps_weights (torch.Tensor or None): Piece-to-Square attention weights.
+            - sp_weights (torch.Tensor or None): Square-to-Piece attention weights.
         """
         # --- Path 1: Pieces attend to Squares (P -> S) ---
-        p_to_s_attn_output, _ = self.p_to_s_attention(
+        # MODIFICATION: Capture attention weights by setting need_weights based on the flag.
+        p_to_s_attn_output, ps_weights = self.p_to_s_attention(
             query=piece_embeddings,
             key=square_embeddings,
             value=square_embeddings,
-            need_weights=False
+            need_weights=return_attention
         )
         attended_pieces = self.p_layer_norm1(piece_embeddings + self.p_dropout(p_to_s_attn_output))
         p_ff_output = self.p_feed_forward(attended_pieces)
         processed_attended_pieces = self.p_layer_norm2(attended_pieces + self.p_dropout(p_ff_output))
 
         # --- Path 2: Squares attend to Pieces (S -> P) ---
-        s_to_p_attn_output, _ = self.s_to_p_attention(
+        # MODIFICATION: Capture attention weights by setting need_weights based on the flag.
+        s_to_p_attn_output, sp_weights = self.s_to_p_attention(
             query=square_embeddings,
             key=piece_embeddings,
             value=piece_embeddings,
             key_padding_mask=piece_padding_mask, # Crucial for ignoring padded pieces
-            need_weights=False
+            need_weights=return_attention
         )
         attended_squares = self.s_layer_norm1(square_embeddings + self.s_dropout(s_to_p_attn_output))
         s_ff_output = self.s_feed_forward(attended_squares)
         processed_attended_squares = self.s_layer_norm2(attended_squares + self.s_dropout(s_ff_output))
 
-        return processed_attended_pieces, processed_attended_squares
+        return processed_attended_pieces, processed_attended_squares, ps_weights, sp_weights

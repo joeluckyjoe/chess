@@ -8,7 +8,7 @@ This tool generates two primary outputs:
 1.  Individual PNG frames for creating a visual game analysis GIF.
 2.  A structured JSON Lines (.jsonl) log file containing detailed,
     machine-readable data for each move. This includes agent evaluations,
-    policy, attention, and optional Stockfish evaluations.
+    policy, and FULL SYMMETRIC ATTENTION data.
 
 It AUTOMATICALLY detects the latest model checkpoint and the Stockfish path
 from the central config.py file.
@@ -54,8 +54,6 @@ COLOR_DARK_SQ = pygame.Color(181, 136, 99)
 COLOR_INFO_BG = pygame.Color(20, 20, 20)
 COLOR_INFO_FONT = pygame.Color(230, 230, 230)
 COLOR_MOVING_PIECE_HIGHLIGHT = pygame.Color(255, 255, 0, 150)
-
-# Gradient colors for attention priority
 COLOR_ATTENTION_1 = pygame.Color(255, 0, 0)
 COLOR_ATTENTION_2 = pygame.Color(255, 165, 0)
 COLOR_ATTENTION_3 = pygame.Color(255, 255, 0)
@@ -77,7 +75,7 @@ def load_model_from_checkpoint(model_path, device):
     """Loads a ChessNetwork model from a .pth checkpoint file."""
     square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
     piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
-    attention_module = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4)
+    attention_module = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4, dropout_rate=0.1)
     policy_head = PolicyHead(embedding_dim=128, num_possible_moves=4672)
     value_head = ValueHead(embedding_dim=128)
     network = ChessNetwork(square_gnn, piece_gnn, attention_module, policy_head, value_head).to(device)
@@ -94,42 +92,59 @@ def load_model_from_checkpoint(model_path, device):
 
 
 def get_model_outputs_for_board(board, network, device):
-    """Gets policy, value, and attention from the network for a given board state."""
-    gnn_input_data = gnn_data_converter.convert_to_gnn_input(board, device=device)
+    """Gets policy, value, and BOTH symmetric attention tensors."""
+    gnn_input_data, piece_labels = gnn_data_converter.convert_to_gnn_input(
+        board, device=device, for_visualization=True
+    )
     with torch.no_grad():
-        policy_logits, value_logit, attention_weights = network(*gnn_input_data, return_attention=True)
+        policy_logits, value_logit, ps_weights, sp_weights = network(*gnn_input_data, return_attention=True)
+    
     value = torch.tanh(value_logit).item()
     legal_moves = list(board.legal_moves)
     if not legal_moves:
-        return [], value, attention_weights, gnn_input_data
+        return [], value, ps_weights, sp_weights, piece_labels, gnn_input_data
 
     legal_move_indices = [action_space_converter.move_to_index(m, board.turn) for m in legal_moves]
     legal_move_indices_tensor = torch.tensor(legal_move_indices, device=policy_logits.device)
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
+    legal_move_indices_tensor = legal_move_indices_tensor[legal_move_indices_tensor < len(policy_probs)]
     legal_probs = torch.gather(policy_probs, 0, legal_move_indices_tensor)
 
     k = min(3, len(legal_moves))
+    if k == 0:
+        return [], value, ps_weights, sp_weights, piece_labels, gnn_input_data
+        
     top_k_probs, top_k_indices_in_legal_list = torch.topk(legal_probs, k)
 
     top_moves = [(board.san(legal_moves[i]), p.item()) for i, p in zip(top_k_indices_in_legal_list, top_k_probs)]
-    return top_moves, value, attention_weights, gnn_input_data
+    return top_moves, value, ps_weights, sp_weights, piece_labels, gnn_input_data
 
 
 def format_attention_string_for_display(piece_attention_vector, from_square_san, k=3):
     """Formats the top-k attended squares into a string for Pygame display."""
     if piece_attention_vector is None:
         return "Attention: N/A"
-    top_k_scores, top_k_indices = torch.topk(piece_attention_vector, k)
+    
+    num_to_display = min(k, len(piece_attention_vector))
+    if num_to_display == 0:
+        return f"Attn Focus ({from_square_san}): None"
+
+    top_k_scores, top_k_indices = torch.topk(piece_attention_vector, num_to_display)
     attended_sq_info = [f"{chess.square_name(idx.item())}({s:.2f})" for s, idx in zip(top_k_scores, top_k_indices)]
     return f"Attn Focus ({from_square_san}): {', '.join(attended_sq_info)}"
 
 
-def get_structured_attention_data(piece_attention_vector, from_square, k=3):
-    """Creates a structured dictionary for the top-k attended squares for JSON logging."""
-    if piece_attention_vector is None:
+def get_structured_ps_attention(ps_attention_vector, from_square, k=3):
+    """Creates a structured dictionary for the top-k P->S attended squares."""
+    if ps_attention_vector is None:
         return None
-    top_k_scores, top_k_indices = torch.topk(piece_attention_vector, k)
+    
+    num_to_display = min(k, len(ps_attention_vector))
+    if num_to_display == 0:
+        return None
+        
+    top_k_scores, top_k_indices = torch.topk(ps_attention_vector, num_to_display)
     
     attended_squares = [
         {"square": chess.square_name(idx.item()), "score": round(s.item(), 5)}
@@ -138,7 +153,35 @@ def get_structured_attention_data(piece_attention_vector, from_square, k=3):
     
     return {
         "from_square": chess.square_name(from_square),
-        "top_k_attended": attended_squares
+        "top_k_attended_squares": attended_squares
+    }
+
+
+def get_structured_sp_attention(sp_weights, to_square, piece_labels, k=3):
+    """Creates a structured dictionary for the top-k S->P attended pieces."""
+    if sp_weights is None or piece_labels is None:
+        return None
+        
+    square_attention_vector = sp_weights[to_square]
+    
+    num_pieces = square_attention_vector.shape[0]
+    if num_pieces == 0:
+        return None
+
+    k = min(k, num_pieces)
+    top_k_scores, top_k_indices_in_tensor = torch.topk(square_attention_vector, k)
+    
+    attended_pieces = []
+    for score, piece_tensor_idx in zip(top_k_scores, top_k_indices_in_tensor):
+        square_of_piece = piece_labels[piece_tensor_idx.item()]
+        attended_pieces.append({
+            "piece_on_square": chess.square_name(square_of_piece),
+            "score": round(score.item(), 5)
+        })
+
+    return {
+        "to_square": chess.square_name(to_square),
+        "top_k_attending_pieces": attended_pieces
     }
 
 
@@ -167,20 +210,22 @@ def draw_frame(surface, board, piece_images, info_lines, piece_attention_vector=
 
     if piece_attention_vector is not None:
         gradient_colors = [COLOR_ATTENTION_1, COLOR_ATTENTION_2, COLOR_ATTENTION_3]
-        top_k_scores, top_k_indices = torch.topk(piece_attention_vector, k)
-        max_score = top_k_scores[0].item() if len(top_k_scores) > 0 else 0
+        num_to_display = min(k, len(piece_attention_vector))
+        if num_to_display > 0:
+            top_k_scores, top_k_indices = torch.topk(piece_attention_vector, num_to_display)
+            max_score = top_k_scores[0].item() if len(top_k_scores) > 0 else 0
 
-        for i in range(len(top_k_indices)):
-            sq_idx = top_k_indices[i].item()
-            score = top_k_scores[i].item()
-            color = gradient_colors[i]
-            alpha = int(100 + (score / max_score) * 155) if max_score > 0 else 100
-            row, col = divmod(sq_idx, 8)
-            py_row = 7 - row
-            rect = pygame.Rect(col * SQUARE_SIZE, py_row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
-            overlay = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
-            overlay.fill((*color[:3], alpha))
-            surface.blit(overlay, rect.topleft)
+            for i in range(len(top_k_indices)):
+                sq_idx = top_k_indices[i].item()
+                score = top_k_scores[i].item()
+                color = gradient_colors[i]
+                alpha = int(100 + (score / max_score) * 155) if max_score > 0 else 100
+                row, col = divmod(sq_idx, 8)
+                py_row = 7 - row
+                rect = pygame.Rect(col * SQUARE_SIZE, py_row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
+                overlay = pygame.Surface((SQUARE_SIZE, SQUARE_SIZE), pygame.SRCALPHA)
+                overlay.fill((*color[:3], alpha))
+                surface.blit(overlay, rect.topleft)
 
     if moving_piece_square is not None:
         row, col = divmod(moving_piece_square, 8)
@@ -232,27 +277,21 @@ def main():
     parser.add_argument("--no-loop", action="store_true", help="Provide this flag for the GIF to play only once.")
     args = parser.parse_args()
 
-    # --- Get Paths from Config ---
-    # CORRECTED: Unpack all three values from get_paths, even if not all are used.
     checkpoints_dir, _, _ = get_paths()
     stockfish_path_from_config = config_params.get("STOCKFISH_PATH")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- Determine Model Path (Automatic or Manual) ---
     model_path = args.model_path
-    if model_path:
-        print(f"Using manually specified model: {model_path}")
-    else:
-        print("No model path specified. Searching for the latest checkpoint...")
+    if not model_path:
+        print("Searching for the latest checkpoint...")
         model_path = find_latest_checkpoint(checkpoints_dir)
         if not model_path:
-            print(f"Error: No checkpoints found in '{checkpoints_dir}'. Please train a model first or specify a path with --model_path.")
+            print(f"Error: No checkpoints found in '{checkpoints_dir}'.")
             return
         print(f"Automatically selected latest model: {os.path.basename(str(model_path))}")
 
-    # --- Setup Output Dirs ---
     os.makedirs(args.output_dir, exist_ok=True)
     pgn_filename = os.path.splitext(os.path.basename(args.pgn_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -260,18 +299,16 @@ def main():
     frame_dir_path = os.path.join(args.output_dir, frame_dir_name)
     os.makedirs(frame_dir_path, exist_ok=True)
 
-    # --- Initialize Stockfish Engine ---
     stockfish_engine = None
     if stockfish_path_from_config and os.path.exists(stockfish_path_from_config):
-        print(f"Initializing Stockfish from config path: {stockfish_path_from_config}")
         try:
             stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path_from_config)
         except Exception as e:
-            print(f"Warning: Could not start Stockfish engine. Error: {e}. Continuing without it.")
+            print(f"Warning: Could not start Stockfish engine: {e}. Continuing without it.")
     else:
-        print(f"Warning: Stockfish path '{stockfish_path_from_config}' not found or not set in config. Continuing without objective evaluation.")
+        print("Warning: Stockfish path not set or found. Continuing without objective evaluation.")
 
-    # --- Main Processing Logic ---
+    # Main try...finally block to ensure cleanup happens
     try:
         with open(args.pgn_path) as pgn_file:
             game = chess.pgn.read_game(pgn_file)
@@ -289,22 +326,18 @@ def main():
         json_log_entries = []
 
         ply = 0
-        _, pre_move_value, _, _ = get_model_outputs_for_board(board, network, device)
+        _, pre_move_value, _, _, _, _ = get_model_outputs_for_board(board, network, device)
         stockfish_eval_str = get_stockfish_eval(stockfish_engine, board)
         
         initial_log_entry = {
-            "ply": ply,
-            "move_san": "Initial",
-            "board_fen_before": board.fen(),
-            "agent_value_before": round(pre_move_value, 5),
-            "stockfish_eval": stockfish_eval_str
+            "ply": ply, "move_san": "Initial", "board_fen_before": board.fen(),
+            "agent_value_before": round(pre_move_value, 5), "stockfish_eval": stockfish_eval_str
         }
         json_log_entries.append(initial_log_entry)
         
         info_lines = [f"Ply {ply}: Start Position", f"Agent Value: {pre_move_value:.3f}", f"Stockfish Eval: {stockfish_eval_str} cp"]
         draw_frame(surface, board, piece_images, info_lines)
-        frame_path = os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png")
-        pygame.image.save(surface, frame_path)
+        pygame.image.save(surface, os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png"))
         
         for move in game.mainline_moves():
             ply += 1
@@ -313,18 +346,27 @@ def main():
             
             pre_move_fen = board.fen()
             is_capture = board.is_capture(move)
-            pre_move_policy, pre_move_value, pre_move_attention, gnn_data = get_model_outputs_for_board(board, network, device)
+            
+            pre_move_policy, pre_move_value, ps_weights, sp_weights, piece_labels, gnn_data = get_model_outputs_for_board(board, network, device)
             stockfish_eval_str = get_stockfish_eval(stockfish_engine, board)
             
-            piece_attention_vector = None
-            structured_attention = None
             from_square = move.from_square
-            piece_pos_tensor = gnn_data.piece_to_square_map
-            moved_piece_indices = (piece_pos_tensor == from_square).nonzero(as_tuple=True)[0]
-            if moved_piece_indices.numel() > 0:
-                piece_idx_in_tensor = moved_piece_indices[0]
-                piece_attention_vector = pre_move_attention[piece_idx_in_tensor]
-                structured_attention = get_structured_attention_data(piece_attention_vector, from_square)
+            to_square = move.to_square
+
+            piece_attention_vector = None
+            structured_ps_attention = None
+            structured_sp_attention = None
+
+            if ps_weights is not None and gnn_data is not None:
+                piece_pos_tensor = gnn_data.piece_to_square_map
+                moved_piece_indices = (piece_pos_tensor == from_square).nonzero(as_tuple=True)[0]
+                if moved_piece_indices.numel() > 0:
+                    piece_idx_in_tensor = moved_piece_indices[0]
+                    piece_attention_vector = ps_weights[piece_idx_in_tensor]
+                    structured_ps_attention = get_structured_ps_attention(piece_attention_vector, from_square)
+
+            if sp_weights is not None and piece_labels is not None:
+                structured_sp_attention = get_structured_sp_attention(sp_weights, to_square, piece_labels)
 
             policy_str_display = ', '.join([f"{m_san}({p:.2f})" for m_san, p in pre_move_policy])
             attention_str_display = format_attention_string_for_display(piece_attention_vector, chess.square_name(from_square))
@@ -335,38 +377,32 @@ def main():
                 attention_str_display
             ]
             draw_frame(surface, board, piece_images, thinking_lines, piece_attention_vector, moving_piece_square=from_square)
-            frame_path = os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png")
-            pygame.image.save(surface, frame_path)
+            pygame.image.save(surface, os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png"))
 
             board.push(move)
             frame_count += 1
             
             is_check_after = board.is_check()
             is_mate_after = board.is_checkmate()
-            _, post_move_value, _, _ = get_model_outputs_for_board(board, network, device)
+            _, post_move_value, _, _, _, _ = get_model_outputs_for_board(board, network, device)
 
             action_lines = [f"Ply {ply}: Played {san_move}", f"Resulting Agent Value: {post_move_value:.3f}", f"Value Change: {post_move_value - pre_move_value:+.3f}"]
             draw_frame(surface, board, piece_images, action_lines)
-            frame_path = os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png")
-            pygame.image.save(surface, frame_path)
+            pygame.image.save(surface, os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png"))
             
             log_entry = {
-                "ply": ply,
-                "move_san": san_move,
-                "board_fen_before": pre_move_fen,
+                "ply": ply, "move_san": san_move, "board_fen_before": pre_move_fen,
                 "move_uci": move.uci(),
-                "move_characteristics": {
-                    "is_capture": is_capture,
-                    "is_check_after": is_check_after,
-                    "is_mate_after": is_mate_after
-                },
+                "move_characteristics": {"is_capture": is_capture, "is_check_after": is_check_after, "is_mate_after": is_mate_after},
                 "agent_eval": {
-                    "value_before": round(pre_move_value, 5),
-                    "value_after": round(post_move_value, 5),
+                    "value_before": round(pre_move_value, 5), "value_after": round(post_move_value, 5),
                     "policy_before": [{"move": m, "prob": round(p, 5)} for m, p in pre_move_policy]
                 },
                 "stockfish_eval": stockfish_eval_str,
-                "moving_piece_attention": structured_attention
+                "symmetric_attention": {
+                    "piece_to_square": structured_ps_attention,
+                    "square_to_piece": structured_sp_attention
+                }
             }
             json_log_entries.append(log_entry)
             print(f"Processed ply {ply}: {san_move}")
@@ -381,10 +417,8 @@ def main():
     log_path = os.path.join(args.output_dir, f"{frame_dir_name}_analysis.jsonl")
     with open(log_path, 'w') as f:
         metadata = {
-            "type": "analysis_metadata",
-            "pgn_file": os.path.basename(args.pgn_path),
-            "model_checkpoint": os.path.basename(str(model_path)),
-            "stockfish_version": stockfish_path_from_config or "N/A",
+            "type": "analysis_metadata", "pgn_file": os.path.basename(args.pgn_path),
+            "model_checkpoint": os.path.basename(str(model_path)), "stockfish_version": stockfish_path_from_config or "N/A",
             "analysis_timestamp_utc": datetime.utcnow().isoformat()
         }
         f.write(json.dumps(metadata) + '\n')
