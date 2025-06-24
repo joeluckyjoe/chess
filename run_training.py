@@ -25,6 +25,18 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
+def get_last_game_mode(log_file_path):
+    """Reads the log file to determine the mode of the last completed game."""
+    if not os.path.exists(log_file_path):
+        return "self-play" # Default if no log exists
+    try:
+        df = pd.read_csv(log_file_path)
+        if df.empty:
+            return "self-play"
+        return df['game_type'].iloc[-1]
+    except (pd.errors.EmptyDataError, IndexError):
+        return "self-play"
+
 def main():
     """
     Main training loop that orchestrates self-play, mentor-play, and network training,
@@ -90,7 +102,10 @@ def main():
     print("Initializing Bayesian Supervisor...")
     supervisor = BayesianSupervisor(config=config_params)
     
-    current_mode = "self-play" 
+    # --- CORRECTED STATE INITIALIZATION ---
+    # Give the loop a memory by reading the mode of the last completed game from the log.
+    current_mode = get_last_game_mode(loss_log_filepath)
+    print(f"Initialized mode based on last game in log: '{current_mode}'")
 
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
