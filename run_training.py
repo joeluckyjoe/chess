@@ -15,7 +15,7 @@ from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
-# --- CHANGE 1: Import the new BayesianSupervisor ---
+# --- Import the BayesianSupervisor ---
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 
@@ -86,31 +86,35 @@ def main():
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
-    # --- CHANGE 2: Instantiate the new BayesianSupervisor ---
+    # Instantiate the new BayesianSupervisor
     print("Initializing Bayesian Supervisor...")
     supervisor = BayesianSupervisor(config=config_params)
     
-    # The supervisor is stateless. The loop decides the mode for the *next* game.
     current_mode = "self-play" 
 
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        # The supervisor checks for stagnation BEFORE each game
-        stagnation_detected = supervisor.check_for_stagnation(loss_log_filepath)
-        
         previous_mode = current_mode
-        if stagnation_detected:
-            # If stagnation is found, switch to mentor-play for this game.
-            current_mode = "mentor-play"
-        else:
-            # Otherwise, always default to self-play.
-            current_mode = "self-play"
 
+        # --- CORRECTED LOGIC TO PREVENT MENTOR LOOP ---
+        # If the last game was a mentor game, the agent must play a self-play game
+        # to see if the lesson was learned. Only check for stagnation otherwise.
+        if previous_mode == "mentor-play":
+            print("Forcing self-play game after mentor session to evaluate learning.")
+            current_mode = "self-play"
+        else:
+            # If the last game was self-play, check for stagnation as normal.
+            stagnation_detected = supervisor.check_for_stagnation(loss_log_filepath)
+            if stagnation_detected:
+                current_mode = "mentor-play"
+            else:
+                current_mode = "self-play"
+        
         # Log the mode switch if it occurred
         if current_mode != previous_mode:
             reason_for_switch = f"Supervisor switched mode from '{previous_mode}' to '{current_mode}'."
-            print(reason_for_switch) # Print to console for immediate visibility
+            print(reason_for_switch)
             with open(supervisor_log_filepath, 'a') as f:
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 log_message = f"[{timestamp}] Game {game_num}: {reason_for_switch}\n"
