@@ -15,8 +15,8 @@ from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
-# --- CHANGE 1: Import the new StatisticalSupervisor ---
-from gnn_agent.rl_loop.statistical_supervisor import StatisticalSupervisor
+# --- CHANGE 1: Import the new BayesianSupervisor ---
+from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
@@ -28,7 +28,7 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
 def main():
     """
     Main training loop that orchestrates self-play, mentor-play, and network training,
-    guided by the new StatisticalSupervisor.
+    guided by the new BayesianSupervisor.
     """
     # --- 1. Get Environment-Aware Paths & Config ---
     checkpoints_path, training_data_path, pgn_path = get_paths()
@@ -86,19 +86,17 @@ def main():
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
-    # --- CHANGE 2: Instantiate the new StatisticalSupervisor ---
-    print("Initializing Statistical Supervisor...")
-    supervisor = StatisticalSupervisor(config=config_params)
+    # --- CHANGE 2: Instantiate the new BayesianSupervisor ---
+    print("Initializing Bayesian Supervisor...")
+    supervisor = BayesianSupervisor(config=config_params)
     
-    # --- CHANGE 3: The main loop now manages the mode state ---
-    # The supervisor is now stateless. The loop decides the mode for the *next* game.
+    # The supervisor is stateless. The loop decides the mode for the *next* game.
     current_mode = "self-play" 
 
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        # --- CHANGE 4: The supervisor checks for stagnation BEFORE each game ---
-        # It reads the log file to determine if a switch to mentor-play is needed.
+        # The supervisor checks for stagnation BEFORE each game
         stagnation_detected = supervisor.check_for_stagnation(loss_log_filepath)
         
         previous_mode = current_mode
@@ -162,9 +160,6 @@ def main():
         # Write the loss to the log AFTER training, so it's available for the next game's check
         write_loss_to_csv(loss_log_filepath, game_num, final_policy_loss, final_value_loss, current_mode)
 
-        # --- CHANGE 5: The old supervisor.update() call is removed ---
-        # The new supervisor reads from the file, so no update call is needed.
-        
         # Save checkpoint periodically
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")

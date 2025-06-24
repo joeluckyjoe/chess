@@ -20,14 +20,17 @@ config_params = {
     "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
-    # --- StatisticalSupervisor Parameters ---
-    # NOTE: The performance threshold has been adjusted based on analysis of the
-    # initial 180-game training run of the symmetric-attention model. The previous
-    # value of 1.8 was too aggressive for the model's current learning stage.
-    
+    # --- Supervisor Parameters ---
+    # These parameters are used by both the Statistical and Bayesian supervisors.
     'SUPERVISOR_WINDOW_SIZE': 20,
-    'SUPERVISOR_P_VALUE_THRESHOLD': 0.05, # Added for the new supervisor
-    'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,  # <-- CORRECTED VALUE
+    'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,
+    
+    # -- Statistical Supervisor Specific --
+    'SUPERVISOR_P_VALUE_THRESHOLD': 0.05,
+    
+    # -- Bayesian Supervisor Specific --
+    # This penalty value was determined after comparative analysis.
+    'SUPERVISOR_BAYESIAN_PENALTY': 2, # <-- ADDED
 
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
