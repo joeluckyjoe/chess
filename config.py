@@ -21,7 +21,6 @@ config_params = {
     "CPUCT": 1.25,                # Exploration constant in MCTS
 
     # --- Supervisor Parameters ---
-    # These parameters are used by both the Statistical and Bayesian supervisors.
     'SUPERVISOR_WINDOW_SIZE': 20,
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,
     
@@ -29,8 +28,8 @@ config_params = {
     'SUPERVISOR_P_VALUE_THRESHOLD': 0.05,
     
     # -- Bayesian Supervisor Specific --
-    # This penalty value was determined after comparative analysis.
-    'SUPERVISOR_BAYESIAN_PENALTY': 2, # <-- ADDED
+    'SUPERVISOR_BAYESIAN_PENALTY': 2,
+    'SUPERVISOR_RECENCY_WINDOW': 50, # <-- ADDED: Only consider recent changepoints
 
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
