@@ -24,12 +24,10 @@ config_params = {
     'SUPERVISOR_WINDOW_SIZE': 20,
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,
     
-    # -- Statistical Supervisor Specific --
-    'SUPERVISOR_P_VALUE_THRESHOLD': 0.05,
-    
     # -- Bayesian Supervisor Specific --
     'SUPERVISOR_BAYESIAN_PENALTY': 2,
-    'SUPERVISOR_RECENCY_WINDOW': 50, # <-- ADDED: Only consider recent changepoints
+    'SUPERVISOR_RECENCY_WINDOW': 50, 
+    'SUPERVISOR_GRACE_PERIOD': 10, # <-- ADDED: Games to wait after a mentor session
 
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")

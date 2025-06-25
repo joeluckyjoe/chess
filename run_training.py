@@ -25,17 +25,18 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
-def get_last_game_mode(log_file_path):
-    """Reads the log file to determine the mode of the last completed game."""
+def get_last_game_info(log_file_path):
+    """Reads the log file to determine the mode and game number of the last completed game."""
     if not os.path.exists(log_file_path):
-        return "self-play" # Default if no log exists
+        return "self-play", 0 # Default if no log exists
     try:
         df = pd.read_csv(log_file_path)
         if df.empty:
-            return "self-play"
-        return df['game_type'].iloc[-1]
+            return "self-play", 0
+        last_row = df.iloc[-1]
+        return last_row['game_type'], last_row['game']
     except (pd.errors.EmptyDataError, IndexError):
-        return "self-play"
+        return "self-play", 0
 
 def main():
     """
@@ -98,28 +99,34 @@ def main():
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
-    # Instantiate the new BayesianSupervisor
     print("Initializing Bayesian Supervisor...")
     supervisor = BayesianSupervisor(config=config_params)
     
-    # --- CORRECTED STATE INITIALIZATION ---
-    # Give the loop a memory by reading the mode of the last completed game from the log.
-    current_mode = get_last_game_mode(loss_log_filepath)
+    # --- State Initialization with Memory ---
+    last_mode, last_game_num = get_last_game_info(loss_log_filepath)
+    current_mode = last_mode
     print(f"Initialized mode based on last game in log: '{current_mode}'")
 
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         previous_mode = current_mode
-
-        # --- CORRECTED LOGIC TO PREVENT MENTOR LOOP ---
-        # If the last game was a mentor game, the agent must play a self-play game
-        # to see if the lesson was learned. Only check for stagnation otherwise.
-        if previous_mode == "mentor-play":
-            print("Forcing self-play game after mentor session to evaluate learning.")
+        
+        # --- FINAL LOGIC: Implement Grace Period ---
+        # Determine how many games have passed since the last mentor session.
+        # Find the game number of the most recent mentor game.
+        log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame(columns=['game', 'game_type'])
+        mentor_games = log_df[log_df['game_type'] == 'mentor-play']
+        last_mentor_game = mentor_games['game'].max() if not mentor_games.empty else -1
+        
+        games_since_mentor = game_num - last_mentor_game
+        
+        # If we are within the grace period, force self-play.
+        if last_mentor_game != -1 and games_since_mentor <= config_params['SUPERVISOR_GRACE_PERIOD']:
+            print(f"Within grace period ({games_since_mentor}/{config_params['SUPERVISOR_GRACE_PERIOD']} games since mentor). Forcing self-play.")
             current_mode = "self-play"
         else:
-            # If the last game was self-play, check for stagnation as normal.
+            # If outside the grace period, let the supervisor check for stagnation.
             stagnation_detected = supervisor.check_for_stagnation(loss_log_filepath)
             if stagnation_detected:
                 current_mode = "mentor-play"
@@ -152,7 +159,6 @@ def main():
         num_moves = len(list(pgn_data.mainline_moves())) if pgn_data else 0
         print(f"{current_mode.capitalize()} game complete ({num_moves} moves). Generated {len(training_examples)} examples.")
 
-        # Save data before training
         data_filename = f"{current_mode}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
         
@@ -165,7 +171,6 @@ def main():
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
-        # Train on the new data
         print(f"Training on the {len(training_examples)} examples from game {game_num}...")
         final_policy_loss = 0
         final_value_loss = 0
@@ -176,10 +181,8 @@ def main():
                 final_value_loss = value_loss
             print(f"Epoch {epoch + 1}/{config_params['TRAINING_EPOCHS']} complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
-        # Write the loss to the log AFTER training, so it's available for the next game's check
         write_loss_to_csv(loss_log_filepath, game_num, final_policy_loss, final_value_loss, current_mode)
 
-        # Save checkpoint periodically
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
             trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
