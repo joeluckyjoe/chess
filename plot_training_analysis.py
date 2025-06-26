@@ -8,9 +8,10 @@ from pathlib import Path
 import sys
 
 # Add project root to path to allow importing from config
-project_root_path = Path(os.path.abspath(__file__)).parent.parent
-if str(project_root_path) not in sys.path:
-    sys.path.insert(0, str(project_root_path))
+# This ensures that the script can find the config module
+project_root_for_imports = Path(os.path.abspath(__file__)).parent.parent
+if str(project_root_for_imports) not in sys.path:
+    sys.path.insert(0, str(project_root_for_imports))
 
 from config import get_paths
 
@@ -45,7 +46,9 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
         algo = rpt.Pelt(model="rbf").fit(self_play_data.values)
         try:
             result = algo.predict(pen=CHANGEPOINT_PENALTY)
-            changepoint_indices = self_play_data.index[result[:-1]]
+            # Ensure we don't try to access indices that are out of bounds
+            valid_indices = [idx for idx in result[:-1] if idx < len(self_play_data)]
+            changepoint_indices = self_play_data.index[valid_indices]
             changepoints = df['game'].iloc[changepoint_indices].tolist()
             print(f"Detected {len(changepoints)} changepoints at or near game numbers: {changepoints}")
         except Exception as e:
@@ -79,7 +82,9 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
 
     # Fill the last segment
     if len(df) > 0:
-        ax1.axvspan(df['game'].iloc[-1], last_game, facecolor=color, alpha=0.3, zorder=0)
+        last_game_type = df['game_type'].iloc[-1]
+        last_color = 'lightcyan' if last_game_type == 'self-play' else 'lightgreen'
+        ax1.axvspan(df['game'].iloc[-1], last_game, facecolor=last_color, alpha=0.3, zorder=0)
 
     # Add vertical lines for detected changepoints
     for cp in changepoints:
@@ -117,13 +122,21 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
 
 
 if __name__ == '__main__':
-    # Use the centralized get_paths function to find the project root
+    # Use the centralized get_paths function to find all relevant paths
     paths = get_paths()
-    project_root = paths.project_root
     
-    # The main training script saves the log file in the project's root directory
-    # Assume the canonical name is loss_log.csv
-    log_file_path = project_root / 'loss_log.csv'
+    # --- CORRECTED LOG FILE LOCATION LOGIC ---
+    # In Colab, the log file is saved in the main data directory on Drive,
+    # not the local code directory. We can derive this from the checkpoints path.
+    if 'COLAB_GPU' in os.environ:
+        # The parent of the 'checkpoints' directory is the main data root on Drive
+        data_root = paths.checkpoints_dir.parent
+    else:
+        # For local runs, assume it's in the project root with the script.
+        data_root = paths.project_root
+
+    # The main training script saves the log file in this data root directory
+    log_file_path = data_root / 'loss_log.csv'
 
     if not log_file_path.exists():
         print(f"Error: Could not find the loss log file at the expected location: {log_file_path}")
