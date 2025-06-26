@@ -6,12 +6,15 @@ Analyzes a structured JSONL corpus of game data to identify patterns
 of agent weakness.
 
 Usage:
-python analyze_corpus.py --corpus_path /path/to/your/corpus.jsonl
+python analyze_corpus.py [--corpus_path /path/to/your/corpus.jsonl]
 """
 import json
 import argparse
 import re
 from pathlib import Path
+
+# Import the centralized path management function
+from config import get_paths
 
 def parse_stockfish_mate_eval(eval_str: str):
     """
@@ -58,10 +61,6 @@ def analyze_checkmate_blindness(corpus_path: Path):
         print("Error: The 'python-chess' library is required. Please install it with 'pip install chess'")
         return
 
-    if not corpus_path.exists():
-        print(f"Error: Corpus file not found at {corpus_path}")
-        return
-
     blindness_events = []
     current_pgn_file = "N/A"
 
@@ -86,7 +85,7 @@ def analyze_checkmate_blindness(corpus_path: Path):
                     
                     # Check if it's our agent's turn to deliver the mate
                     is_agent_mate = (board.turn == chess.WHITE and mate_in_n > 0) or \
-                                    (board.turn == chess.BLACK and mate_in_n < 0)
+                                      (board.turn == chess.BLACK and mate_in_n < 0)
 
                     if is_agent_mate:
                         agent_policy = log_entry.get("agent_eval", {}).get("policy_before", [])
@@ -145,10 +144,18 @@ def analyze_checkmate_blindness(corpus_path: Path):
             print(f"  Stockfish found: {event['stockfish_eval']}")
             print(f"  Agent's Top Move: '{event['agent_top_move']}' (Prob: {event['agent_top_prob']:.3f})")
             print(f"  Correct Action: '{event['actual_mating_move']}'")
-            print("-" * (20 + len(event['pgn_source'])))
+            print("-" * (20 + len(str(event['pgn_source']))))
 
 
 def main():
+    """
+    Main function to parse arguments and run the analysis.
+    """
+    # Get the correct project paths from the central config
+    paths = get_paths()
+    # The default corpus path should point to the output of create_corpus.py
+    default_corpus_path = paths['analysis_output_dir'] / 'analysis_corpus.jsonl'
+    
     parser = argparse.ArgumentParser(
         description="Analyze a JSONL corpus for agent weaknesses.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -156,10 +163,15 @@ def main():
     parser.add_argument(
         "--corpus_path",
         type=Path,
-        default="minicorpus_for_testing.jsonl",
-        help="Path to the JSONL corpus file to analyze."
+        default=default_corpus_path,
+        help=f"Path to the JSONL corpus file to analyze.\nDefaults to: {default_corpus_path}"
     )
     args = parser.parse_args()
+
+    if not args.corpus_path.exists():
+        print(f"Error: Corpus file not found at '{args.corpus_path}'")
+        print("Please run 'create_corpus.py' first to generate the analysis corpus.")
+        return
 
     analyze_checkmate_blindness(args.corpus_path)
 
