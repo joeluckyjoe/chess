@@ -17,12 +17,11 @@ import re
 import sys
 import argparse
 import subprocess
+import shutil
 from pathlib import Path
 from datetime import datetime
 
 # Add project root to path to allow importing from config
-# This is no longer strictly necessary if all scripts are run from the project root,
-# but it's good practice for robustness.
 project_root_path = Path(os.path.abspath(__file__)).parent
 if str(project_root_path) not in sys.path:
     sys.path.insert(0, str(project_root_path))
@@ -72,26 +71,27 @@ def combine_jsonl_logs(output_dir, corpus_path):
 def main():
     parser = argparse.ArgumentParser(description="Automate the creation of a JSONL analysis corpus.")
     parser.add_argument("--num-games", type=int, default=50, help="Number of recent games to process.")
-    # The --output-dir argument is now used just for organizing within the main analysis dir
     parser.add_argument("--no-loop-gif", action="store_true", help="Generate GIFs that play only once.")
     args = parser.parse_args()
 
     print("--- Starting Analysis Corpus Generation ---")
 
-    # --- CORRECTED AND CENTRALIZED PATH LOGIC ---
-    # 1. Get all project paths from our single source of truth.
     paths = get_paths()
-    
-    # 2. Use the consistent, named paths from the config object.
     code_project_root = paths.project_root
     pgn_data_dir = paths.pgn_games_dir
     output_dir = paths.analysis_output_dir
+
+    # --- FIX: Clean the output directory before starting ---
+    if output_dir.exists():
+        print(f"Clearing previous analysis artifacts in: {output_dir}")
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # --- END FIX ---
 
     print(f"Code Project Root: {code_project_root}")
     print(f"PGN Data Source: {pgn_data_dir}")
     print(f"Output Directory: {output_dir}")
 
-    # Use the correct data path to find PGNs
     recent_pgns = find_recent_pgns(pgn_data_dir, args.num_games)
     if not recent_pgns:
         print(f"Error: No PGN files with game numbers found in '{pgn_data_dir}'.")
@@ -100,19 +100,17 @@ def main():
 
     print("\n--- Processing Games ---")
     all_convert_commands = []
-    output_dir.mkdir(parents=True, exist_ok=True) # Ensure output dir exists
 
     for i, pgn_path in enumerate(recent_pgns):
         print(f"\nProcessing game {i+1}/{len(recent_pgns)}: {pgn_path.name}...")
 
-        # Construct path to the executable relative to the CODE project root
         export_script_path = code_project_root / "visualization" / "export_game_analysis.py"
 
         command = [
             sys.executable,
             str(export_script_path),
             "--pgn_path", str(pgn_path),
-            "--output_dir", str(output_dir) # Use the correct output directory
+            "--output_dir", str(output_dir)
         ]
         if args.no_loop_gif:
             command.append("--no-loop")
@@ -134,7 +132,6 @@ def main():
 
     print("\n\n--- Post-Processing ---")
 
-    # The corpus path is now correctly placed inside the analysis_output directory
     corpus_path = output_dir / "analysis_corpus.jsonl"
     combine_jsonl_logs(output_dir, corpus_path)
 

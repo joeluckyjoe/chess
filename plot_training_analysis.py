@@ -5,11 +5,18 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import ruptures as rpt
 from pathlib import Path
+import sys
+
+# Add project root to path to allow importing from config
+project_root_path = Path(os.path.abspath(__file__)).parent.parent
+if str(project_root_path) not in sys.path:
+    sys.path.insert(0, str(project_root_path))
+
+from config import get_paths
 
 # --- Configuration ---
 # You can adjust this penalty value to tune the sensitivity of the changepoint detection.
 CHANGEPOINT_PENALTY = 2 
-LOG_FILE = 'loss_log_v2.csv'
 OUTPUT_FILENAME = "supervisor_analysis_plot.png"
 
 def plot_supervisor_analysis(loss_log_path, output_filename):
@@ -18,7 +25,7 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
     """
     try:
         df = pd.read_csv(loss_log_path)
-        print(f"Successfully loaded loss data from '{loss_log_path}' with {len(df)} entries.")
+        print(f"Successfully loaded loss data from '{loss_log_path.name}' with {len(df)} entries.")
     except FileNotFoundError:
         print(f"Error: Loss log file not found at '{loss_log_path}'")
         return
@@ -63,6 +70,7 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
 
     # Add shaded regions for training modes
     last_game = df['game'].max()
+    color = 'lightcyan' # Default color
     for i in range(len(df) - 1):
         start_game, end_game = df['game'].iloc[i], df['game'].iloc[i+1]
         game_type = df['game_type'].iloc[i]
@@ -79,7 +87,7 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
     
     # --- Final Touches ---
     fig.suptitle('Supervisor Training Analysis', fontsize=20, weight='bold')
-    ax1.set_title(f'Policy/Value Loss vs. Game Number (up to game {last_game})', fontsize=16)
+    ax1.set_title(f'Policy/Value Loss vs. Game Number (up to game {int(last_game)})', fontsize=16)
     
     # Create a single, clean legend
     from matplotlib.patches import Patch
@@ -92,9 +100,11 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
     ]
     
     unique_labels = {}
-    for line, label in zip(legend_elements, [l.get_label() for l in legend_elements]):
+    # Use a direct mapping to avoid issues with different line objects for the same label
+    for handle in legend_elements:
+        label = handle.get_label()
         if label not in unique_labels:
-            unique_labels[label] = line
+            unique_labels[label] = handle
             
     fig.legend(unique_labels.values(), unique_labels.keys(), loc='upper right', bbox_to_anchor=(0.9, 0.88))
     
@@ -107,7 +117,16 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
 
 
 if __name__ == '__main__':
-    if not Path(LOG_FILE).exists():
-        print(f"Could not find {LOG_FILE}. Please download it from your Google Drive and place it in the project root.")
+    # Use the centralized get_paths function to find the project root
+    paths = get_paths()
+    project_root = paths.project_root
+    
+    # The main training script saves the log file in the project's root directory
+    # Assume the canonical name is loss_log.csv
+    log_file_path = project_root / 'loss_log.csv'
+
+    if not log_file_path.exists():
+        print(f"Error: Could not find the loss log file at the expected location: {log_file_path}")
+        print("Please ensure 'run_training.py' has been run and has generated a 'loss_log.csv' file.")
     else:
-        plot_supervisor_analysis(LOG_FILE, OUTPUT_FILENAME)
+        plot_supervisor_analysis(log_file_path, OUTPUT_FILENAME)
