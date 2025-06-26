@@ -125,9 +125,9 @@ if __name__ == '__main__':
     # Use the centralized get_paths function to find all relevant paths
     paths = get_paths()
     
-    # --- CORRECTED LOG FILE LOCATION LOGIC ---
-    # In Colab, the log file is saved in the main data directory on Drive,
-    # not the local code directory. We can derive this from the checkpoints path.
+    # --- DYNAMICALLY FIND THE CORRECT LOG FILE ---
+    # The main training script saves the log file in the main data directory.
+    # We determine the data directory based on the environment (Colab vs. local).
     if 'COLAB_GPU' in os.environ:
         # The parent of the 'checkpoints' directory is the main data root on Drive
         data_root = paths.checkpoints_dir.parent
@@ -135,11 +135,14 @@ if __name__ == '__main__':
         # For local runs, assume it's in the project root with the script.
         data_root = paths.project_root
 
-    # The main training script saves the log file in this data root directory
-    log_file_path = data_root / 'loss_log.csv'
-
-    if not log_file_path.exists():
-        print(f"Error: Could not find the loss log file at the expected location: {log_file_path}")
-        print("Please ensure 'run_training.py' has been run and has generated a 'loss_log.csv' file.")
+    # Search for all files matching the pattern 'loss_log*.csv'
+    log_files = list(data_root.glob('loss_log*.csv'))
+    
+    if not log_files:
+        print(f"Error: Could not find any 'loss_log*.csv' files in '{data_root}'")
+        print("Please ensure 'run_training.py' has been run and has generated a loss log file.")
     else:
-        plot_supervisor_analysis(log_file_path, OUTPUT_FILENAME)
+        # Sort by modification time to find the most recent log file
+        latest_log_file = max(log_files, key=os.path.getmtime)
+        print(f"Found {len(log_files)} log file(s). Using the most recent: '{latest_log_file.name}'")
+        plot_supervisor_analysis(latest_log_file, OUTPUT_FILENAME)
