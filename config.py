@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from collections import namedtuple
 
 # =================================================================
 # 1. Hyperparameter Configuration
@@ -44,9 +45,18 @@ config_params = {
 # 2. Path Configuration (Colab-aware)
 # =================================================================
 
+# Define a named tuple for clean path access
+Paths = namedtuple('Paths', [
+    'checkpoints_dir', 
+    'training_data_dir', 
+    'pgn_games_dir', 
+    'analysis_output_dir',
+    'project_root'
+])
+
 def get_paths():
     """
-    Detects if running in Google Colab and returns a dictionary of appropriate
+    Detects if running in Google Colab and returns a named tuple of appropriate
     paths for data, checkpoints, PGN files, and analysis outputs.
     """
     # Check for a Colab environment variable
@@ -85,12 +95,12 @@ def get_paths():
     pgn_games_path.mkdir(parents=True, exist_ok=True)
     analysis_output_path.mkdir(parents=True, exist_ok=True)
     
-    # Return a dictionary of paths for clear, explicit access
-    return {
-        "project_root": project_root_path,
-        "checkpoints_dir": checkpoints_path,
-        "training_data_dir": training_data_path,
-        "pgn_games_dir": pgn_games_path,
-        "analysis_output_dir": analysis_output_path,
-    }
-
+    # Return a named tuple for backwards-compatible access (by index)
+    # and readable access (by name).
+    return Paths(
+        checkpoints_dir=checkpoints_path,
+        training_data_dir=training_data_path,
+        pgn_games_dir=pgn_games_path,
+        analysis_output_dir=analysis_output_path,
+        project_root=project_root_path
+    )

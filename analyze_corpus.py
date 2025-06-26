@@ -95,10 +95,6 @@ def analyze_checkmate_blindness(corpus_path: Path):
                         agent_top_move = agent_policy[0]["move"]
                         
                         # We determine blindness if the agent's move is not the mating move.
-                        # For mate-in-1, this means the move itself is not mate.
-                        # For mate-in-N, this is more complex, but we assume the agent's
-                        # top move should be the start of the sequence. A simple proxy for
-                        # blindness is that the agent's chosen move isn't mate itself.
                         board_after_top_move = board.copy()
                         try:
                             board_after_top_move.push_san(agent_top_move)
@@ -108,14 +104,12 @@ def analyze_checkmate_blindness(corpus_path: Path):
                         if not board_after_top_move.is_checkmate():
                             # BLINDNESS DETECTED!
                             
-                            # CORRECTED: Differentiate reporting for mate-in-1 vs mate-in-N
                             actual_mating_move = "Unknown"
                             if abs(mate_in_n) == 1:
                                 # For M1, we can find the exact move.
                                 actual_mating_move = find_actual_mating_move(board) or "Error: Mate-in-1 move not found"
                             else:
                                 # For M > 1, we can't know the exact move from the log alone.
-                                # The "correct" action was to start the mating sequence.
                                 actual_mating_move = f"(Should start Mate-in-{abs(mate_in_n)} sequence)"
 
                             event = {
@@ -154,7 +148,8 @@ def main():
     # Get the correct project paths from the central config
     paths = get_paths()
     # The default corpus path should point to the output of create_corpus.py
-    default_corpus_path = paths['analysis_output_dir'] / 'analysis_corpus.jsonl'
+    # Access the path by attribute name, not dictionary key.
+    default_corpus_path = paths.analysis_output_dir / 'analysis_corpus.jsonl'
     
     parser = argparse.ArgumentParser(
         description="Analyze a JSONL corpus for agent weaknesses.",
