@@ -21,6 +21,8 @@ from pathlib import Path
 from datetime import datetime
 
 # Add project root to path to allow importing from config
+# This is no longer strictly necessary if all scripts are run from the project root,
+# but it's good practice for robustness.
 project_root_path = Path(os.path.abspath(__file__)).parent
 if str(project_root_path) not in sys.path:
     sys.path.insert(0, str(project_root_path))
@@ -70,22 +72,20 @@ def combine_jsonl_logs(output_dir, corpus_path):
 def main():
     parser = argparse.ArgumentParser(description="Automate the creation of a JSONL analysis corpus.")
     parser.add_argument("--num-games", type=int, default=50, help="Number of recent games to process.")
-    parser.add_argument("--output-dir", type=str, default="analysis_output", help="Directory to save analysis artifacts (relative to project root).")
+    # The --output-dir argument is now used just for organizing within the main analysis dir
     parser.add_argument("--no-loop-gif", action="store_true", help="Generate GIFs that play only once.")
     args = parser.parse_args()
 
     print("--- Starting Analysis Corpus Generation ---")
 
-    # --- CORRECTED PATH LOGIC ---
-    # 1. Determine the root path for CODE based on this script's location.
-    #    In Colab, this will be /content/chess
-    code_project_root = Path(__file__).resolve().parent
-
-    # 2. Get DATA paths from our centralized config function.
-    _, _, pgn_data_dir = get_paths()
-
-    # 3. The output directory is relative to the code's location.
-    output_dir = code_project_root / args.output_dir
+    # --- CORRECTED AND CENTRALIZED PATH LOGIC ---
+    # 1. Get all project paths from our single source of truth.
+    paths = get_paths()
+    
+    # 2. Use the consistent, named paths from the config object.
+    code_project_root = paths.project_root
+    pgn_data_dir = paths.pgn_games_dir
+    output_dir = paths.analysis_output_dir
 
     print(f"Code Project Root: {code_project_root}")
     print(f"PGN Data Source: {pgn_data_dir}")
@@ -100,7 +100,7 @@ def main():
 
     print("\n--- Processing Games ---")
     all_convert_commands = []
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure output dir exists
 
     for i, pgn_path in enumerate(recent_pgns):
         print(f"\nProcessing game {i+1}/{len(recent_pgns)}: {pgn_path.name}...")
@@ -112,7 +112,7 @@ def main():
             sys.executable,
             str(export_script_path),
             "--pgn_path", str(pgn_path),
-            "--output_dir", str(output_dir)
+            "--output_dir", str(output_dir) # Use the correct output directory
         ]
         if args.no_loop_gif:
             command.append("--no-loop")
@@ -134,8 +134,8 @@ def main():
 
     print("\n\n--- Post-Processing ---")
 
-    # The corpus path is relative to the code project root
-    corpus_path = code_project_root / "analysis_corpus.jsonl"
+    # The corpus path is now correctly placed inside the analysis_output directory
+    corpus_path = output_dir / "analysis_corpus.jsonl"
     combine_jsonl_logs(output_dir, corpus_path)
 
     if not all_convert_commands:
@@ -159,6 +159,7 @@ def main():
     print(f"✅ A new, executable shell script has been created: {script_name}")
     print("\nTo create all the final GIFs, simply run the new script in your terminal:")
     print(f"--- \n./{script_name.name}\n---")
+
 
 if __name__ == "__main__":
     main()
