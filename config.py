@@ -27,7 +27,7 @@ config_params = {
     # -- Bayesian Supervisor Specific --
     'SUPERVISOR_BAYESIAN_PENALTY': 2,
     'SUPERVISOR_RECENCY_WINDOW': 50, 
-    'SUPERVISOR_GRACE_PERIOD': 10, # <-- ADDED: Games to wait after a mentor session
+    'SUPERVISOR_GRACE_PERIOD': 10, # Games to wait after a mentor session
 
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
@@ -46,17 +46,22 @@ config_params = {
 
 def get_paths():
     """
-    Detects if running in Google Colab and returns appropriate paths for data,
-    checkpoints, and PGN files.
+    Detects if running in Google Colab and returns a dictionary of appropriate
+    paths for data, checkpoints, PGN files, and analysis outputs.
     """
     # Check for a Colab environment variable
     if 'COLAB_GPU' in os.environ:
         print("Colab environment detected. Using pre-mounted Google Drive paths.")
         
+        # In Colab, the project root is typically /content/chess, while data is on Drive
+        project_root_path = Path('/content/chess')
         base_drive_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
+        
         checkpoints_path = base_drive_path / 'checkpoints'
         training_data_path = base_drive_path / 'training_data'
         pgn_games_path = base_drive_path / 'pgn_games'
+        # Analysis output is local to the Colab instance for speed
+        analysis_output_path = project_root_path / 'analysis_output'
         
         if not Path('/content/drive').is_dir():
                 raise IOError(
@@ -67,14 +72,25 @@ def get_paths():
             
     else:
         print("Running locally.")
-        base_path = Path(__file__).resolve().parent
-        checkpoints_path = base_path / 'checkpoints'
-        training_data_path = base_path / 'training_data'
-        pgn_games_path = base_path / 'pgn_games'
+        project_root_path = Path(__file__).resolve().parent
+        
+        checkpoints_path = project_root_path / 'checkpoints'
+        training_data_path = project_root_path / 'training_data'
+        pgn_games_path = project_root_path / 'pgn_games'
+        analysis_output_path = project_root_path / 'analysis_output'
 
-    # Create the directories if they don't exist
+    # Create all necessary directories if they don't exist
     checkpoints_path.mkdir(parents=True, exist_ok=True)
     training_data_path.mkdir(parents=True, exist_ok=True)
     pgn_games_path.mkdir(parents=True, exist_ok=True)
+    analysis_output_path.mkdir(parents=True, exist_ok=True)
     
-    return checkpoints_path, training_data_path, pgn_games_path
+    # Return a dictionary of paths for clear, explicit access
+    return {
+        "project_root": project_root_path,
+        "checkpoints_dir": checkpoints_path,
+        "training_data_dir": training_data_path,
+        "pgn_games_dir": pgn_games_path,
+        "analysis_output_dir": analysis_output_path,
+    }
+
