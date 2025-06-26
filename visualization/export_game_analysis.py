@@ -277,7 +277,10 @@ def main():
     parser.add_argument("--no-loop", action="store_true", help="Provide this flag for the GIF to play only once.")
     args = parser.parse_args()
 
-    checkpoints_dir, _, _ = get_paths()
+    # --- CORRECTED PATH LOGIC ---
+    # Get the paths object from the central config function
+    paths = get_paths()
+    checkpoints_dir = paths.checkpoints_dir # Access by name
     stockfish_path_from_config = config_params.get("STOCKFISH_PATH")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
