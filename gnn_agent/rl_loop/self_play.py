@@ -25,14 +25,13 @@ class SelfPlay:
         self.num_simulations = num_simulations
         self.temperature = temperature
         self.temp_decay_moves = temp_decay_moves
-        # Force timers on for debugging
-        self.print_move_timers = True
+        self.print_move_timers = print_move_timers
 
     def play_game(self) -> Tuple[List[Tuple[Any, Dict[chess.Move, float], float]], chess.pgn.Game]:
         """
         Plays a full game, returning the generated training data and the PGN object.
         """
-        print("--- [DEBUG] Self-Play Game Starting ---")
+        print("Starting a new self-play game...")
         self.game.reset_board()
 
         game_history: List[Tuple[Any, Dict[chess.Move, float], bool]] = []
@@ -40,40 +39,28 @@ class SelfPlay:
 
         move_count = 0
 
-        # Modified loop for debugging
-        while True:
+        while not self.game.is_game_over():
             move_count += 1
-            player_color_str = "White" if self.game.board.turn == chess.WHITE else "Black"
-            print(f"\n[DEBUG] Move {move_count} ({player_color_str}): Top of main loop.")
 
-            # --- 1. Check Game Over Status ---
-            print(f"[DEBUG] Move {move_count}: Checking game over status with Stockfish...")
-            is_over = self.game.is_game_over()
-            print(f"[DEBUG] Move {move_count}: Game over status received: {is_over}")
-            if is_over:
-                print("[DEBUG] Game is over. Breaking loop.")
-                break
+            if self.print_move_timers:
+                loop_start_time = time.time()
 
-            # --- 2. Run MCTS Search ---
-            loop_start_time = time.time()
             current_player_mcts = self.mcts_white if self.game.board.turn == chess.WHITE else self.mcts_black
             turn_before_move = self.game.board.turn
 
-            mcts_start_time = time.time()
-            print(f"[DEBUG] Move {move_count}: Starting MCTS search ({self.num_simulations} simulations)...")
-            
+            if self.print_move_timers:
+                mcts_start_time = time.time()
+
             policy, _, board_tensor = current_player_mcts.run_search(
                 self.game.board.copy(),
                 self.num_simulations
             )
-            
-            mcts_duration = time.time() - mcts_start_time
-            print(f"[DEBUG] Move {move_count}: MCTS search finished.")
 
-            # --- 3. Select and Play Move ---
+            if self.print_move_timers:
+                mcts_duration = time.time() - mcts_start_time
+
             move_to_play = None
             if policy:
-                print(f"[DEBUG] Move {move_count}: Policy generated with {len(policy)} moves. Selecting move...")
                 moves = list(policy.keys())
                 move_probs = list(policy.values())
 
@@ -82,26 +69,19 @@ class SelfPlay:
                 else:
                     best_move_index = move_probs.index(max(move_probs))
                     move_to_play = moves[best_move_index]
-                print(f"[DEBUG] Move {move_count}: Selected move: {move_to_play.uci() if move_to_play else 'None'}")
-            else:
-                print(f"[DEBUG] Move {move_count}: MCTS returned an empty policy.")
-
 
             if move_to_play is None:
                 print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
                 break
 
-            # --- 4. Record and Make Move ---
             game_history.append((board_tensor, policy, turn_before_move))
-            print(f"[DEBUG] Move {move_count}: Pushing move '{move_to_play.uci()}' to board...")
             self.game.make_move(move_to_play.uci())
-            print(f"[DEBUG] Move {move_count}: Move made successfully.")
 
-            loop_duration = time.time() - loop_start_time
-            print(f"[TIMER] Move {move_count}: MCTS search took {mcts_duration:.4f}s. Full loop took {loop_duration:.4f}s.")
+            if self.print_move_timers:
+                loop_duration = time.time() - loop_start_time
+                print(f"[TIMER] Move {move_count}: MCTS search took {mcts_duration:.4f}s. Full loop took {loop_duration:.4f}s.")
 
         # --- Game is Over ---
-        print("\n--- [DEBUG] Post-Game Processing ---")
         raw_outcome = self.game.get_game_outcome()
         print(f"\nGame over. Raw outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
         for board_tensor_hist, policy_hist, turn_at_state in game_history:
