@@ -1,5 +1,5 @@
 #
-# File: evaluate_on_puzzles.py
+# File: evaluate_on_puzzles.py (Modified for Diagnostics)
 #
 """
 A script to evaluate a trained agent's performance on a specific set of tactical puzzles.
@@ -79,21 +79,36 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
     
-    # Create a tensor of indices for all legal moves
-    legal_move_indices = torch.tensor(
-        [action_space_converter.move_to_index(m, board) for m in legal_moves],
-        device=device,
-        dtype=torch.long
-    )
+    # --- DIAGNOSTIC MODIFICATION ---
+    # Safely get indices and filter out any moves that don't map to a valid index.
+    valid_legal_moves = []
+    legal_move_indices_list = []
+    action_space_size = policy_probs.shape[0]
 
-    # Gather the probabilities of only the legal moves
+    for m in legal_moves:
+        idx = action_space_converter.move_to_index(m, board)
+        if 0 <= idx < action_space_size:
+            valid_legal_moves.append(m)
+            legal_move_indices_list.append(idx)
+        else:
+            # This print statement is crucial for debugging
+            print(f"⚠️ DIAGNOSTIC: Ignoring move with invalid index. Move: {m.uci()}, Generated Index: {idx}")
+
+    # If, after filtering, no legal moves can be mapped, we cannot proceed for this position.
+    if not valid_legal_moves:
+        print("❌ ERROR: No legal moves could be mapped to a valid index. Aborting this puzzle.")
+        return "" # Return an empty string to signify failure
+
+    legal_move_indices = torch.tensor(legal_move_indices_list, device=device, dtype=torch.long)
+
+    # Gather the probabilities of only the VALID legal moves
     legal_probs = torch.gather(policy_probs, 0, legal_move_indices)
 
-    # Find the index of the best move *within the list of legal moves*
+    # Find the index of the best move *within the list of VALID legal moves*
     best_move_index_in_legal_list = torch.argmax(legal_probs)
     
-    # Get the corresponding move object
-    best_move = legal_moves[best_move_index_in_legal_list]
+    # Get the corresponding move object from the now-validated list
+    best_move = valid_legal_moves[best_move_index_in_legal_list]
 
     return best_move.uci()
 
@@ -132,13 +147,17 @@ def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device)
             puzzles_solved += 1
         
         result_str = "✅ CORRECT" if is_correct else "❌ INCORRECT"
+        # Handle the case where the agent couldn't produce a move
+        if not agent_move_uci:
+            result_str = "❌ ERROR (No valid move produced)"
+
         print(f"Puzzle {i+1}/{total_puzzles}: Agent chose {agent_move_uci}, solution is {solution_move_uci}.  [{result_str}]")
 
     # --- Final Report ---
     success_rate = (puzzles_solved / total_puzzles) * 100 if total_puzzles > 0 else 0
     
     print("\n-------------------------------------------")
-    print("         Puzzle Evaluation Complete")
+    print("        Puzzle Evaluation Complete")
     print("-------------------------------------------")
     print(f"Puzzles Solved: {puzzles_solved} / {total_puzzles}")
     print(f"Success Rate:   {success_rate:.2f}%")
@@ -151,6 +170,9 @@ def main():
     parser.add_argument("--model", type=str, default=None, help="Path to a specific model checkpoint. If not provided, the latest will be used.")
     parser.add_argument("--puzzles", type=str, default="puzzles_eval.jsonl", help="Name of the puzzle file inside the 'training_data' directory.")
     args = parser.parse_args()
+
+    # To get a clearer error message from CUDA, we run it in blocking mode.
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -169,7 +191,7 @@ def main():
     # Construct the full path to the puzzle file
     puzzle_file_full_path = paths.training_data_dir / args.puzzles
 
-    run_evaluation(model_to_evaluate, puzzle_file_full_path, device)
+    run_evaluation(str(model_to_evaluate), str(puzzle_file_full_path), device)
 
 
 if __name__ == '__main__':
