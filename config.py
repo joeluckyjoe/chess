@@ -20,6 +20,10 @@ config_params = {
     # -- MCTS Settings --
     "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move
     "CPUCT": 1.25,                # Exploration constant in MCTS
+    
+    # --- Tactics Training Settings (Phase O) ---
+    "TACTICS_SESSION_FREQUENCY": 20, # Run a tactics session every N games.
+    "TACTICAL_PUZZLE_FILENAME": "tactical_puzzles.jsonl",
 
     # --- Supervisor Parameters ---
     'SUPERVISOR_WINDOW_SIZE': 20,
@@ -51,6 +55,7 @@ Paths = namedtuple('Paths', [
     'training_data_dir', 
     'pgn_games_dir', 
     'analysis_output_dir',
+    'tactical_puzzles_file', # Added path for tactics
     'project_root'
 ])
 
@@ -95,6 +100,9 @@ def get_paths():
     pgn_games_path.mkdir(parents=True, exist_ok=True)
     analysis_output_path.mkdir(parents=True, exist_ok=True)
     
+    # Define the path to the puzzles file
+    tactical_puzzles_path = analysis_output_path / config_params["TACTICAL_PUZZLE_FILENAME"]
+    
     # Return a named tuple for backwards-compatible access (by index)
     # and readable access (by name).
     return Paths(
@@ -102,5 +110,6 @@ def get_paths():
         training_data_dir=training_data_path,
         pgn_games_dir=pgn_games_path,
         analysis_output_dir=analysis_output_path,
+        tactical_puzzles_file=tactical_puzzles_path, # Added
         project_root=project_root_path
     )

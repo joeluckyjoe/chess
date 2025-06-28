@@ -2,30 +2,37 @@
 # File: visualization/export_game_analysis.py
 #
 """
-A non-interactive script to generate analysis artifacts for a completed game.
+A script to generate analysis artifacts for completed games, now with dual-mode functionality.
 
-This tool generates two primary outputs:
-1.  Individual PNG frames for creating a visual game analysis GIF.
-2.  A structured JSON Lines (.jsonl) log file containing detailed,
-    machine-readable data for each move. This includes agent evaluations,
-    policy, and FULL SYMMETRIC ATTENTION data.
+This tool can be run in one of two modes:
 
-It AUTOMATICALLY detects the latest model checkpoint and the Stockfish path
-from the central config.py file.
+1.  analysis (default):
+    Generates two primary outputs for a single PGN:
+    - Individual PNG frames for creating a visual game analysis GIF.
+    - A structured JSON Lines (.jsonl) log file containing detailed,
+      machine-readable data for each move, including agent evaluations
+      and full symmetric attention data.
+    This mode loads the agent's neural network.
+
+2.  puzzle:
+    A high-speed mode for scanning one or more PGN files to find and
+    export tactical puzzles. It looks for positions where Stockfish
+    finds a forced mate-in-N (N<=3) and saves them to a specified
+    output file. This mode does NOT load the agent network or any
+    graphics libraries, making it very fast.
 """
 import sys
 import os
 from datetime import datetime
-import collections
-from pathlib import Path
 import json
+from pathlib import Path
+import argparse
 
 # Add the project root to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-import argparse
 import torch
 import chess
 import chess.pgn
@@ -104,7 +111,7 @@ def get_model_outputs_for_board(board, network, device):
     if not legal_moves:
         return [], value, ps_weights, sp_weights, piece_labels, gnn_input_data
 
-    legal_move_indices = [action_space_converter.move_to_index(m, board.turn) for m in legal_moves]
+    legal_move_indices = [action_space_converter.move_to_index(m, board) for m in legal_moves]
     legal_move_indices_tensor = torch.tensor(legal_move_indices, device=policy_logits.device)
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
@@ -254,35 +261,35 @@ def draw_frame(surface, board, piece_images, info_lines, piece_attention_vector=
 
 
 def get_stockfish_eval(engine, board, time_limit=0.1):
-    """Gets the centipawn evaluation from the Stockfish engine."""
+    """
+    Gets the evaluation from Stockfish.
+    Returns a tuple: (formatted_string, analysis_info_dict)
+    """
     if engine is None:
-        return "N/A"
+        return "N/A", None
     try:
         info = engine.analyse(board, chess.engine.Limit(time=time_limit))
-        score = info["score"].white()
-        if score.is_mate():
-            return f"Mate({score.mate()})"
+        score = info.get("score")
+        if not score:
+            return "N/A", info
+
+        pov_score = score.pov(board.turn)
+        if pov_score.is_mate():
+            return f"Mate({pov_score.mate()})", info
         else:
-            return f"{score.score()}"
+            # Return score from White's perspective for consistency in logs
+            return f"{score.white().score()}", info
+            
     except (chess.engine.EngineTerminatedError, chess.engine.EngineError) as e:
         print(f"Stockfish engine error: {e}")
-        return "Error"
+        return "Error", None
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate analysis frames and a JSONL log for a game.")
-    parser.add_argument("--pgn_path", required=True, help="Path to the PGN file to analyze.")
-    parser.add_argument("--model_path", type=str, default=None, help="(Optional) Path to a specific model checkpoint. If not provided, the latest checkpoint will be used.")
-    parser.add_argument("--output_dir", default="analysis_output", help="Directory to save artifacts.")
-    parser.add_argument("--no-loop", action="store_true", help="Provide this flag for the GIF to play only once.")
-    args = parser.parse_args()
-
-    # --- CORRECTED PATH LOGIC ---
-    # Get the paths object from the central config function
-    paths = get_paths()
-    checkpoints_dir = paths.checkpoints_dir # Access by name
-    stockfish_path_from_config = config_params.get("STOCKFISH_PATH")
-
+def run_visual_analysis(args, paths):
+    """
+    Executes the visual analysis mode, generating frames and a detailed log.
+    """
+    checkpoints_dir = paths.checkpoints_dir
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -295,14 +302,16 @@ def main():
             return
         print(f"Automatically selected latest model: {os.path.basename(str(model_path))}")
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     pgn_filename = os.path.splitext(os.path.basename(args.pgn_path))[0]
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     frame_dir_name = f"{pgn_filename}_frames_{timestamp}"
-    frame_dir_path = os.path.join(args.output_dir, frame_dir_name)
-    os.makedirs(frame_dir_path, exist_ok=True)
+    frame_dir_path = output_dir / frame_dir_name
+    frame_dir_path.mkdir(exist_ok=True)
 
     stockfish_engine = None
+    stockfish_path_from_config = config_params.get("STOCKFISH_PATH")
     if stockfish_path_from_config and os.path.exists(stockfish_path_from_config):
         try:
             stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path_from_config)
@@ -311,7 +320,6 @@ def main():
     else:
         print("Warning: Stockfish path not set or found. Continuing without objective evaluation.")
 
-    # Main try...finally block to ensure cleanup happens
     try:
         with open(args.pgn_path) as pgn_file:
             game = chess.pgn.read_game(pgn_file)
@@ -330,7 +338,7 @@ def main():
 
         ply = 0
         _, pre_move_value, _, _, _, _ = get_model_outputs_for_board(board, network, device)
-        stockfish_eval_str = get_stockfish_eval(stockfish_engine, board)
+        stockfish_eval_str, _ = get_stockfish_eval(stockfish_engine, board)
         
         initial_log_entry = {
             "ply": ply, "move_san": "Initial", "board_fen_before": board.fen(),
@@ -338,7 +346,7 @@ def main():
         }
         json_log_entries.append(initial_log_entry)
         
-        info_lines = [f"Ply {ply}: Start Position", f"Agent Value: {pre_move_value:.3f}", f"Stockfish Eval: {stockfish_eval_str} cp"]
+        info_lines = [f"Ply {ply}: Start Position", f"Agent Value: {pre_move_value:.3f}", f"Stockfish Eval: {stockfish_eval_str}"]
         draw_frame(surface, board, piece_images, info_lines)
         pygame.image.save(surface, os.path.join(frame_dir_path, f"frame_{frame_count:04d}.png"))
         
@@ -351,7 +359,7 @@ def main():
             is_capture = board.is_capture(move)
             
             pre_move_policy, pre_move_value, ps_weights, sp_weights, piece_labels, gnn_data = get_model_outputs_for_board(board, network, device)
-            stockfish_eval_str = get_stockfish_eval(stockfish_engine, board)
+            stockfish_eval_str, _ = get_stockfish_eval(stockfish_engine, board)
             
             from_square = move.from_square
             to_square = move.to_square
@@ -375,7 +383,7 @@ def main():
             attention_str_display = format_attention_string_for_display(piece_attention_vector, chess.square_name(from_square))
             thinking_lines = [
                 f"Ply {ply}: Thinking about {san_move}...",
-                f"Agent Value: {pre_move_value:.3f} | Stockfish: {stockfish_eval_str} cp",
+                f"Agent Value: {pre_move_value:.3f} | Stockfish: {stockfish_eval_str}",
                 f"Agent Policy: {policy_str_display}",
                 attention_str_display
             ]
@@ -417,7 +425,7 @@ def main():
             print("Stockfish engine terminated.")
 
     print("\nProcessing complete. Generating JSON Lines log file...")
-    log_path = os.path.join(args.output_dir, f"{frame_dir_name}_analysis.jsonl")
+    log_path = output_dir / f"{frame_dir_name}_analysis.jsonl"
     with open(log_path, 'w') as f:
         metadata = {
             "type": "analysis_metadata", "pgn_file": os.path.basename(args.pgn_path),
@@ -431,12 +439,126 @@ def main():
             
     print(f"-> Saved Structured Analysis Log to: {log_path}")
 
-    gif_path = os.path.join(args.output_dir, f"{pgn_filename}.gif")
+    gif_path = output_dir / f"{pgn_filename}.gif"
     loop_option = "-loop 0" if not args.no_loop else ""
     delay = 150
     print("\n✅ PNG frames and JSONL log file have been generated successfully.")
     print("To create the final GIF, please run the following command in your terminal:")
     print(f"\n--- \nconvert -delay {delay} {loop_option} '{frame_dir_path}/frame_*.png' '{gif_path}'\n--- \n")
+
+
+def run_puzzle_generation(args):
+    """
+    Executes the puzzle generation mode, scanning PGNs for tactical mates.
+    """
+    stockfish_path = config_params.get("STOCKFISH_PATH")
+    if not stockfish_path or not os.path.exists(stockfish_path):
+        print(f"Error: Stockfish path not set or found in config.py. Path was: {stockfish_path}")
+        print("Puzzle generation requires a valid Stockfish engine.")
+        return
+
+    pgn_path = Path(args.pgn_path)
+    if not pgn_path.exists():
+        print(f"Error: PGN file not found at {pgn_path}")
+        return
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    stockfish_engine = None
+    puzzles_found_total = 0
+    
+    print(f"Starting puzzle generation from: {pgn_path}")
+    print(f"Output will be appended to: {output_path}")
+
+    try:
+        stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+        with open(pgn_path, encoding='latin-1') as pgn_file:
+            game_num = 0
+            while True:
+                game = chess.pgn.read_game(pgn_file)
+                if game is None:
+                    break
+                game_num += 1
+                puzzles_in_game = 0
+                board = game.board()
+                print(f"  Scanning Game #{game_num}...", end='', flush=True)
+
+                for move in game.mainline_moves():
+                    # Analyze the position *before* the move is made
+                    try:
+                        info = stockfish_engine.analyse(board, chess.engine.Limit(depth=15))
+                        score = info.get("score")
+                        if score:
+                            pov_score = score.pov(board.turn)
+                            if pov_score.is_mate():
+                                mate_in_n = pov_score.mate()
+                                if 0 < mate_in_n <= 3:
+                                    if 'pv' in info and info['pv']:
+                                        best_move = info['pv'][0].uci()
+                                        puzzle = {"fen": board.fen(), "best_move": best_move}
+                                        with open(output_path, 'a') as f:
+                                            f.write(json.dumps(puzzle) + '\n')
+                                        puzzles_found_total += 1
+                                        puzzles_in_game += 1
+                    except (chess.engine.EngineTerminatedError, chess.engine.EngineError) as e:
+                        print(f"\nStockfish analysis failed for a position: {e}")
+
+                    board.push(move) # Move to the next position
+                
+                if puzzles_in_game > 0:
+                    print(f" Found {puzzles_in_game} puzzle(s).")
+                else:
+                    print(" Done.")
+
+    finally:
+        if stockfish_engine:
+            stockfish_engine.quit()
+    
+    print("\n-------------------------------------------------")
+    print(f"Puzzle generation complete.")
+    print(f"Found a total of {puzzles_found_total} new puzzles.")
+    print(f"All puzzles have been appended to {output_path}")
+    print("-------------------------------------------------")
+
+
+def main():
+    """
+    Main function to parse arguments and dispatch to the correct mode.
+    """
+    parser = argparse.ArgumentParser(description="Generate analysis artifacts or tactical puzzles for a chess game.")
+    
+    # Arguments for both modes
+    parser.add_argument("--pgn_path", required=True, help="Path to the PGN file to process.")
+    
+    # Mode selector
+    parser.add_argument("--mode", type=str, choices=['analysis', 'puzzle'], default='analysis', 
+                        help="Choose operation mode: 'analysis' for visual logs, 'puzzle' for tactical puzzle generation.")
+    
+    # Arguments specific to 'analysis' mode
+    parser.add_argument("--model_path", type=str, default=None, 
+                        help="(Analysis Mode) Optional path to a model checkpoint. If not provided, the latest is used.")
+    parser.add_argument("--output_dir", default="analysis_output", 
+                        help="(Analysis Mode) Directory to save frame and log artifacts.")
+    parser.add_argument("--no-loop", action="store_true", 
+                        help="(Analysis Mode) Provide this flag for the output GIF to play only once.")
+
+    # Argument specific to 'puzzle' mode
+    parser.add_argument("--output", default="tactical_puzzles.jsonl",
+                        help="(Puzzle Mode) Path to the output JSONL file for appending puzzles.")
+
+    args = parser.parse_args()
+    paths = get_paths()
+
+    if args.mode == 'puzzle':
+        run_puzzle_generation(args)
+    elif args.mode == 'analysis':
+        run_visual_analysis(args, paths)
+    else:
+        # This case should not be reachable due to 'choices' in argparse
+        print(f"Error: Unknown mode '{args.mode}'")
+        sys.exit(1)
+
 
 if __name__ == '__main__':
     main()

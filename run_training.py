@@ -4,6 +4,8 @@ import pandas as pd
 from pathlib import Path
 import chess.pgn
 import datetime
+import subprocess # Added for calling tactics trainer
+import sys # Added for getting python executable
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -44,9 +46,12 @@ def main():
     guided by the new BayesianSupervisor.
     """
     # --- 1. Get Environment-Aware Paths & Config ---
-    checkpoints_path, training_data_path, pgn_path = get_paths()
+    paths = get_paths()
+    checkpoints_path = paths.checkpoints_dir
+    training_data_path = paths.training_data_dir
+    pgn_path = paths.pgn_games_dir
     
-    project_root = checkpoints_path.parent 
+    project_root = paths.project_root 
     loss_log_filepath = project_root / 'loss_log_v2.csv'
     supervisor_log_filepath = project_root / 'supervisor_log.txt'
 
@@ -110,11 +115,61 @@ def main():
     # --- 5. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
+        # =====================================================================
+        # TACTICS TRAINING INTERVENTION (Phase O)
+        # =====================================================================
+        if game_num > 1 and game_num % config_params['TACTICS_SESSION_FREQUENCY'] == 0:
+            print("\n" + "="*80)
+            print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
+            print("="*80)
+
+            # Define the path to the tactics trainer script
+            tactics_script_path = project_root / 'train_on_tactics.py'
+            puzzles_file_path = paths.tactical_puzzles_file
+
+            if not puzzles_file_path.exists():
+                print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
+            else:
+                # Find the current latest checkpoint to pass to the trainer
+                latest_checkpoint_path = trainer.find_latest_checkpoint(checkpoints_path)
+                if not latest_checkpoint_path:
+                    print("[WARNING] No checkpoint found to train on. Skipping tactics session.")
+                else:
+                    # Run the training script as a subprocess
+                    command = [
+                        sys.executable, str(tactics_script_path),
+                        '--puzzles_path', str(puzzles_file_path),
+                        '--model_path', str(latest_checkpoint_path)
+                    ]
+                    
+                    try:
+                        subprocess.run(command, check=True)
+                        # CRUCIAL: After training, we must reload the newly saved model
+                        print("Tactics training subprocess finished. Reloading the updated model...")
+                        # The new model will be named "..._tactics_trained.pth.tar"
+                        tactics_trained_model_path = checkpoints_path / f"{latest_checkpoint_path.stem}_tactics_trained.pth.tar"
+                        if tactics_trained_model_path.exists():
+                             chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=tactics_trained_model_path)
+                             # Update the MCTS player with the new network reference
+                             mcts_player.network = chess_network
+                             print("Successfully reloaded tactics-trained model into the current session.")
+                        else:
+                            print(f"[ERROR] Expected tactics-trained model not found at {tactics_trained_model_path}. Continuing with the old model.")
+                    
+                    except subprocess.CalledProcessError as e:
+                        print(f"[ERROR] The tactics training script failed with exit code {e.returncode}. Continuing with the old model.")
+                    except Exception as e:
+                        print(f"[ERROR] An unexpected error occurred during tactics training: {e}. Continuing with the old model.")
+            
+            print("\n" + "="*80)
+            print("--- TACTICS SESSION COMPLETE ---")
+            print("="*80 + "\n")
+
+
         previous_mode = current_mode
         
         # --- FINAL LOGIC: Implement Grace Period ---
         # Determine how many games have passed since the last mentor session.
-        # Find the game number of the most recent mentor game.
         log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame(columns=['game', 'game_type'])
         mentor_games = log_df[log_df['game_type'] == 'mentor-play']
         last_mentor_game = mentor_games['game'].max() if not mentor_games.empty else -1
