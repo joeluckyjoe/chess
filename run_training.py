@@ -25,9 +25,10 @@ from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 def find_latest_checkpoint(checkpoints_path: Path):
     """
-    Finds the latest checkpoint file in the given directory by specifically parsing the game number
-    from filenames. It looks for the pattern '_game_(\d+)' to robustly identify the game number,
-    avoiding confusion with dates or timestamps in the filename.
+    Finds the latest checkpoint file in the given directory by finding the
+    most recently modified file. This is the most robust way to ensure
+    we get the absolute latest state, especially after saving a temporary
+    checkpoint.
 
     Args:
         checkpoints_path (Path): The directory where checkpoints are stored.
@@ -39,18 +40,13 @@ def find_latest_checkpoint(checkpoints_path: Path):
         print(f"[Warning] Checkpoint directory not found at: {checkpoints_path}")
         return None
 
-    max_game_num = -1
-    latest_checkpoint_path = None
+    files = list(checkpoints_path.glob('*.pth.tar'))
+    if not files:
+        return None
 
-    # Iterate over all potential checkpoint files in the directory
-    for f in checkpoints_path.glob('*.pth.tar'):
-        match = re.search(r'_game_(\d+)', f.name)
-        if match:
-            game_num = int(match.group(1))
-            if game_num > max_game_num:
-                max_game_num = game_num
-                latest_checkpoint_path = f
-
+    # Find the file with the most recent modification time.
+    latest_checkpoint_path = max(files, key=os.path.getmtime)
+    
     return latest_checkpoint_path
 
 
@@ -128,6 +124,26 @@ def main():
         print("\n" + "*"*60)
         print(f"COMMAND-LINE OVERRIDE: Forcing start from game {args.force_start_game}.")
         print("*"*60 + "\n")
+        # We need to find the latest checkpoint before the forced start
+        def find_latest_checkpoint_before(max_game: int):
+            max_game_num = -1
+            path_to_load = None
+            for f in checkpoints_path.glob('*.pth.tar'):
+                match = re.search(r'_game_(\d+)', f.name)
+                if match:
+                    game_num = int(match.group(1))
+                    if game_num <= max_game and game_num > max_game_num:
+                        max_game_num = game_num
+                        path_to_load = f
+            return path_to_load
+
+        checkpoint_to_load = find_latest_checkpoint_before(args.force_start_game - 1)
+        if checkpoint_to_load:
+            print(f"Loading corresponding checkpoint: {checkpoint_to_load.name}")
+            chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=checkpoint_to_load)
+        else:
+            print(f"[WARNING] No checkpoint found before game {args.force_start_game}. Using latest available model.")
+
         start_game = args.force_start_game - 1
 
     if start_game > 0:
@@ -180,12 +196,12 @@ def main():
             print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
             print("="*80)
 
-            pre_tactics_checkpoint_name = f"checkpoint_game_{game_num - 1}_pre_tactics.pth.tar"
-            print(f"Saving temporary pre-tactics checkpoint: {pre_tactics_checkpoint_name}")
+            # --- BUG FIX: Save the current state using the correct function signature ---
+            # This creates a new checkpoint file which will be the most recently modified.
+            print(f"Saving pre-tactics checkpoint for game {game_num - 1}...")
             trainer.save_checkpoint(
                 directory=checkpoints_path, 
-                game_number=game_num - 1, 
-                filename_override=pre_tactics_checkpoint_name
+                game_number=game_num - 1
             )
 
             tactics_script_path = local_root / 'train_on_tactics.py'
@@ -194,6 +210,7 @@ def main():
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
+                # The corrected find_latest_checkpoint will now find the file we just saved.
                 latest_checkpoint_path = find_latest_checkpoint(checkpoints_path)
                 
                 if not latest_checkpoint_path:
@@ -209,14 +226,10 @@ def main():
                     try:
                         subprocess.run(command, check=True)
                         print("Tactics training subprocess finished. Reloading the updated model...")
-                        reloaded_checkpoint, _ = trainer.load_or_initialize_network(checkpoints_path)
-                        
-                        if reloaded_checkpoint.model_version > chess_network.model_version:
-                            chess_network = reloaded_checkpoint
-                            mcts_player.network = chess_network
-                            print("Successfully reloaded tactics-trained model into the current session.")
-                        else:
-                             print(f"[WARNING] A newer tactics-trained model was not found. Continuing with the old model.")
+                        # Reloading will now pick up the newly created tactics-trained model.
+                        chess_network, _ = trainer.load_or_initialize_network(checkpoints_path)
+                        mcts_player.network = chess_network
+                        print("Successfully reloaded tactics-trained model into the current session.")
 
                     except subprocess.CalledProcessError as e:
                         print(f"[ERROR] The tactics training script failed with exit code {e.returncode}. Continuing with the old model.")
