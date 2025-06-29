@@ -9,16 +9,17 @@ import sys
 
 # Add project root to path to allow importing from config
 # This ensures that the script can find the config module
-project_root_for_imports = Path(os.path.abspath(__file__)).parent.parent
+# MODIFICATION: Corrected the relative path to be more robust
+project_root_for_imports = Path(os.path.abspath(__file__)).parent
 if str(project_root_for_imports) not in sys.path:
     sys.path.insert(0, str(project_root_for_imports))
 
-from config import get_paths
+from config import get_paths, config_params
 
 # --- Configuration ---
-# You can adjust this penalty value to tune the sensitivity of the changepoint detection.
-CHANGEPOINT_PENALTY = 2 
-OUTPUT_FILENAME = "supervisor_analysis_plot.png"
+# Use the penalty value from the centralized config for consistency
+CHANGEPOINT_PENALTY = config_params['SUPERVISOR_BAYESIAN_PENALTY'] 
+OUTPUT_FILENAME = "training_analysis.png" # Standardized output name
 
 def plot_supervisor_analysis(loss_log_path, output_filename):
     """
@@ -122,27 +123,27 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
 
 
 if __name__ == '__main__':
-    # Use the centralized get_paths function to find all relevant paths
+    # =========================================================================
+    # MODIFIED SECTION: Use the centralized get_paths function to find the log file
+    # =========================================================================
+    print("Initializing paths via config.get_paths()...")
     paths = get_paths()
     
-    # --- DYNAMICALLY FIND THE CORRECT LOG FILE ---
-    # The main training script saves the log file in the main data directory.
-    # We determine the data directory based on the environment (Colab vs. local).
-    if 'COLAB_GPU' in os.environ:
-        # The parent of the 'checkpoints' directory is the main data root on Drive
-        data_root = paths.checkpoints_dir.parent
-    else:
-        # For local runs, assume it's in the project root with the script.
-        data_root = paths.project_root
-
-    # Search for all files matching the pattern 'loss_log*.csv'
-    log_files = list(data_root.glob('loss_log*.csv'))
+    # This now correctly points to the persistent Google Drive project root
+    data_root = paths.drive_project_root
     
-    if not log_files:
-        print(f"Error: Could not find any 'loss_log*.csv' files in '{data_root}'")
+    # The name of the log file is now unambiguous
+    log_file_path = data_root / 'loss_log_v2.csv'
+    
+    print(f"Attempting to load log file from persistent storage: {log_file_path}")
+    
+    if not log_file_path.exists():
+        print(f"Error: Could not find 'loss_log_v2.csv' in '{data_root}'")
         print("Please ensure 'run_training.py' has been run and has generated a loss log file.")
     else:
-        # Sort by modification time to find the most recent log file
-        latest_log_file = max(log_files, key=os.path.getmtime)
-        print(f"Found {len(log_files)} log file(s). Using the most recent: '{latest_log_file.name}'")
-        plot_supervisor_analysis(latest_log_file, OUTPUT_FILENAME)
+        # Generate the plot in the local project root for easy access
+        output_path = paths.local_project_root / OUTPUT_FILENAME
+        plot_supervisor_analysis(log_file_path, output_path)
+    # =========================================================================
+    # END OF MODIFIED SECTION
+    # =========================================================================

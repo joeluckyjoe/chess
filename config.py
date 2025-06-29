@@ -50,13 +50,15 @@ config_params = {
 # =================================================================
 
 # Define a named tuple for clean path access
+# MODIFICATION: Added 'drive_project_root' for persistent storage path
 Paths = namedtuple('Paths', [
     'checkpoints_dir', 
     'training_data_dir', 
     'pgn_games_dir', 
     'analysis_output_dir',
-    'tactical_puzzles_file', # Added path for tactics
-    'project_root'
+    'tactical_puzzles_file',
+    'local_project_root',
+    'drive_project_root' # <-- ADDED THIS LINE
 ])
 
 def get_paths():
@@ -68,15 +70,16 @@ def get_paths():
     if 'COLAB_GPU' in os.environ:
         print("Colab environment detected. Using pre-mounted Google Drive paths.")
         
-        # In Colab, the project root is typically /content/chess, while data is on Drive
-        project_root_path = Path('/content/chess')
-        base_drive_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
+        # In Colab, the local project root is where the code lives
+        local_root_path = Path('/content/chess')
+        # The drive project root is for persistent data
+        drive_root_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
         
-        checkpoints_path = base_drive_path / 'checkpoints'
-        training_data_path = base_drive_path / 'training_data'
-        pgn_games_path = base_drive_path / 'pgn_games'
-        # Analysis output is local to the Colab instance for speed
-        analysis_output_path = project_root_path / 'analysis_output'
+        checkpoints_path = drive_root_path / 'checkpoints'
+        training_data_path = drive_root_path / 'training_data'
+        pgn_games_path = drive_root_path / 'pgn_games'
+        # Analysis output is local to the Colab instance for speed, but puzzles are on Drive
+        analysis_output_path = local_root_path / 'analysis_output'
         
         if not Path('/content/drive').is_dir():
                 raise IOError(
@@ -87,12 +90,13 @@ def get_paths():
             
     else:
         print("Running locally.")
-        project_root_path = Path(__file__).resolve().parent
+        local_root_path = Path(__file__).resolve().parent
+        drive_root_path = local_root_path # On local, they are the same
         
-        checkpoints_path = project_root_path / 'checkpoints'
-        training_data_path = project_root_path / 'training_data'
-        pgn_games_path = project_root_path / 'pgn_games'
-        analysis_output_path = project_root_path / 'analysis_output'
+        checkpoints_path = local_root_path / 'checkpoints'
+        training_data_path = local_root_path / 'training_data'
+        pgn_games_path = local_root_path / 'pgn_games'
+        analysis_output_path = local_root_path / 'analysis_output'
 
     # Create all necessary directories if they don't exist
     checkpoints_path.mkdir(parents=True, exist_ok=True)
@@ -100,8 +104,8 @@ def get_paths():
     pgn_games_path.mkdir(parents=True, exist_ok=True)
     analysis_output_path.mkdir(parents=True, exist_ok=True)
     
-    # Define the path to the puzzles file
-    tactical_puzzles_path = analysis_output_path / config_params["TACTICAL_PUZZLE_FILENAME"]
+    # Define the path to the puzzles file. For persistence, it should be on Drive.
+    tactical_puzzles_path = drive_root_path / config_params["TACTICAL_PUZZLE_FILENAME"]
     
     # Return a named tuple for backwards-compatible access (by index)
     # and readable access (by name).
@@ -110,6 +114,7 @@ def get_paths():
         training_data_dir=training_data_path,
         pgn_games_dir=pgn_games_path,
         analysis_output_dir=analysis_output_path,
-        tactical_puzzles_file=tactical_puzzles_path, # Added
-        project_root=project_root_path
+        tactical_puzzles_file=tactical_puzzles_path,
+        local_project_root=local_root_path,
+        drive_project_root=drive_root_path # <-- ADDED THIS LINE
     )

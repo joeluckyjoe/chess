@@ -51,9 +51,13 @@ def main():
     training_data_path = paths.training_data_dir
     pgn_path = paths.pgn_games_dir
     
-    project_root = paths.project_root 
-    loss_log_filepath = project_root / 'loss_log_v2.csv'
-    supervisor_log_filepath = project_root / 'supervisor_log.txt'
+    # MODIFICATION: Use the new persistent drive_project_root for logs
+    drive_root = paths.drive_project_root
+    loss_log_filepath = drive_root / 'loss_log_v2.csv'
+    supervisor_log_filepath = drive_root / 'supervisor_log.txt'
+    
+    # This path is for the location of the code itself
+    local_root = paths.local_project_root
 
     device_str = config_params['DEVICE']
     device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
@@ -62,6 +66,7 @@ def main():
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     print(f"Training data will be saved to: {training_data_path}")
     print(f"PGN files will be saved to: {pgn_path}")
+    print(f"Log files will be saved to: {drive_root}") # Added print for clarity
 
     # --- 2. Initialize Components ---
     trainer = Trainer(
@@ -124,7 +129,7 @@ def main():
             print("="*80)
 
             # Define the path to the tactics trainer script
-            tactics_script_path = project_root / 'train_on_tactics.py'
+            tactics_script_path = local_root / 'train_on_tactics.py'
             puzzles_file_path = paths.tactical_puzzles_file
 
             if not puzzles_file_path.exists():
@@ -149,10 +154,10 @@ def main():
                         # The new model will be named "..._tactics_trained.pth.tar"
                         tactics_trained_model_path = checkpoints_path / f"{latest_checkpoint_path.stem}_tactics_trained.pth.tar"
                         if tactics_trained_model_path.exists():
-                             chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=tactics_trained_model_path)
-                             # Update the MCTS player with the new network reference
-                             mcts_player.network = chess_network
-                             print("Successfully reloaded tactics-trained model into the current session.")
+                            chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=tactics_trained_model_path)
+                            # Update the MCTS player with the new network reference
+                            mcts_player.network = chess_network
+                            print("Successfully reloaded tactics-trained model into the current session.")
                         else:
                             print(f"[ERROR] Expected tactics-trained model not found at {tactics_trained_model_path}. Continuing with the old model.")
                     
