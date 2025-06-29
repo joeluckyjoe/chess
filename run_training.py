@@ -6,7 +6,8 @@ import chess.pgn
 import datetime
 import subprocess
 import sys
-import re  # Added for regex matching in find_latest_checkpoint
+import re
+import argparse # Added for command-line arguments
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -43,8 +44,6 @@ def find_latest_checkpoint(checkpoints_path: Path):
 
     # Iterate over all potential checkpoint files in the directory
     for f in checkpoints_path.glob('*.pth.tar'):
-        # --- BUG FIX: Use a specific regex to find the game number ---
-        # This prevents confusion with other numbers like dates or times in the filename.
         match = re.search(r'_game_(\d+)', f.name)
         if match:
             game_num = int(match.group(1))
@@ -81,6 +80,16 @@ def main():
     Main training loop that orchestrates self-play, mentor-play, and network training,
     guided by the new BayesianSupervisor.
     """
+    # --- New: Add command-line argument parsing ---
+    parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
+    parser.add_argument(
+        '--force-start-game', 
+        type=int, 
+        default=None,
+        help="Force the training to start from a specific game number, ignoring the latest checkpoint number."
+    )
+    args = parser.parse_args()
+
     # --- 1. Get Environment-Aware Paths & Config ---
     paths = get_paths()
     checkpoints_path = paths.checkpoints_dir
@@ -114,6 +123,13 @@ def main():
     print("Attempting to load the latest checkpoint...")
     chess_network, start_game = trainer.load_or_initialize_network(checkpoints_path)
     
+    # --- New: Override start_game if the command-line flag is used ---
+    if args.force_start_game is not None:
+        print("\n" + "*"*60)
+        print(f"COMMAND-LINE OVERRIDE: Forcing start from game {args.force_start_game}.")
+        print("*"*60 + "\n")
+        start_game = args.force_start_game - 1
+
     if start_game > 0:
         print(f"Resuming training from game {start_game + 1}")
     else:
@@ -133,13 +149,12 @@ def main():
         num_simulations=config_params['MCTS_SIMULATIONS']
     )
     
-    # --- MODIFICATION: Set the desired Elo rating for the mentor ---
     mentor_elo = config_params.get('MENTOR_ELO_RATING', 1350)
 
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
-        stockfish_elo=mentor_elo,  # Use the new, robust Elo setting
+        stockfish_elo=mentor_elo,
         num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
@@ -165,9 +180,6 @@ def main():
             print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
             print("="*80)
 
-            # --- BUG FIX: Force-save the current in-memory model to disk ---
-            # This ensures the tactics script gets the absolute latest model,
-            # not the last periodic checkpoint.
             pre_tactics_checkpoint_name = f"checkpoint_game_{game_num - 1}_pre_tactics.pth.tar"
             print(f"Saving temporary pre-tactics checkpoint: {pre_tactics_checkpoint_name}")
             trainer.save_checkpoint(
@@ -182,7 +194,6 @@ def main():
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
-                # Now, find_latest_checkpoint will find the one we just saved.
                 latest_checkpoint_path = find_latest_checkpoint(checkpoints_path)
                 
                 if not latest_checkpoint_path:
@@ -198,7 +209,6 @@ def main():
                     try:
                         subprocess.run(command, check=True)
                         print("Tactics training subprocess finished. Reloading the updated model...")
-                        # Reloading will now pick up the newly created tactics-trained model.
                         reloaded_checkpoint, _ = trainer.load_or_initialize_network(checkpoints_path)
                         
                         if reloaded_checkpoint.model_version > chess_network.model_version:
@@ -251,7 +261,8 @@ def main():
         pgn_data = None
         
         if current_mode == "mentor-play":
-            training_examples, pgn_data = mentor_player.play__game()
+            # --- TYPO FIX: Changed play__game to play_game ---
+            training_examples, pgn_data = mentor_player.play_game()
         else: # self-play
             training_examples, pgn_data = self_player.play_game()
 
