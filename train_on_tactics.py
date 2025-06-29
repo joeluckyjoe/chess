@@ -1,43 +1,30 @@
-#
-# File: train_on_tactics.py
-#
-"""
-A standalone script for targeted training of the ChessNetwork on a dataset of
-tactical puzzles.
-
-This script implements the supervised learning portion of Phase O. It loads a
-file of puzzles (FEN and best move), and trains the policy head of the network
-to predict the correct move. This is intended to fix the agent's "tactical
-blindness" by burning in recognition of forced-mate patterns.
-"""
 import os
 import sys
 import json
 import argparse
 from pathlib import Path
+from typing import Dict, Any
 
 import torch
 import torch.optim as optim
 import chess
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 
 # Add the project root to the Python path
-project_root = os.path.dirname(os.path.abspath(__file__))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# This allows us to import from the gnn_agent package
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 # --- Project-specific Imports ---
-from config import get_paths
+from config import get_paths, config_params as default_config_params
 from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.neural_network.gnn_models import SquareGNN, PieceGNN
 from gnn_agent.neural_network.attention_module import CrossAttentionModule
 from gnn_agent.neural_network.policy_value_heads import PolicyHead, ValueHead
 from gnn_agent.gamestate_converters import gnn_data_converter
-
-# --- Constants ---
-# The total number of possible moves in the action space, derived from the map.
-# This must match the output dimension of the PolicyHead.
-TOTAL_POSSIBLE_MOVES = 4672 
+from gnn_agent.gamestate_converters.action_space_converter import move_to_index, get_action_space_size
 
 # --- Dataset Class ---
 
@@ -63,35 +50,59 @@ class TacticalPuzzleDataset(Dataset):
 
 # --- Core Functions ---
 
-def find_latest_checkpoint(checkpoint_dir):
-    """Finds the most recently modified checkpoint file in a directory."""
-    checkpoint_dir = Path(checkpoint_dir)
-    checkpoints = list(checkpoint_dir.glob('*.pth.tar'))
-    if not checkpoints:
-        return None
-    latest_checkpoint = max(checkpoints, key=os.path.getmtime)
-    return latest_checkpoint
-
-def load_model_from_checkpoint(model_path, device):
-    """Loads a ChessNetwork model and optimizer state from a .pth checkpoint file."""
-    square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
-    piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
-    attention_module = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4, dropout_rate=0.1)
-    policy_head = PolicyHead(embedding_dim=128, num_possible_moves=TOTAL_POSSIBLE_MOVES)
-    value_head = ValueHead(embedding_dim=128)
-    network = ChessNetwork(square_gnn, piece_gnn, attention_module, policy_head, value_head).to(device)
-
-    if not os.path.exists(model_path):
+def load_model_from_checkpoint(model_path: Path, device: torch.device) -> ChessNetwork:
+    """
+    Loads a ChessNetwork model from a checkpoint, correctly building the
+    network from the configuration saved within the checkpoint file.
+    """
+    if not model_path.exists():
         raise FileNotFoundError(f"Model checkpoint not found at: {model_path}")
 
-    # For this training, we only care about the model weights, not the optimizer state from the RL loop.
     checkpoint = torch.load(model_path, map_location=device)
-    state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
+    
+    # --- BUG FIX: Use the config from the checkpoint, not hardcoded values ---
+    model_config = checkpoint.get('config_params', default_config_params)
+    
+    print("Building network from checkpoint configuration...")
+    # These parameters should ideally be stored in the config, but we use defaults for now.
+    square_gnn = SquareGNN(
+        in_features=model_config.get('SQUARE_IN_FEATURES', 12),
+        hidden_features=model_config.get('SQUARE_HIDDEN_FEATURES', 256),
+        out_features=model_config.get('SQUARE_OUT_FEATURES', 128),
+        heads=model_config.get('SQUARE_ATTENTION_HEADS', 4)
+    )
+    piece_gnn = PieceGNN(
+        in_channels=model_config.get('PIECE_IN_CHANNELS', 12),
+        hidden_channels=model_config.get('PIECE_HIDDEN_CHANNELS', 256),
+        out_channels=model_config.get('PIECE_OUT_CHANNELS', 128)
+    )
+    cross_attention = CrossAttentionModule(
+        sq_embed_dim=model_config.get('SQUARE_OUT_FEATURES', 128),
+        pc_embed_dim=model_config.get('PIECE_OUT_CHANNELS', 128),
+        num_heads=model_config.get('CROSS_ATTENTION_HEADS', 4)
+    )
+    policy_head = PolicyHead(
+        embedding_dim=model_config.get('SQUARE_OUT_FEATURES', 128),
+        num_possible_moves=get_action_space_size() # Use the canonical action space size
+    )
+    value_head = ValueHead(embedding_dim=model_config.get('SQUARE_OUT_FEATURES', 128))
+    
+    network = ChessNetwork(
+        square_gnn, 
+        piece_gnn, 
+        cross_attention, 
+        policy_head, 
+        value_head
+    ).to(device)
+
+    # Load the weights into the correctly structured network
+    state_dict = checkpoint.get('model_state_dict', checkpoint)
     network.load_state_dict(state_dict)
-    print(f"Successfully loaded model weights from {os.path.basename(str(model_path))}")
+    
+    print(f"Successfully loaded model weights from {model_path.name}")
     return network
 
-def collate_puzzles(batch):
+def collate_puzzles(batch: list[Dict[str, Any]]):
     """Custom collate function to process a batch of puzzles."""
     gnn_inputs = []
     policy_targets = []
@@ -103,15 +114,19 @@ def collate_puzzles(batch):
         board = chess.Board(fen)
         move = chess.Move.from_uci(best_move_uci)
 
-        # Use the converters to get model input and policy target
         gnn_input = gnn_data_converter.convert_to_gnn_input(board, device='cpu')
         
-        # This relies on the move map from the converter file
-        move_index = gnn_data_converter.MOVE_TO_INDEX_MAP.get(move)
-
-        if move_index is not None:
+        # --- BUG FIX: Use the reliable move_to_index function directly ---
+        # This avoids depending on a potentially stale global mapping.
+        try:
+            move_idx = move_to_index(move)
             gnn_inputs.append(gnn_input)
-            policy_targets.append(move_index)
+            policy_targets.append(move_idx)
+        except ValueError as e:
+            print(f"Warning: Skipping move {best_move_uci} in FEN {fen}. Reason: {e}")
+
+    if not policy_targets:
+        return None, None
 
     return gnn_inputs, torch.tensor(policy_targets, dtype=torch.long)
 
@@ -120,7 +135,7 @@ def main():
     """Main function to run the tactical training session."""
     parser = argparse.ArgumentParser(description="Run supervised training on tactical puzzles.")
     parser.add_argument("--puzzles_path", type=str, required=True, help="Path to the tactical_puzzles.jsonl file.")
-    parser.add_argument("--model_path", type=str, default=None, help="(Optional) Path to a specific model checkpoint. If not provided, the latest checkpoint will be used.")
+    parser.add_argument("--model_path", type=str, required=True, help="Path to a specific model checkpoint.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs to train.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training.")
@@ -131,23 +146,20 @@ def main():
     print(f"Using device: {device}")
 
     # --- Load Model ---
-    model_path = args.model_path
-    if not model_path:
-        print("Searching for the latest checkpoint...")
-        model_path = find_latest_checkpoint(paths.checkpoints_dir)
-        if not model_path:
-            print(f"Error: No checkpoints found in '{paths.checkpoints_dir}'. Exiting.")
-            return
+    try:
+        network = load_model_from_checkpoint(Path(args.model_path), device)
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     
-    network = load_model_from_checkpoint(model_path, device)
-    network.train() # Set model to training mode
+    network.train()
 
     # --- Load Data ---
     try:
         dataset = TacticalPuzzleDataset(args.puzzles_path)
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        return
+        sys.exit(1)
         
     if len(dataset) == 0:
         print("Puzzle file is empty. Nothing to train on. Exiting.")
@@ -158,7 +170,6 @@ def main():
 
     # --- Training Setup ---
     optimizer = optim.Adam(network.parameters(), lr=args.lr)
-    # CrossEntropyLoss is perfect for single-correct-answer classification, which is what this is.
     policy_loss_fn = torch.nn.CrossEntropyLoss()
 
     # --- Training Loop ---
@@ -167,23 +178,21 @@ def main():
         puzzles_processed = 0
 
         for gnn_inputs_batch, policy_targets_batch in data_loader:
+            if gnn_inputs_batch is None:
+                continue
+
             optimizer.zero_grad()
             
-            # Move targets to the correct device
             policy_targets_batch = policy_targets_batch.to(device)
             
-            # Process each item in the batch individually
-            # (A more optimized version could truly batch the graph data, but this is safer and clearer)
             batch_policy_loss = 0
+            # Process each item in the batch individually
+            # A more optimized version could truly batch the graph data, but this is safer.
             for i, gnn_input in enumerate(gnn_inputs_batch):
                 # Move individual graph tensors to the correct device
-                gnn_input.square_graph.x = gnn_input.square_graph.x.to(device)
-                gnn_input.square_graph.edge_index = gnn_input.square_graph.edge_index.to(device)
-                gnn_input.piece_graph.x = gnn_input.piece_graph.x.to(device)
-                gnn_input.piece_graph.edge_index = gnn_input.piece_graph.edge_index.to(device)
-                gnn_input.piece_to_square_map = gnn_input.piece_to_square_map.to(device)
+                gnn_input_on_device = tuple(t.to(device) for t in gnn_input)
 
-                policy_logits, _ = network(*gnn_input) # We only need policy logits
+                policy_logits, _ = network(*gnn_input_on_device)
                 
                 # Reshape for loss calculation: (1, NumClasses) and (1)
                 loss = policy_loss_fn(policy_logits.unsqueeze(0), policy_targets_batch[i].unsqueeze(0))
@@ -201,12 +210,22 @@ def main():
         print(f"Epoch {epoch + 1}/{args.epochs}, Average Policy Loss: {avg_epoch_loss:.6f}")
 
     # --- Save Model ---
-    output_filename = f"{Path(model_path).stem}_tactics_trained.pth.tar"
+    model_path = Path(args.model_path)
+    # Correctly handle suffixes like .pth.tar
+    base_stem = model_path.name.replace('.pth.tar', '')
+    output_filename = f"{base_stem}_tactics_trained.pth.tar"
     output_path = paths.checkpoints_dir / output_filename
     
+    # We need to save the original config params back into the checkpoint
+    original_checkpoint = torch.load(model_path, map_location='cpu')
+    original_config = original_checkpoint.get('config_params', default_config_params)
+    original_game_num = original_checkpoint.get('game_number', 0)
+
     torch.save({
+        'game_number': original_game_num,
         'model_state_dict': network.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(), # For potential continuation
+        'optimizer_state_dict': optimizer.state_dict(),
+        'config_params': original_config,
         'epoch': args.epochs,
         'final_loss': avg_epoch_loss
     }, output_path)
