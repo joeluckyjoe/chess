@@ -23,7 +23,7 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 
-def find_latest_checkpoint(checkpoints_path: Path):
+def find_latest_checkpoint_by_time(checkpoints_path: Path):
     """
     Finds the latest checkpoint file in the given directory by finding the
     most recently modified file. This is the most robust way to ensure
@@ -76,7 +76,6 @@ def main():
     Main training loop that orchestrates self-play, mentor-play, and network training,
     guided by the new BayesianSupervisor.
     """
-    # --- New: Add command-line argument parsing ---
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
     parser.add_argument(
         '--force-start-game', 
@@ -117,15 +116,16 @@ def main():
 
     # --- 3. Load Checkpoint or Initialize Network ---
     print("Attempting to load the latest checkpoint...")
-    chess_network, start_game = trainer.load_or_initialize_network(checkpoints_path)
     
-    # --- New: Override start_game if the command-line flag is used ---
+    checkpoint_to_load = None
+    # If forcing a start, find the correct checkpoint to load for that state
     if args.force_start_game is not None:
         print("\n" + "*"*60)
         print(f"COMMAND-LINE OVERRIDE: Forcing start from game {args.force_start_game}.")
         print("*"*60 + "\n")
-        # We need to find the latest checkpoint before the forced start
-        def find_latest_checkpoint_before(max_game: int):
+        
+        # Helper to find the latest checkpoint at or before the forced start game
+        def find_checkpoint_for_game(max_game: int):
             max_game_num = -1
             path_to_load = None
             for f in checkpoints_path.glob('*.pth.tar'):
@@ -137,13 +137,13 @@ def main():
                         path_to_load = f
             return path_to_load
 
-        checkpoint_to_load = find_latest_checkpoint_before(args.force_start_game - 1)
-        if checkpoint_to_load:
-            print(f"Loading corresponding checkpoint: {checkpoint_to_load.name}")
-            chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=checkpoint_to_load)
-        else:
-            print(f"[WARNING] No checkpoint found before game {args.force_start_game}. Using latest available model.")
+        checkpoint_to_load = find_checkpoint_for_game(args.force_start_game - 1)
 
+    # The Trainer will now handle loading the specific checkpoint if provided, or the latest otherwise
+    chess_network, start_game = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint_path=checkpoint_to_load)
+
+    # If we forced a start, override the game number returned by the loader
+    if args.force_start_game is not None:
         start_game = args.force_start_game - 1
 
     if start_game > 0:
@@ -180,8 +180,7 @@ def main():
     print("Initializing Bayesian Supervisor...")
     supervisor = BayesianSupervisor(config=config_params)
     
-    # --- State Initialization with Memory ---
-    last_mode, last_game_num = get_last_game_info(loss_log_filepath)
+    last_mode, _ = get_last_game_info(loss_log_filepath)
     current_mode = last_mode
     print(f"Initialized mode based on last game in log: '{current_mode}'")
 
@@ -196,12 +195,12 @@ def main():
             print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
             print("="*80)
 
-            # --- BUG FIX: Save the current state using the correct function signature ---
-            # This creates a new checkpoint file which will be the most recently modified.
-            print(f"Saving pre-tactics checkpoint for game {game_num - 1}...")
+            pre_tactics_checkpoint_name = f"checkpoint_game_{game_num - 1}_pre_tactics.pth.tar"
+            print(f"Saving temporary pre-tactics checkpoint: {pre_tactics_checkpoint_name}")
             trainer.save_checkpoint(
                 directory=checkpoints_path, 
-                game_number=game_num - 1
+                game_number=game_num - 1,
+                filename_override=pre_tactics_checkpoint_name
             )
 
             tactics_script_path = local_root / 'train_on_tactics.py'
@@ -210,8 +209,8 @@ def main():
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
-                # The corrected find_latest_checkpoint will now find the file we just saved.
-                latest_checkpoint_path = find_latest_checkpoint(checkpoints_path)
+                # Find the latest checkpoint by modification time to get the one we just saved
+                latest_checkpoint_path = find_latest_checkpoint_by_time(checkpoints_path)
                 
                 if not latest_checkpoint_path:
                     print("[WARNING] No checkpoint found to train on. Skipping tactics session.")
@@ -226,7 +225,7 @@ def main():
                     try:
                         subprocess.run(command, check=True)
                         print("Tactics training subprocess finished. Reloading the updated model...")
-                        # Reloading will now pick up the newly created tactics-trained model.
+                        # Reload the absolute latest model after tactics training
                         chess_network, _ = trainer.load_or_initialize_network(checkpoints_path)
                         mcts_player.network = chess_network
                         print("Successfully reloaded tactics-trained model into the current session.")
@@ -243,7 +242,6 @@ def main():
 
         previous_mode = current_mode
         
-        # --- FINAL LOGIC: Implement Grace Period ---
         log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame(columns=['game', 'game_type'])
         mentor_games = log_df[log_df['game_type'] == 'mentor-play']
         last_mentor_game = mentor_games['game'].max() if not mentor_games.empty else -1
@@ -274,7 +272,6 @@ def main():
         pgn_data = None
         
         if current_mode == "mentor-play":
-            # --- TYPO FIX: Changed play__game to play_game ---
             training_examples, pgn_data = mentor_player.play_game()
         else: # self-play
             training_examples, pgn_data = self_player.play_game()
