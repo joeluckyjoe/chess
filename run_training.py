@@ -6,6 +6,7 @@ import chess.pgn
 import datetime
 import subprocess
 import sys
+import re  # Added for regex matching in find_latest_checkpoint
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -21,11 +22,46 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 
+def find_latest_checkpoint(checkpoints_path: Path):
+    """
+    Finds the latest checkpoint file in the given directory by parsing game numbers from filenames.
+    It robustly looks for any '.pth.tar' file and extracts the largest integer from its name,
+    which is assumed to be the game number. This handles various naming conventions like
+    'checkpoint_<game_num>.pth.tar' and '..._<game_num>_tactics_trained.pth.tar'.
+
+    Args:
+        checkpoints_path (Path): The directory where checkpoints are stored.
+
+    Returns:
+        Path: The Path object of the latest checkpoint, or None if no checkpoints are found.
+    """
+    if not checkpoints_path.is_dir():
+        print(f"[Warning] Checkpoint directory not found at: {checkpoints_path}")
+        return None
+
+    max_game_num = -1
+    latest_checkpoint_path = None
+
+    # Iterate over all potential checkpoint files in the directory
+    for f in checkpoints_path.glob('*.pth.tar'):
+        # Use regex to find all sequences of digits in the filename (without extension)
+        numbers = re.findall(r'\d+', f.stem)
+        if numbers:
+            # Assume the largest number found in the filename corresponds to the game number
+            game_num = max(map(int, numbers))
+            if game_num > max_game_num:
+                max_game_num = game_num
+                latest_checkpoint_path = f
+
+    return latest_checkpoint_path
+
+
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     """Appends a new row of loss data to a CSV file."""
     file_exists = os.path.isfile(filepath)
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
+
 
 def get_last_game_info(log_file_path):
     """Reads the log file to determine the mode and game number of the last completed game."""
@@ -39,6 +75,7 @@ def get_last_game_info(log_file_path):
         return last_row['game_type'], last_row['game']
     except (pd.errors.EmptyDataError, IndexError):
         return "self-play", 0
+
 
 def main():
     """
@@ -122,7 +159,7 @@ def main():
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         # =====================================================================
-        # TACTICS TRAINING INTERVENTION (Phase O)
+        # TACTICS TRAINING INTERVENTION
         # =====================================================================
         if game_num > 1 and game_num % config_params['TACTICS_SESSION_FREQUENCY'] == 0:
             print("\n" + "="*80)
@@ -135,10 +172,13 @@ def main():
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
-                latest_checkpoint_path = trainer.find_latest_checkpoint(checkpoints_path)
+                # --- FIX: Call the local utility function, not the non-existent trainer method ---
+                latest_checkpoint_path = find_latest_checkpoint(checkpoints_path)
+                
                 if not latest_checkpoint_path:
                     print("[WARNING] No checkpoint found to train on. Skipping tactics session.")
                 else:
+                    print(f"Found latest checkpoint for tactics training: {latest_checkpoint_path.name}")
                     command = [
                         sys.executable, str(tactics_script_path),
                         '--puzzles_path', str(puzzles_file_path),
@@ -148,14 +188,17 @@ def main():
                     try:
                         subprocess.run(command, check=True)
                         print("Tactics training subprocess finished. Reloading the updated model...")
-                        tactics_trained_model_path = checkpoints_path / f"{latest_checkpoint_path.stem}_tactics_trained.pth.tar"
-                        if tactics_trained_model_path.exists():
-                            chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=tactics_trained_model_path)
+                        # The tactics script saves the new model with a "_tactics_trained" suffix
+                        # We need to find this new latest model again.
+                        reloaded_checkpoint, _ = trainer.load_or_initialize_network(checkpoints_path)
+                        
+                        if reloaded_checkpoint.model_version > chess_network.model_version:
+                            chess_network = reloaded_checkpoint
                             mcts_player.network = chess_network
                             print("Successfully reloaded tactics-trained model into the current session.")
                         else:
-                            print(f"[ERROR] Expected tactics-trained model not found at {tactics_trained_model_path}. Continuing with the old model.")
-                    
+                             print(f"[WARNING] A newer tactics-trained model was not found. Continuing with the old model.")
+
                     except subprocess.CalledProcessError as e:
                         print(f"[ERROR] The tactics training script failed with exit code {e.returncode}. Continuing with the old model.")
                     except Exception as e:
@@ -199,8 +242,10 @@ def main():
         pgn_data = None
         
         if current_mode == "mentor-play":
+            print("Starting a new mentor-play game...")
             training_examples, pgn_data = mentor_player.play_game()
         else: # self-play
+            print("Starting a new self-play game...")
             training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
