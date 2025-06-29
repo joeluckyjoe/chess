@@ -27,32 +27,35 @@ class SelfPlay:
         self.temp_decay_moves = temp_decay_moves
         self.print_move_timers = print_move_timers
 
-    def play_game(self) -> Tuple[List[Tuple[Any, Dict[chess.Move, float], float]], chess.pgn.Game]:
+    def play_game(self) -> Tuple[List[Tuple[str, Dict[chess.Move, float], float]], chess.pgn.Game]:
         """
         Plays a full game, returning the generated training data and the PGN object.
+        The training data format is a list of (FEN, policy_dict, outcome) tuples.
         """
         print("Starting a new self-play game...")
         self.game.reset_board()
 
-        game_history: List[Tuple[Any, Dict[chess.Move, float], bool]] = []
-        training_data: List[Tuple[Any, Dict[chess.Move, float], float]] = []
+        # --- BUG FIX: The history will now store FEN strings, not tensors. ---
+        game_history: List[Tuple[str, Dict[chess.Move, float], bool]] = []
+        training_data: List[Tuple[str, Dict[chess.Move, float], float]] = []
 
         move_count = 0
 
         while not self.game.is_game_over():
             move_count += 1
-
             if self.print_move_timers:
                 loop_start_time = time.time()
 
             current_player_mcts = self.mcts_white if self.game.board.turn == chess.WHITE else self.mcts_black
-            turn_before_move = self.game.board.turn
+            current_board = self.game.board.copy()
+            turn_before_move = current_board.turn
 
             if self.print_move_timers:
                 mcts_start_time = time.time()
-
-            policy, _, board_tensor = current_player_mcts.run_search(
-                self.game.board.copy(),
+            
+            # MCTS runs and returns the policy for the current board state
+            policy, _, _ = current_player_mcts.run_search(
+                current_board,
                 self.num_simulations
             )
 
@@ -63,7 +66,8 @@ class SelfPlay:
             if policy:
                 moves = list(policy.keys())
                 move_probs = list(policy.values())
-
+                
+                # Apply temperature for move selection in the opening
                 if move_count <= self.temp_decay_moves:
                     move_to_play = random.choices(moves, weights=move_probs, k=1)[0]
                 else:
@@ -74,7 +78,8 @@ class SelfPlay:
                 print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
                 break
 
-            game_history.append((board_tensor, policy, turn_before_move))
+            # --- BUG FIX: Store the FEN string representation of the board ---
+            game_history.append((current_board.fen(), policy, turn_before_move))
             self.game.make_move(move_to_play.uci())
 
             if self.print_move_timers:
@@ -84,14 +89,18 @@ class SelfPlay:
         # --- Game is Over ---
         raw_outcome = self.game.get_game_outcome()
         print(f"\nGame over. Raw outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
-        for board_tensor_hist, policy_hist, turn_at_state in game_history:
+        
+        # Assign outcomes to each state in the history
+        for fen_hist, policy_hist, turn_at_state in game_history:
             value_for_state = 0.0
             if raw_outcome is not None:
+                # The value is from the perspective of the player whose turn it was
                 if turn_at_state == chess.WHITE:
                     value_for_state = raw_outcome
                 else:
                     value_for_state = -raw_outcome
-            training_data.append((board_tensor_hist, policy_hist, value_for_state))
+            
+            training_data.append((fen_hist, policy_hist, value_for_state))
 
         # --- Generate PGN ---
         pgn = None
@@ -111,7 +120,6 @@ class SelfPlay:
         except Exception as e:
             print(f"[ERROR] Could not generate PGN for the game: {e}")
         
-        # --- RETURN BOTH TRAINING DATA AND PGN OBJECT ---
         return training_data, pgn
 
     def close(self):
