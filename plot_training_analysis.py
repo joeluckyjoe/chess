@@ -8,8 +8,6 @@ from pathlib import Path
 import sys
 
 # Add project root to path to allow importing from config
-# This ensures that the script can find the config module
-# MODIFICATION: Corrected the relative path to be more robust
 project_root_for_imports = Path(os.path.abspath(__file__)).parent
 if str(project_root_for_imports) not in sys.path:
     sys.path.insert(0, str(project_root_for_imports))
@@ -17,13 +15,14 @@ if str(project_root_for_imports) not in sys.path:
 from config import get_paths, config_params
 
 # --- Configuration ---
-# Use the penalty value from the centralized config for consistency
-CHANGEPOINT_PENALTY = config_params['SUPERVISOR_BAYESIAN_PENALTY'] 
-OUTPUT_FILENAME = "training_analysis.png" # Standardized output name
+# NEW: Define a list of penalties to test, from least sensitive to most sensitive
+PENALTIES_TO_TEST = [2.5, 2.0, 1.5, 1.0, 0.8] 
+OUTPUT_FILENAME = "training_analysis_comparative.png"
 
 def plot_supervisor_analysis(loss_log_path, output_filename):
     """
-    Loads training loss data, performs changepoint analysis, and generates a comprehensive plot.
+    Loads training loss data, performs changepoint analysis for multiple penalty
+    values, and generates a comprehensive comparative plot.
     """
     try:
         df = pd.read_csv(loss_log_path)
@@ -36,103 +35,89 @@ def plot_supervisor_analysis(loss_log_path, output_filename):
     df = df.sort_values('game').reset_index(drop=True)
     rolling_window = 10
     df['policy_loss_ma'] = df['policy_loss'].rolling(window=rolling_window, min_periods=1).mean()
-    df['value_loss_ma'] = df['value_loss'].rolling(window=rolling_window, min_periods=1).mean()
 
-    # --- Changepoint Detection ---
+    # --- Changepoint Detection for multiple penalties---
     self_play_data = df[df['game_type'] == 'self-play']['policy_loss_ma'].dropna()
     
-    changepoints = []
+    all_changepoints = {}
     if len(self_play_data) > 1:
-        print(f"Running changepoint detection with penalty={CHANGEPOINT_PENALTY}...")
+        print("Pre-calculating changepoint algorithm...")
         algo = rpt.Pelt(model="rbf").fit(self_play_data.values)
-        try:
-            result = algo.predict(pen=CHANGEPOINT_PENALTY)
-            # Ensure we don't try to access indices that are out of bounds
-            valid_indices = [idx for idx in result[:-1] if idx < len(self_play_data)]
-            changepoint_indices = self_play_data.index[valid_indices]
-            changepoints = df['game'].iloc[changepoint_indices].tolist()
-            print(f"Detected {len(changepoints)} changepoints at or near game numbers: {changepoints}")
-        except Exception as e:
-            print(f"Could not predict changepoints: {e}")
+        
+        for penalty in PENALTIES_TO_TEST:
+            try:
+                result = algo.predict(pen=penalty)
+                valid_indices = [idx for idx in result[:-1] if idx < len(self_play_data)]
+                changepoint_indices = self_play_data.index[valid_indices]
+                changepoints = df['game'].iloc[changepoint_indices].tolist()
+                all_changepoints[penalty] = changepoints
+                print(f"  - Penalty={penalty}: Found {len(changepoints)} changepoints.")
+            except Exception as e:
+                print(f"Could not predict changepoints for penalty {penalty}: {e}")
+                all_changepoints[penalty] = []
 
     # --- Plotting ---
-    print("Generating plot...")
+    print("Generating comparative plot...")
     fig, ax1 = plt.subplots(figsize=(20, 10))
 
     # Plot Policy Loss
-    ax1.plot(df['game'], df['policy_loss_ma'], color='deepskyblue', label=f'Policy Loss ({rolling_window}-game MA)', zorder=5)
+    ax1.plot(df['game'], df['policy_loss_ma'], color='deepskyblue', label=f'Policy Loss ({rolling_window}-game MA)', zorder=5, linewidth=2.5)
     ax1.set_xlabel('Game Number', fontsize=14)
     ax1.set_ylabel('Policy Loss (Smoothed)', color='deepskyblue', fontsize=14)
     ax1.tick_params(axis='y', labelcolor='deepskyblue')
     ax1.grid(True, which='both', linestyle='--', linewidth=0.5)
 
-    # Plot Value Loss on a secondary axis
-    ax2 = ax1.twinx()
-    ax2.plot(df['game'], df['value_loss_ma'], color='salmon', linestyle='--', label=f'Value Loss ({rolling_window}-game MA)', zorder=5)
-    ax2.set_ylabel('Value Loss (Smoothed)', color='salmon', fontsize=14)
-    ax2.tick_params(axis='y', labelcolor='salmon')
-
     # Add shaded regions for training modes
     last_game = df['game'].max()
-    color = 'lightcyan' # Default color
     for i in range(len(df) - 1):
         start_game, end_game = df['game'].iloc[i], df['game'].iloc[i+1]
         game_type = df['game_type'].iloc[i]
         color = 'lightcyan' if game_type == 'self-play' else 'lightgreen'
         ax1.axvspan(start_game, end_game, facecolor=color, alpha=0.3, zorder=0)
-
-    # Fill the last segment
     if len(df) > 0:
         last_game_type = df['game_type'].iloc[-1]
         last_color = 'lightcyan' if last_game_type == 'self-play' else 'lightgreen'
         ax1.axvspan(df['game'].iloc[-1], last_game, facecolor=last_color, alpha=0.3, zorder=0)
 
-    # Add vertical lines for detected changepoints
-    for cp in changepoints:
-        ax1.axvline(x=cp, color='darkviolet', linestyle=':', linewidth=2, label=f'Detected Changepoint', zorder=10)
+    # Add vertical lines for each set of detected changepoints
+    colors = ['darkviolet', 'red', 'orange', 'green', 'magenta']
+    linestyles = [':', '--', '-.', '-', ':']
     
+    legend_handles = []
+
+    for i, penalty in enumerate(PENALTIES_TO_TEST):
+        for cp in all_changepoints.get(penalty, []):
+            ax1.axvline(x=cp, color=colors[i % len(colors)], linestyle=linestyles[i % len(linestyles)], linewidth=2, zorder=10)
+        # Create a proxy artist for the legend
+        from matplotlib.lines import Line2D
+        legend_handles.append(Line2D([0], [0], color=colors[i % len(colors)], linestyle=linestyles[i % len(linestyles)], lw=2, label=f'Changepoints (Penalty={penalty})'))
+
+
     # --- Final Touches ---
-    fig.suptitle('Supervisor Training Analysis', fontsize=20, weight='bold')
-    ax1.set_title(f'Policy/Value Loss vs. Game Number (up to game {int(last_game)})', fontsize=16)
+    fig.suptitle('Comparative Supervisor Analysis: Penalty Sensitivity', fontsize=20, weight='bold')
+    ax1.set_title(f'Policy Loss vs. Game Number (up to game {int(last_game)})', fontsize=16)
     
-    # Create a single, clean legend
     from matplotlib.patches import Patch
     lines, labels = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
     
-    legend_elements = lines + lines2 + [
+    # Combine all legend elements
+    final_legend_elements = lines + legend_handles + [
         Patch(facecolor='lightcyan', alpha=0.5, label='Self-Play Mode'),
         Patch(facecolor='lightgreen', alpha=0.5, label='Mentor Mode')
     ]
     
-    unique_labels = {}
-    # Use a direct mapping to avoid issues with different line objects for the same label
-    for handle in legend_elements:
-        label = handle.get_label()
-        if label not in unique_labels:
-            unique_labels[label] = handle
-            
-    fig.legend(unique_labels.values(), unique_labels.keys(), loc='upper right', bbox_to_anchor=(0.9, 0.88))
-    
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-
-    # Save the plot
+    fig.legend(handles=final_legend_elements, loc='upper right', bbox_to_anchor=(0.92, 0.88))
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
     plt.savefig(output_filename, dpi=300)
-    print(f"\nAnalysis plot saved to: {output_filename}")
+    print(f"\nComparative analysis plot saved to: {output_filename}")
     plt.close()
 
 
 if __name__ == '__main__':
-    # =========================================================================
-    # MODIFIED SECTION: Use the centralized get_paths function to find the log file
-    # =========================================================================
     print("Initializing paths via config.get_paths()...")
     paths = get_paths()
     
-    # This now correctly points to the persistent Google Drive project root
     data_root = paths.drive_project_root
-    
-    # The name of the log file is now unambiguous
     log_file_path = data_root / 'loss_log_v2.csv'
     
     print(f"Attempting to load log file from persistent storage: {log_file_path}")
@@ -144,6 +129,3 @@ if __name__ == '__main__':
         # Generate the plot in the local project root for easy access
         output_path = paths.local_project_root / OUTPUT_FILENAME
         plot_supervisor_analysis(log_file_path, output_path)
-    # =========================================================================
-    # END OF MODIFIED SECTION
-    # =========================================================================
