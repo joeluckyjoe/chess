@@ -60,11 +60,9 @@ def load_model_from_checkpoint(model_path: Path, device: torch.device) -> ChessN
 
     checkpoint = torch.load(model_path, map_location=device)
     
-    # --- BUG FIX: Use the config from the checkpoint, not hardcoded values ---
     model_config = checkpoint.get('config_params', default_config_params)
     
     print("Building network from checkpoint configuration...")
-    # These parameters should ideally be stored in the config, but we use defaults for now.
     square_gnn = SquareGNN(
         in_features=model_config.get('SQUARE_IN_FEATURES', 12),
         hidden_features=model_config.get('SQUARE_HIDDEN_FEATURES', 256),
@@ -83,7 +81,7 @@ def load_model_from_checkpoint(model_path: Path, device: torch.device) -> ChessN
     )
     policy_head = PolicyHead(
         embedding_dim=model_config.get('SQUARE_OUT_FEATURES', 128),
-        num_possible_moves=get_action_space_size() # Use the canonical action space size
+        num_possible_moves=get_action_space_size()
     )
     value_head = ValueHead(embedding_dim=model_config.get('SQUARE_OUT_FEATURES', 128))
     
@@ -95,7 +93,6 @@ def load_model_from_checkpoint(model_path: Path, device: torch.device) -> ChessN
         value_head
     ).to(device)
 
-    # Load the weights into the correctly structured network
     state_dict = checkpoint.get('model_state_dict', checkpoint)
     network.load_state_dict(state_dict)
     
@@ -116,10 +113,9 @@ def collate_puzzles(batch: list[Dict[str, Any]]):
 
         gnn_input = gnn_data_converter.convert_to_gnn_input(board, device='cpu')
         
-        # --- BUG FIX: Use the reliable move_to_index function directly ---
-        # This avoids depending on a potentially stale global mapping.
         try:
-            move_idx = move_to_index(move)
+            # --- BUG FIX: Pass the 'board' argument to the move_to_index function ---
+            move_idx = move_to_index(move, board)
             gnn_inputs.append(gnn_input)
             policy_targets.append(move_idx)
         except ValueError as e:
