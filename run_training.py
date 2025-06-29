@@ -99,13 +99,23 @@ def main():
         num_simulations=config_params['MCTS_SIMULATIONS']
     )
     
+    print("Initializing Stockfish for MentorPlay...")
+    # --- MODIFICATION: Weaken the mentor to improve training effectiveness ---
+    # The agent is losing too quickly to the mentor, resulting in very little
+    # training data from these crucial sessions. By lowering the mentor's Elo,
+    # we expect longer, more instructive games.
+    mentor_elo = config_params.get('MENTOR_ELO_RATING', 1350) # Use from config or default to 1350
+
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
-        stockfish_depth=config_params['STOCKFISH_DEPTH_MENTOR'],
+        stockfish_elo=mentor_elo, # Use Elo-based strength instead of depth
+        # stockfish_depth=config_params['STOCKFISH_DEPTH_MENTOR'], # Deactivated in favor of Elo
         num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
+    print(f"Initializing MentorPlay with Stockfish Elo: {mentor_elo}")
+
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
