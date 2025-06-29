@@ -165,13 +165,24 @@ def main():
             print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
             print("="*80)
 
+            # --- BUG FIX: Force-save the current in-memory model to disk ---
+            # This ensures the tactics script gets the absolute latest model,
+            # not the last periodic checkpoint.
+            pre_tactics_checkpoint_name = f"checkpoint_game_{game_num - 1}_pre_tactics.pth.tar"
+            print(f"Saving temporary pre-tactics checkpoint: {pre_tactics_checkpoint_name}")
+            trainer.save_checkpoint(
+                directory=checkpoints_path, 
+                game_number=game_num - 1, 
+                filename_override=pre_tactics_checkpoint_name
+            )
+
             tactics_script_path = local_root / 'train_on_tactics.py'
             puzzles_file_path = paths.tactical_puzzles_file
 
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
-                # --- FIX: Call the corrected local utility function ---
+                # Now, find_latest_checkpoint will find the one we just saved.
                 latest_checkpoint_path = find_latest_checkpoint(checkpoints_path)
                 
                 if not latest_checkpoint_path:
@@ -187,8 +198,7 @@ def main():
                     try:
                         subprocess.run(command, check=True)
                         print("Tactics training subprocess finished. Reloading the updated model...")
-                        # The tactics script saves the new model with a "_tactics_trained" suffix
-                        # We need to find this new latest model again.
+                        # Reloading will now pick up the newly created tactics-trained model.
                         reloaded_checkpoint, _ = trainer.load_or_initialize_network(checkpoints_path)
                         
                         if reloaded_checkpoint.model_version > chess_network.model_version:
@@ -241,7 +251,7 @@ def main():
         pgn_data = None
         
         if current_mode == "mentor-play":
-            training_examples, pgn_data = mentor_player.play_game()
+            training_examples, pgn_data = mentor_player.play__game()
         else: # self-play
             training_examples, pgn_data = self_player.play_game()
 
