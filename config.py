@@ -30,8 +30,8 @@ config_params = {
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,
     
     # -- Bayesian Supervisor Specific --
-    # MODIFICATION: Lowered penalty to increase sensitivity to plateaus
-    'SUPERVISOR_BAYESIAN_PENALTY': 1.0, # <-- CHANGED FROM 2
+    # FINALIZED: Set penalty to 0.8 based on comparative analysis
+    'SUPERVISOR_BAYESIAN_PENALTY': 0.8, # <-- CHANGED FROM 1.0
     'SUPERVISOR_RECENCY_WINDOW': 50, 
     'SUPERVISOR_GRACE_PERIOD': 10, # Games to wait after a mentor session
 
