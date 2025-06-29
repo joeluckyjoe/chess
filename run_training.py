@@ -242,10 +242,8 @@ def main():
         pgn_data = None
         
         if current_mode == "mentor-play":
-            print("Starting a new mentor-play game...")
             training_examples, pgn_data = mentor_player.play_game()
         else: # self-play
-            print("Starting a new self-play game...")
             training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
