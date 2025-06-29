@@ -4,8 +4,8 @@ import pandas as pd
 from pathlib import Path
 import chess.pgn
 import datetime
-import subprocess # Added for calling tactics trainer
-import sys # Added for getting python executable
+import subprocess
+import sys
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -30,7 +30,7 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
 def get_last_game_info(log_file_path):
     """Reads the log file to determine the mode and game number of the last completed game."""
     if not os.path.exists(log_file_path):
-        return "self-play", 0 # Default if no log exists
+        return "self-play", 0
     try:
         df = pd.read_csv(log_file_path)
         if df.empty:
@@ -51,12 +51,10 @@ def main():
     training_data_path = paths.training_data_dir
     pgn_path = paths.pgn_games_dir
     
-    # MODIFICATION: Use the new persistent drive_project_root for logs
     drive_root = paths.drive_project_root
     loss_log_filepath = drive_root / 'loss_log_v2.csv'
     supervisor_log_filepath = drive_root / 'supervisor_log.txt'
     
-    # This path is for the location of the code itself
     local_root = paths.local_project_root
 
     device_str = config_params['DEVICE']
@@ -66,7 +64,7 @@ def main():
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     print(f"Training data will be saved to: {training_data_path}")
     print(f"PGN files will be saved to: {pgn_path}")
-    print(f"Log files will be saved to: {drive_root}") # Added print for clarity
+    print(f"Log files will be saved to: {drive_root}")
 
     # --- 2. Initialize Components ---
     trainer = Trainer(
@@ -99,23 +97,16 @@ def main():
         num_simulations=config_params['MCTS_SIMULATIONS']
     )
     
-    print("Initializing Stockfish for MentorPlay...")
-    # --- MODIFICATION: Weaken the mentor to improve training effectiveness ---
-    # The agent is losing too quickly to the mentor, resulting in very little
-    # training data from these crucial sessions. By lowering the mentor's Elo,
-    # we expect longer, more instructive games.
-    mentor_elo = config_params.get('MENTOR_ELO_RATING', 1350) # Use from config or default to 1350
+    # --- MODIFICATION: Set the desired Elo rating for the mentor ---
+    mentor_elo = config_params.get('MENTOR_ELO_RATING', 1350)
 
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
-        stockfish_elo=mentor_elo, # Use Elo-based strength instead of depth
-        # stockfish_depth=config_params['STOCKFISH_DEPTH_MENTOR'], # Deactivated in favor of Elo
+        stockfish_elo=mentor_elo,  # Use the new, robust Elo setting
         num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
-    print(f"Initializing MentorPlay with Stockfish Elo: {mentor_elo}")
-
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
 
@@ -138,19 +129,16 @@ def main():
             print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
             print("="*80)
 
-            # Define the path to the tactics trainer script
             tactics_script_path = local_root / 'train_on_tactics.py'
             puzzles_file_path = paths.tactical_puzzles_file
 
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
-                # Find the current latest checkpoint to pass to the trainer
                 latest_checkpoint_path = trainer.find_latest_checkpoint(checkpoints_path)
                 if not latest_checkpoint_path:
                     print("[WARNING] No checkpoint found to train on. Skipping tactics session.")
                 else:
-                    # Run the training script as a subprocess
                     command = [
                         sys.executable, str(tactics_script_path),
                         '--puzzles_path', str(puzzles_file_path),
@@ -159,13 +147,10 @@ def main():
                     
                     try:
                         subprocess.run(command, check=True)
-                        # CRUCIAL: After training, we must reload the newly saved model
                         print("Tactics training subprocess finished. Reloading the updated model...")
-                        # The new model will be named "..._tactics_trained.pth.tar"
                         tactics_trained_model_path = checkpoints_path / f"{latest_checkpoint_path.stem}_tactics_trained.pth.tar"
                         if tactics_trained_model_path.exists():
                             chess_network, _ = trainer.load_or_initialize_network(checkpoints_path, specific_checkpoint=tactics_trained_model_path)
-                            # Update the MCTS player with the new network reference
                             mcts_player.network = chess_network
                             print("Successfully reloaded tactics-trained model into the current session.")
                         else:
@@ -184,26 +169,22 @@ def main():
         previous_mode = current_mode
         
         # --- FINAL LOGIC: Implement Grace Period ---
-        # Determine how many games have passed since the last mentor session.
         log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame(columns=['game', 'game_type'])
         mentor_games = log_df[log_df['game_type'] == 'mentor-play']
         last_mentor_game = mentor_games['game'].max() if not mentor_games.empty else -1
         
         games_since_mentor = game_num - last_mentor_game
         
-        # If we are within the grace period, force self-play.
         if last_mentor_game != -1 and games_since_mentor <= config_params['SUPERVISOR_GRACE_PERIOD']:
             print(f"Within grace period ({games_since_mentor}/{config_params['SUPERVISOR_GRACE_PERIOD']} games since mentor). Forcing self-play.")
             current_mode = "self-play"
         else:
-            # If outside the grace period, let the supervisor check for stagnation.
             stagnation_detected = supervisor.check_for_stagnation(loss_log_filepath)
             if stagnation_detected:
                 current_mode = "mentor-play"
             else:
                 current_mode = "self-play"
         
-        # Log the mode switch if it occurred
         if current_mode != previous_mode:
             reason_for_switch = f"Supervisor switched mode from '{previous_mode}' to '{current_mode}'."
             print(reason_for_switch)

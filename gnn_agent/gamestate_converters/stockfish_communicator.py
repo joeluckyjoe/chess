@@ -7,7 +7,8 @@ import io
 import chess
 
 class StockfishCommunicator:
-    def __init__(self, stockfish_path: str):
+    # --- MODIFICATION: Accept an optional Elo rating in the constructor ---
+    def __init__(self, stockfish_path: str, elo: int | None = None):
         if not os.path.exists(stockfish_path):
             raise FileNotFoundError(
                 f"Stockfish executable not found at '{stockfish_path}'. "
@@ -20,6 +21,7 @@ class StockfishCommunicator:
             )
 
         self.stockfish_path = stockfish_path
+        self.elo = elo  # --- Store the Elo rating ---
         self.process = None
         self.stdout_queue = queue.Queue()
         self.stderr_queue = queue.Queue()
@@ -131,7 +133,6 @@ class StockfishCommunicator:
 
         while time.time() - start_time < timeout:
             if not self.is_process_alive():
-                # Process died, try to read any remaining output
                 while True:
                     try:
                         line = self.stdout_queue.get_nowait()
@@ -180,6 +181,12 @@ class StockfishCommunicator:
             self.close()
             return False
         print("'uciok' received.")
+
+        # --- MODIFICATION: Configure Elo rating if it was provided ---
+        if self.elo is not None:
+            print(f"Configuring Stockfish with Elo rating: {self.elo}")
+            self._send_command("setoption name UCI_LimitStrength value true")
+            self._send_command(f"setoption name UCI_Elo value {self.elo}")
 
         print("Sending 'isready' command...")
         ready_success, _ = self._raw_uci_command_exchange("isready", "readyok", timeout=10.0)
@@ -277,7 +284,6 @@ class StockfishCommunicator:
                 return -1.0
         return 0.0
 
-    # --- NEW METHOD TO FIX THE ERROR ---
     def get_best_move(self, depth: int, timeout: float = 20.0) -> str | None:
         """
         Asks Stockfish to calculate and return the best move from the current board state.
@@ -293,20 +299,16 @@ class StockfishCommunicator:
             print("ERROR: Cannot get best move, Stockfish is not running.")
             return None
 
-        # The board position is already known by Stockfish from previous make_move calls.
-        # We just need to ask the engine to think about the current position.
         self._send_command(f"go depth {depth}")
         
-        # Read the output until we get the "bestmove" token.
         token_found, lines = self._read_output_until("bestmove", timeout=timeout)
 
         if token_found:
-            # The last line containing 'bestmove' is usually the definitive one.
             for line in reversed(lines):
                 if line.startswith("bestmove"):
                     parts = line.split()
                     if len(parts) >= 2:
-                        return parts[1] # The move is the second part, e.g., "bestmove e2e4"
+                        return parts[1]
 
         print(f"ERROR: Stockfish did not return a 'bestmove' within {timeout}s for depth {depth}.")
         return None

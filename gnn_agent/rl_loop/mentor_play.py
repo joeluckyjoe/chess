@@ -13,25 +13,35 @@ class MentorPlay:
     Orchestrates a single game between an MCTS agent and a Stockfish mentor,
     generating training data and a PGN of the game.
     """
-    def __init__(self, mcts_agent: MCTS, stockfish_path: str, stockfish_depth: int, num_simulations: int, agent_color_str: str = "random"):
+    # --- MODIFICATION: Accept stockfish_elo, keep depth as a fallback ---
+    def __init__(self, mcts_agent: MCTS, stockfish_path: str, num_simulations: int, 
+                 stockfish_elo: int | None = None, stockfish_depth: int = 5, 
+                 agent_color_str: str = "random"):
         """
         Initializes a mentor game player.
+        
+        Args:
+            mcts_agent: The MCTS agent instance.
+            stockfish_path: Path to the Stockfish executable.
+            num_simulations: Number of MCTS simulations for the agent.
+            stockfish_elo: The Elo rating to set for the Stockfish mentor.
+            stockfish_depth: The search depth to use if Elo is not set.
+            agent_color_str: The color the agent should play ("white", "black", or "random").
         """
         self.mcts_agent = mcts_agent
         self.stockfish_depth = stockfish_depth
         self.num_simulations = num_simulations
-        # --- MODIFIED: Store the configured color string, don't determine the color yet ---
         self.agent_color_config = agent_color_str
         
         print("Initializing Stockfish for MentorPlay...")
-        self.stockfish_player = StockfishCommunicator(stockfish_path)
+        # --- MODIFICATION: Pass the elo argument to the communicator ---
+        self.stockfish_player = StockfishCommunicator(stockfish_path, elo=stockfish_elo)
         self.stockfish_player.perform_handshake()
 
     def play_game(self) -> Tuple[List[Tuple[Any, Dict[chess.Move, float], float]], chess.pgn.Game]:
         """
         Plays a full game, returning training data and the PGN object.
         """
-        # --- MODIFIED: Determine agent color at the start of each game ---
         if self.agent_color_config == "random":
             agent_color = random.choice([chess.WHITE, chess.BLACK])
         elif self.agent_color_config == "white":
@@ -62,22 +72,18 @@ class MentorPlay:
                     break
                 
                 move_uci = best_move.uci()
-                # print(f"Agent plays: {move_uci}") # This is redundant with the MCTS output
                 self.stockfish_player.make_move(move_uci)
 
             else: # Stockfish's turn
                 print("Mentor's turn...")
+                # --- This call remains the same; the communicator now handles the strength limit ---
                 move_uci = self.stockfish_player.get_best_move(self.stockfish_depth)
-                # print(f"Mentor plays: {move_uci}") # This is redundant with Stockfish output
                 self.stockfish_player.make_move(move_uci)
 
         # --- Game Over ---
         raw_outcome = self.stockfish_player.get_game_outcome()
         print(f"Mentor game over. Raw outcome (White's perspective): {raw_outcome}")
         
-        # The logic for calculating agent_perspective_result is now simpler
-        # because the raw_outcome (1.0 for white win, -1.0 for black win)
-        # aligns with the values we need.
         agent_perspective_result = 0.0
         if raw_outcome is not None:
             if agent_color == chess.WHITE:
