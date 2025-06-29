@@ -24,10 +24,9 @@ from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 def find_latest_checkpoint(checkpoints_path: Path):
     """
-    Finds the latest checkpoint file in the given directory by parsing game numbers from filenames.
-    It robustly looks for any '.pth.tar' file and extracts the largest integer from its name,
-    which is assumed to be the game number. This handles various naming conventions like
-    'checkpoint_<game_num>.pth.tar' and '..._<game_num>_tactics_trained.pth.tar'.
+    Finds the latest checkpoint file in the given directory by specifically parsing the game number
+    from filenames. It looks for the pattern '_game_(\d+)' to robustly identify the game number,
+    avoiding confusion with dates or timestamps in the filename.
 
     Args:
         checkpoints_path (Path): The directory where checkpoints are stored.
@@ -44,11 +43,11 @@ def find_latest_checkpoint(checkpoints_path: Path):
 
     # Iterate over all potential checkpoint files in the directory
     for f in checkpoints_path.glob('*.pth.tar'):
-        # Use regex to find all sequences of digits in the filename (without extension)
-        numbers = re.findall(r'\d+', f.stem)
-        if numbers:
-            # Assume the largest number found in the filename corresponds to the game number
-            game_num = max(map(int, numbers))
+        # --- BUG FIX: Use a specific regex to find the game number ---
+        # This prevents confusion with other numbers like dates or times in the filename.
+        match = re.search(r'_game_(\d+)', f.name)
+        if match:
+            game_num = int(match.group(1))
             if game_num > max_game_num:
                 max_game_num = game_num
                 latest_checkpoint_path = f
@@ -172,7 +171,7 @@ def main():
             if not puzzles_file_path.exists():
                 print(f"[WARNING] Tactical puzzles file not found at '{puzzles_file_path}'. Skipping tactics session.")
             else:
-                # --- FIX: Call the local utility function, not the non-existent trainer method ---
+                # --- FIX: Call the corrected local utility function ---
                 latest_checkpoint_path = find_latest_checkpoint(checkpoints_path)
                 
                 if not latest_checkpoint_path:
