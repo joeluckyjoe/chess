@@ -1,3 +1,4 @@
+# FILENAME: run_training.py
 import os
 import torch
 import pandas as pd
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import re
 import argparse
+import json
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -58,6 +60,19 @@ def get_last_game_info(log_file_path):
     except (pd.errors.EmptyDataError, IndexError):
         return "self-play", 0
 
+# --- PHASE T MODIFICATION: ADDED ---
+def load_tactical_puzzles(puzzles_path: Path):
+    """Loads tactical puzzles from a .jsonl file."""
+    if not puzzles_path.exists():
+        print(f"[WARNING] Tactical puzzles file not found at {puzzles_path}. Continuing without them.")
+        return []
+    puzzles = []
+    with open(puzzles_path, 'r') as f:
+        for line in f:
+            puzzles.append(json.loads(line))
+    print(f"Successfully loaded {len(puzzles)} tactical puzzles.")
+    return puzzles
+# --- END MODIFICATION ---
 
 def main():
     """
@@ -79,7 +94,10 @@ def main():
     drive_root = paths.drive_project_root
     loss_log_filepath = drive_root / 'loss_log_v2.csv'
     supervisor_log_filepath = drive_root / 'supervisor_log.txt'
-    local_root = paths.local_project_root
+    
+    # --- PHASE T MODIFICATION: ADDED ---
+    tactical_puzzles_path = paths.tactical_puzzles_file
+    # --- END MODIFICATION ---
 
     device_str = config_params['DEVICE']
     device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
@@ -123,6 +141,11 @@ def main():
 
     print(f"Resuming training from game {start_game + 1}")
 
+    # --- PHASE T MODIFICATION: ADDED ---
+    print("Loading tactical puzzles for integrated training...")
+    tactical_puzzles = load_tactical_puzzles(tactical_puzzles_path)
+    # --- END MODIFICATION ---
+
     mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'])
     self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], num_simulations=config_params['MCTS_SIMULATIONS'])
     mentor_player = MentorPlay(mcts_agent=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350), num_simulations=config_params['MCTS_SIMULATIONS'], agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'])
@@ -134,60 +157,10 @@ def main():
     print(f"Initialized mode based on last game in log: '{current_mode}'")
 
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
-        if game_num > 1 and game_num % config_params['TACTICS_SESSION_FREQUENCY'] == 0:
-            print("\n" + "="*80)
-            print(f"--- GAME {game_num}: INITIATING TACTICS TRAINING SESSION ---")
-            print("="*80)
-
-            pre_tactics_checkpoint_name = f"checkpoint_game_{game_num - 1}_pre_tactics.pth.tar"
-            print(f"Saving temporary pre-tactics checkpoint: {pre_tactics_checkpoint_name}")
-            trainer.save_checkpoint(
-                directory=checkpoints_path,
-                game_number=game_num - 1,
-                filename_override=pre_tactics_checkpoint_name
-            )
-
-            tactics_script_path = local_root / 'train_on_tactics.py'
-            puzzles_file_path = paths.tactical_puzzles_file
-
-            if not puzzles_file_path.exists():
-                print(f"[WARNING] Tactical puzzles file not found. Skipping session.")
-            else:
-                latest_checkpoint_path = find_latest_checkpoint_by_time(checkpoints_path)
-                if not latest_checkpoint_path:
-                    print("[WARNING] No checkpoint found to train on. Skipping session.")
-                else:
-                    print(f"Found latest checkpoint for tactics training: {latest_checkpoint_path.name}")
-                    command = [
-                        sys.executable, str(tactics_script_path),
-                        '--puzzles_path', str(puzzles_file_path),
-                        '--model_path', str(latest_checkpoint_path)
-                    ]
-                    try:
-                        subprocess.run(command, check=True)
-                        print("Tactics training subprocess finished. Reloading the updated model...")
-                        
-                        # --- BUG FIX: Find and load the *specific* tactics-trained model ---
-                        newly_trained_model_path = find_latest_checkpoint_by_time(checkpoints_path)
-                        if newly_trained_model_path:
-                            print(f"Loading newly trained model: {newly_trained_model_path.name}")
-                            chess_network, _ = trainer.load_or_initialize_network(
-                                checkpoints_path, 
-                                specific_checkpoint_path=newly_trained_model_path
-                            )
-                            mcts_player.network = chess_network
-                            print("Successfully reloaded tactics-trained model into the current session.")
-                        else:
-                            print("[ERROR] Could not find the newly trained tactics model. Continuing with old model.")
-
-                    except subprocess.CalledProcessError as e:
-                        print(f"[ERROR] The tactics training script failed with exit code {e.returncode}. Continuing with the old model.")
-                    except Exception as e:
-                        print(f"[ERROR] An unexpected error occurred during tactics training: {e}. Continuing with the old model.")
-            
-            print("\n" + "="*80)
-            print("--- TACTICS SESSION COMPLETE ---")
-            print("="*80 + "\n")
+        
+        # --- PHASE T MODIFICATION: REMOVED ---
+        # The entire periodic tactics training session block has been removed.
+        # --- END MODIFICATION ---
 
         previous_mode = current_mode
         log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame(columns=['game', 'game_type'])
@@ -227,8 +200,18 @@ def main():
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
-        print(f"Training on {len(training_examples)} examples...")
-        policy_loss, value_loss = trainer.train_on_batch(training_examples, batch_size=config_params['BATCH_SIZE'])
+        print(f"Training on {len(training_examples)} examples mixed with tactical puzzles...")
+        
+        # --- PHASE T MODIFICATION: MODIFIED ---
+        # The trainer now receives the full list of puzzles to create a mixed batch.
+        # The signature and logic inside trainer.train_on_batch will need to be updated.
+        policy_loss, value_loss = trainer.train_on_batch(
+            game_examples=training_examples,
+            puzzle_examples=tactical_puzzles, # Pass the loaded puzzles
+            batch_size=config_params['BATCH_SIZE']
+        )
+        # --- END MODIFICATION ---
+        
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
         write_loss_to_csv(loss_log_filepath, game_num, policy_loss, value_loss, current_mode)

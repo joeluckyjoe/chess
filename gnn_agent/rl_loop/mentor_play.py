@@ -45,7 +45,7 @@ class MentorPlay:
         self.stockfish_player.reset_board()
         board = self.stockfish_player.board
 
-        # --- BUG FIX: The history will now store FEN strings, not tensors. ---
+        # --- The history will now store FEN strings, not tensors. ---
         game_history: List[Tuple[str, Dict[chess.Move, float]]] = []
         
         while not self.stockfish_player.is_game_over():
@@ -58,7 +58,7 @@ class MentorPlay:
                     self.num_simulations
                 )
                 
-                # --- BUG FIX: Store the FEN string representation of the board ---
+                # --- Store the FEN string representation of the board ---
                 game_history.append((current_board.fen(), policy)) 
                 
                 if not best_move:
@@ -100,7 +100,8 @@ class MentorPlay:
             pgn.headers["Result"] = self.stockfish_player.board.result(claim_draw=True)
             
             if self.stockfish_player.board.move_stack:
-                node = pgn.add_main_variation(self.stock_player.board.move_stack[0])
+                # --- BUG FIX: Corrected self.stock_player to self.stockfish_player ---
+                node = pgn.add_main_variation(self.stockfish_player.board.move_stack[0])
                 for i in range(1, len(self.stockfish_player.board.move_stack)):
                     node = node.add_main_variation(self.stockfish_player.board.move_stack[i])
         except Exception as e:

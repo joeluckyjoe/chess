@@ -1,6 +1,8 @@
+# FILENAME: gnn_agent/rl_loop/trainer.py
 import torch
 import os
 import re
+import random # --- PHASE T MODIFICATION: ADDED ---
 from datetime import datetime
 from pathlib import Path
 import torch.optim as optim
@@ -99,22 +101,55 @@ class Trainer:
             return policy_tensor
         for move, prob in mcts_policy_dict.items():
             try:
-                # --- BUG FIX: Pass the board object to move_to_index ---
+                # --- Pass the board object to move_to_index ---
                 idx = move_to_index(move, board)
                 policy_tensor[idx] = prob
             except Exception as e:
-                # The print statement below was removed as it was flooding the logs. The try/except is sufficient.
-                # print(f"Warning (Trainer): Error converting move {move.uci() if move else 'None'} to index: {e}. Skipping.")
                 pass
         return policy_tensor
 
-    def train_on_batch(self, batch_data: List[Tuple[str, Dict[chess.Move, float], float]], batch_size: int):
+    # --- PHASE T MODIFICATION: ADDED ---
+    def _convert_puzzles_to_training_format(self, puzzle_examples: List[Dict]) -> List[Tuple[str, Dict[chess.Move, float], float]]:
+        """Converts raw puzzle data into the standard (FEN, policy_dict, outcome) format."""
+        converted_puzzles = []
+        for puzzle in puzzle_examples:
+            try:
+                board = chess.Board(puzzle['fen'])
+                # The puzzle is from the perspective of the side to move. A correct move leads to a win.
+                outcome = 1.0
+                # The policy is deterministic: 100% probability on the single best move.
+                best_move = chess.Move.from_uci(puzzle['best_move_uci'])
+                policy_dict = {best_move: 1.0}
+                converted_puzzles.append((board.fen(), policy_dict, outcome))
+            except Exception as e:
+                # print(f"Warning: Could not process puzzle with FEN {puzzle.get('fen')}: {e}")
+                pass
+        return converted_puzzles
+    # --- END MODIFICATION ---
+
+    # --- PHASE T MODIFICATION: MODIFIED ---
+    def train_on_batch(self, game_examples: List[Tuple[str, Dict[chess.Move, float], float]], 
+                       puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
         """
-        Performs a single training step on a batch of data.
-        The data format is now (FEN, policy_dict, outcome).
+        Performs a single training step on a mixed batch of game and puzzle data.
         """
-        if not batch_data:
+        if not game_examples and not puzzle_examples:
             return 0.0, 0.0
+
+        # --- PHASE T MODIFICATION: ADDED ---
+        # 1. Convert puzzles to the standard training format
+        converted_puzzles = self._convert_puzzles_to_training_format(puzzle_examples)
+        
+        # 2. Determine number of puzzles to add and sample them
+        num_puzzles_to_add = int(len(game_examples) * puzzle_ratio)
+        if len(converted_puzzles) > 0:
+            sampled_puzzles = random.sample(converted_puzzles, min(num_puzzles_to_add, len(converted_puzzles)))
+        else:
+            sampled_puzzles = []
+
+        # 3. Combine game examples with sampled puzzles to create the final batch
+        batch_data = game_examples + sampled_puzzles
+        # --- END MODIFICATION ---
 
         self.network.train()
         
@@ -131,10 +166,8 @@ class Trainer:
             if not batch_chunk:
                 continue
             
-            # --- BUG FIX: Unzip the new data format ---
             fen_strings, mcts_policies, game_outcomes = zip(*batch_chunk)
 
-            # --- BUG FIX: Process FENs into boards and tensors inside the loop ---
             boards = [chess.Board(fen) for fen in fen_strings]
             gnn_inputs = [convert_to_gnn_input(b, device=self.device) for b in boards]
 
