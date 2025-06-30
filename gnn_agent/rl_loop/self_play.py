@@ -1,3 +1,4 @@
+# FILENAME: gnn_agent/rl_loop/self_play.py
 import chess
 import torch
 from typing import List, Tuple, Dict, Any
@@ -35,7 +36,6 @@ class SelfPlay:
         print("Starting a new self-play game...")
         self.game.reset_board()
 
-        # --- BUG FIX: The history will now store FEN strings, not tensors. ---
         game_history: List[Tuple[str, Dict[chess.Move, float], bool]] = []
         training_data: List[Tuple[str, Dict[chess.Move, float], float]] = []
 
@@ -54,31 +54,26 @@ class SelfPlay:
                 mcts_start_time = time.time()
             
             # MCTS runs and returns the policy for the current board state
-            policy, _, _ = current_player_mcts.run_search(
+            policy = current_player_mcts.run_search(
                 current_board,
                 self.num_simulations
             )
 
             if self.print_move_timers:
                 mcts_duration = time.time() - mcts_start_time
-
-            move_to_play = None
-            if policy:
-                moves = list(policy.keys())
-                move_probs = list(policy.values())
-                
-                # Apply temperature for move selection in the opening
-                if move_count <= self.temp_decay_moves:
-                    move_to_play = random.choices(moves, weights=move_probs, k=1)[0]
-                else:
-                    best_move_index = move_probs.index(max(move_probs))
-                    move_to_play = moves[best_move_index]
+            
+            # --- REFACTOR: All move selection logic is now in the MCTS class ---
+            # Determine the temperature for the current move
+            current_temp = self.temperature if move_count <= self.temp_decay_moves else 0.0
+            
+            # Select the move using the MCTS's own method
+            move_to_play = current_player_mcts.select_move(policy, current_temp)
+            # --- END REFACTOR ---
 
             if move_to_play is None:
                 print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
                 break
 
-            # --- BUG FIX: Store the FEN string representation of the board ---
             game_history.append((current_board.fen(), policy, turn_before_move))
             self.game.make_move(move_to_play.uci())
 
