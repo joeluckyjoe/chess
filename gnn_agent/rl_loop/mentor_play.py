@@ -13,8 +13,8 @@ class MentorPlay:
     Orchestrates a single game between an MCTS agent and a Stockfish mentor,
     generating training data and a PGN of the game.
     """
-    def __init__(self, mcts_agent: MCTS, stockfish_path: str, num_simulations: int, 
-                 stockfish_elo: int | None = None, stockfish_depth: int = 5, 
+    def __init__(self, mcts_agent: MCTS, stockfish_path: str, num_simulations: int,
+                 stockfish_elo: int | None = None, stockfish_depth: int = 5,
                  agent_color_str: str = "random"):
         """
         Initializes a mentor game player.
@@ -23,7 +23,7 @@ class MentorPlay:
         self.stockfish_depth = stockfish_depth
         self.num_simulations = num_simulations
         self.agent_color_config = agent_color_str
-        
+
         print("Initializing Stockfish for MentorPlay...")
         self.stockfish_player = StockfishCommunicator(stockfish_path, elo=stockfish_elo)
         self.stockfish_player.perform_handshake()
@@ -39,32 +39,36 @@ class MentorPlay:
             agent_color = chess.WHITE
         else: # black
             agent_color = chess.BLACK
-        
+
         print(f"--- Starting a new mentor game: Agent plays as {chess.COLOR_NAMES[agent_color]} ---")
-        
+
         self.stockfish_player.reset_board()
         board = self.stockfish_player.board
 
-        # --- The history will now store FEN strings, not tensors. ---
         game_history: List[Tuple[str, Dict[chess.Move, float]]] = []
-        
+
         while not self.stockfish_player.is_game_over():
             current_board = board.copy()
             if board.turn == agent_color:
                 # --- Agent's Turn ---
                 print("Agent's turn...")
-                policy, best_move, _ = self.mcts_agent.run_search(
+                # ============================ FIX START ============================
+                # 1. Call run_search to get only the policy dictionary.
+                policy = self.mcts_agent.run_search(
                     current_board,
                     self.num_simulations
                 )
-                
-                # --- Store the FEN string representation of the board ---
-                game_history.append((current_board.fen(), policy)) 
-                
+                # 2. Call the new select_move method to get the best move.
+                #    Temperature is 0 for greedy selection (strongest play).
+                best_move = self.mcts_agent.select_move(policy, temperature=0)
+                # ============================= FIX END =============================
+
+                game_history.append((current_board.fen(), policy))
+
                 if not best_move:
                     print("MCTS returned no move, ending game.")
                     break
-                
+
                 move_uci = best_move.uci()
                 self.stockfish_player.make_move(move_uci)
 
@@ -76,7 +80,7 @@ class MentorPlay:
         # --- Game Over ---
         raw_outcome = self.stockfish_player.get_game_outcome()
         print(f"Mentor game over. Raw outcome (White's perspective): {raw_outcome}")
-        
+
         agent_perspective_result = 0.0
         if raw_outcome is not None:
             if agent_color == chess.WHITE:
@@ -98,9 +102,8 @@ class MentorPlay:
             pgn.headers["White"] = "MCTS_Agent" if agent_color == chess.WHITE else "Stockfish_Mentor"
             pgn.headers["Black"] = "MCTS_Agent" if agent_color == chess.BLACK else "Stockfish_Mentor"
             pgn.headers["Result"] = self.stockfish_player.board.result(claim_draw=True)
-            
+
             if self.stockfish_player.board.move_stack:
-                # --- BUG FIX: Corrected self.stock_player to self.stockfish_player ---
                 node = pgn.add_main_variation(self.stockfish_player.board.move_stack[0])
                 for i in range(1, len(self.stockfish_player.board.move_stack)):
                     node = node.add_main_variation(self.stockfish_player.board.move_stack[i])
