@@ -20,6 +20,7 @@ class CrossAttentionModule(nn.Module):
         self.pc_embed_dim = pc_embed_dim
         self.num_heads = num_heads
 
+        # FIX: Set batch_first=True to match the batch-first tensors from ChessNetwork.
         # Attention mechanism 1: Pieces attend to Squares (P -> S)
         self.p_to_s_attention = nn.MultiheadAttention(
             embed_dim=pc_embed_dim,
@@ -27,9 +28,10 @@ class CrossAttentionModule(nn.Module):
             kdim=sq_embed_dim,
             vdim=sq_embed_dim,
             dropout=dropout_rate,
-            batch_first=False
+            batch_first=True  # <-- CORRECTED
         )
 
+        # FIX: Set batch_first=True to match the batch-first tensors from ChessNetwork.
         # Attention mechanism 2: Squares attend to Pieces (S -> P)
         self.s_to_p_attention = nn.MultiheadAttention(
             embed_dim=sq_embed_dim,
@@ -37,7 +39,7 @@ class CrossAttentionModule(nn.Module):
             kdim=pc_embed_dim,
             vdim=pc_embed_dim,
             dropout=dropout_rate,
-            batch_first=False
+            batch_first=True  # <-- CORRECTED
         )
 
         # Processing block for the P -> S path
@@ -72,8 +74,8 @@ class CrossAttentionModule(nn.Module):
         Forward pass for the SymmetricCrossAttentionModule.
 
         Args:
-            square_embeddings (torch.Tensor): Shape (num_squares, batch_size, sq_embed_dim)
-            piece_embeddings (torch.Tensor): Shape (num_current_pieces, batch_size, pc_embed_dim)
+            square_embeddings (torch.Tensor): Shape (batch_size, num_squares, sq_embed_dim)
+            piece_embeddings (torch.Tensor): Shape (batch_size, num_current_pieces, pc_embed_dim)
             piece_padding_mask (torch.Tensor, optional): Mask for padded pieces.
                                                           Shape (batch_size, num_current_pieces).
             return_attention (bool): If True, returns the attention weight tensors.
@@ -86,7 +88,6 @@ class CrossAttentionModule(nn.Module):
             - sp_weights (torch.Tensor or None): Square-to-Piece attention weights.
         """
         # --- Path 1: Pieces attend to Squares (P -> S) ---
-        # MODIFICATION: Capture attention weights by setting need_weights based on the flag.
         p_to_s_attn_output, ps_weights = self.p_to_s_attention(
             query=piece_embeddings,
             key=square_embeddings,
@@ -98,7 +99,6 @@ class CrossAttentionModule(nn.Module):
         processed_attended_pieces = self.p_layer_norm2(attended_pieces + self.p_dropout(p_ff_output))
 
         # --- Path 2: Squares attend to Pieces (S -> P) ---
-        # MODIFICATION: Capture attention weights by setting need_weights based on the flag.
         s_to_p_attn_output, sp_weights = self.s_to_p_attention(
             query=square_embeddings,
             key=piece_embeddings,
