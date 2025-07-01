@@ -18,7 +18,8 @@ config_params = {
     "BATCH_SIZE": 64,
 
     # -- MCTS Settings --
-    "MCTS_SIMULATIONS": 400,      # Number of MCTS simulations per move
+    # Phase AB: Increased from 400 to 800 to leverage parallel MCTS.
+    "MCTS_SIMULATIONS": 800,      # Number of MCTS simulations per move
     "CPUCT": 1.25,                # Exploration constant in MCTS
     
     # --- Tactics Training Settings (Phase O) ---

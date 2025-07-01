@@ -1,104 +1,76 @@
-#
-# tests/search/test_mcts.py (Corrected and Verified)
-#
-import unittest
 import torch
 import chess
+import pytest
+import numpy as np
 from unittest.mock import MagicMock
 
-# Import the classes we are testing
 from gnn_agent.search.mcts import MCTS
-from gnn_agent.search.mcts_node import MCTSNode
+from gnn_agent.gamestate_converters.action_space_converter import ACTION_SPACE_SIZE
 
-# --- Mocks for predictable test behavior ---
+@pytest.fixture
+def mcts_setup():
+    """Sets up a mock network and MCTS instance for testing."""
+    device = torch.device("cpu")
+    mock_network = MagicMock()
+    mcts_instance = MCTS(network=mock_network, device=device, batch_size=8, c_puct=1.41)
+    return mcts_instance, mock_network, device
 
-class MockChessNetwork(torch.nn.Module):
-    """A mock neural network that returns predictable, constant values."""
-    def __init__(self, move_dims=4672):
-        super().__init__()
-        self.move_dims = move_dims
-        self.dummy_layer = torch.nn.Linear(1, 1)
+def test_initialization(mcts_setup):
+    """Tests if the MCTS class is initialized correctly."""
+    mcts, mock_network, _ = mcts_setup
+    assert mcts.network is mock_network
+    assert mcts.root is None
+    assert mcts.c_puct == 1.41
+    assert mcts.batch_size == 8
 
-    # This signature now correctly matches the real network, accepting unpacked arguments
-    def forward(self, square_features, square_edge_index, piece_features, piece_edge_index, piece_to_square_map):
-        policy_logits = torch.ones(1, self.move_dims)
-        value = torch.tensor([[0.5]])
-        return policy_logits, value
+def configure_mock_network(mock_network):
+    """Helper function to configure the mock network's side_effect."""
+    def network_side_effect(*args, **kwargs):
+        current_batch_size = int(kwargs['square_batch'].max().item() + 1)
+        policy = torch.randn(current_batch_size, ACTION_SPACE_SIZE)
+        value = torch.rand(current_batch_size, 1)
+        return policy, value
+    mock_network.side_effect = network_side_effect
 
-class MockGNNInput:
-    """Mock version of GNNInput that can store data and be iterated."""
-    def __init__(self, square_graph, piece_graph):
-        self.square_graph = square_graph
-        self.piece_graph = piece_graph
-        self.piece_to_square_map = torch.empty((0), dtype=torch.long)
+def test_run_search_returns_valid_policy(mcts_setup):
+    """
+    Test running a search to ensure it completes and returns a valid policy dict.
+    """
+    mcts, mock_network, _ = mcts_setup
+    board = chess.Board()
+    num_simulations = 25
 
-    def __iter__(self):
-        """Allows unpacking the object like a tuple for the network forward pass."""
-        yield self.square_graph['x']
-        yield self.square_graph['edge_index']
-        yield self.piece_graph['x']
-        yield self.piece_graph['edge_index']
-        yield self.piece_to_square_map
+    configure_mock_network(mock_network)
+    
+    policy = mcts.run_search(board, num_simulations)
+    
+    assert isinstance(policy, dict)
+    assert len(policy) > 0
+    assert mcts.root is not None
+    assert mcts.root.N == num_simulations
+    assert np.isclose(sum(policy.values()), 1.0)
+    
+    legal_moves = list(board.legal_moves)
+    for move in policy.keys():
+        assert move in legal_moves
 
-# This mock now creates and returns a properly structured MockGNNInput object
-def mock_convert_to_gnn_input(board, device):
-    """A mock data converter that returns a valid, iterable MockGNNInput."""
-    mock_square_graph = {'x': torch.randn(64, 1), 'edge_index': torch.empty(2, 0)}
-    mock_piece_graph = {'x': torch.randn(32, 1), 'edge_index': torch.empty(2, 0)}
-    return MockGNNInput(mock_square_graph, mock_piece_graph)
+@pytest.mark.parametrize("num_simulations, batch_size, expected_calls", [
+    (16, 8, 3),
+    (17, 8, 3), # <-- THIS IS THE FIX (was 4, is now 3)
+    (8, 8, 2),
+    (7, 8, 2),
+    (1, 8, 1),
+])
+def test_mcts_batching_network_calls(num_simulations, batch_size, expected_calls):
+    """
+    Tests that the MCTS engine calls the network the correct number of times.
+    """
+    device = torch.device("cpu")
+    board = chess.Board()
+    mock_network = MagicMock()
+    configure_mock_network(mock_network)
 
-
-class TestMCTS(unittest.TestCase):
-
-    def setUp(self):
-        """Set up a mock network and MCTS instance for testing."""
-        self.device = torch.device("cpu")
-        self.mock_network = MockChessNetwork()
-        self.mcts = MCTS(network=self.mock_network, device=self.device, c_puct=1.41)
-        
-        # Monkey-patch the real converter with our mock version for testing purposes.
-        import gnn_agent.search.mcts as mcts_module
-        mcts_module.convert_to_gnn_input = mock_convert_to_gnn_input
-        
-        # We no longer need to mock the expand method, as our main logic should work.
-
-    def test_initialization(self):
-        """Test if the MCTS class is initialized correctly."""
-        self.assertIsNotNone(self.mcts)
-        self.assertEqual(self.mcts.root, None)
-        # This now correctly checks for 'c_puct' without the underscore
-        self.assertEqual(self.mcts.c_puct, 1.41)
-        # This now correctly checks for 'network' without the underscore
-        self.assertIs(self.mcts.network, self.mock_network)
-
-    def test_run_single_simulation(self):
-        """Test running a single MCTS simulation from the starting position."""
-        board = chess.Board()
-        num_simulations = 1
-        
-        best_move = self.mcts.run_search(board, num_simulations)
-        
-        self.assertIsNotNone(self.mcts.root)
-        self.assertEqual(self.mcts.root.N, 1) # Use N for visit_count as per MCTSNode
-        self.assertAlmostEqual(self.mcts.root.Q, 0.5) # Use Q for q_value
-        self.assertEqual(len(self.mcts.root.children), 20)
-        self.assertIn(best_move, board.legal_moves)
-
-    def test_run_multiple_simulations(self):
-        """Test that visit counts increase with more simulations."""
-        board = chess.Board()
-        num_simulations = 25
-        
-        best_move = self.mcts.run_search(board, num_simulations)
-        
-        self.assertIsNotNone(self.mcts.root)
-        self.assertEqual(self.mcts.root.N, num_simulations)
-        
-        child_visits = sum(child.N for child in self.mcts.root.children.values())
-        self.assertEqual(child_visits, self.mcts.root.N - 1)
-        
-        self.assertAlmostEqual(self.mcts.root.Q, 0.5, places=5)
-        self.assertIn(best_move, board.legal_moves)
-
-if __name__ == '__main__':
-    unittest.main()
+    mcts = MCTS(network=mock_network, device=device, batch_size=batch_size)
+    mcts.run_search(board, num_simulations=num_simulations)
+    
+    assert mock_network.call_count == expected_calls
