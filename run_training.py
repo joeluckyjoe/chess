@@ -145,7 +145,15 @@ def main():
     tactical_puzzles = load_tactical_puzzles(tactical_puzzles_path)
     # --- END MODIFICATION ---
 
-    mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'])
+    # --- PHASE AB MODIFICATION: ADDED batch_size ---
+    mcts_player = MCTS(
+        network=chess_network, 
+        device=device, 
+        c_puct=config_params['CPUCT'], 
+        batch_size=config_params['BATCH_SIZE']
+    )
+    # --- END MODIFICATION ---
+    
     self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], num_simulations=config_params['MCTS_SIMULATIONS'])
     mentor_player = MentorPlay(mcts_agent=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350), num_simulations=config_params['MCTS_SIMULATIONS'], agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'])
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
