@@ -4,8 +4,9 @@ import numpy as np
 from typing import Dict, Tuple, List, Deque
 import collections
 
+from torch_geometric.data import Batch
 from ..gamestate_converters.action_space_converter import move_to_index
-from ..gamestate_converters.gnn_data_converter import convert_boards_to_gnn_batch
+from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from ..neural_network.chess_network import ChessNetwork
 from .mcts_node import MCTSNode
 
@@ -46,18 +47,35 @@ class MCTS:
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        batched_input = convert_boards_to_gnn_batch(list(boards_to_process), self.device)
+        # --- PHASE AB REFACTOR: BATCHED DATA PREPARATION ---
+        # 1. Convert all boards in the queue to PyG Data objects.
+        data_list = [convert_to_gnn_input(b, self.device) for b in boards_to_process]
         
+        # 2. Use PyG's Batch.from_data_list to create a single batched graph object.
+        data_batch = Batch.from_data_list(data_list)
+        
+        # 3. Manually create the padding mask required by the attention mechanism.
+        max_pieces = max(data.piece_features.size(0) for data in data_list) if data_list else 0
+        batch_size = len(boards_to_process)
+        piece_padding_mask = torch.ones((batch_size, max_pieces), dtype=torch.bool, device=self.device)
+        if data_list:
+            for i, data in enumerate(data_list):
+                num_pieces = data.piece_features.size(0)
+                if num_pieces > 0:
+                    piece_padding_mask[i, :num_pieces] = 0 # 0 means not masked (i.e., attend to this piece)
+        
+        # 4. Perform a single forward pass with the entire batch.
         policy_logits_batch, value_batch = self.network(
-            square_features=batched_input.square_features,
-            square_edge_index=batched_input.square_edge_index,
-            square_batch=batched_input.square_batch,
-            piece_features=batched_input.piece_features,
-            piece_edge_index=batched_input.piece_edge_index,
-            piece_batch=batched_input.piece_batch,
-            piece_to_square_map=batched_input.piece_to_square_map,
-            piece_padding_mask=batched_input.piece_padding_mask
+            square_features=data_batch.square_features,
+            square_edge_index=data_batch.square_edge_index,
+            square_batch=data_batch.square_features_batch,
+            piece_features=data_batch.piece_features,
+            piece_edge_index=data_batch.piece_edge_index,
+            piece_batch=data_batch.piece_features_batch,
+            piece_to_square_map=data_batch.piece_to_square_map,
+            piece_padding_mask=piece_padding_mask
         )
+        # --- END REFACTOR ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
@@ -105,8 +123,6 @@ class MCTS:
             self._pending_evaluations.append((self.root, board.copy()))
             self._expand_and_evaluate_batch()
             self._add_dirichlet_noise(self.root)
-            # --- THIS IS THE FIX for the off-by-one error ---
-            # The root expansion is the first simulation.
             sims_done = 1
 
         while sims_done < num_simulations:
