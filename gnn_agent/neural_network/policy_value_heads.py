@@ -10,6 +10,7 @@ outcome) respectively.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
 
 class PolicyHead(nn.Module):
     """
@@ -35,21 +36,35 @@ class PolicyHead(nn.Module):
         # The output of the conv layer will be (B, 2, 8, 8), which flattens to B, 128
         self.fc1 = nn.Linear(2 * 8 * 8, num_possible_moves)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass for the Policy Head.
 
         Args:
-            x (torch.Tensor): The input tensor from the cross-attention module.
-                              Shape: (batch_size, 64, embedding_dim)
+            x (torch.Tensor): The input tensor from the core network.
+                              Shape: (total_squares_in_batch, embedding_dim)
+            batch (torch.Tensor): The batch tensor indicating which graph each square belongs to.
+                                  Shape: (total_squares_in_batch,)
 
         Returns:
             torch.Tensor: The output policy logits.
                           Shape: (batch_size, num_possible_moves)
         """
-        # Reshape from (B, 64, D) to (B, D, 8, 8) to treat as a grid
-        batch_size, _, embedding_dim = x.shape
-        x_grid = x.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
+        # --- PHASE AB CORRECTION ---
+        # The input 'x' is a flattened tensor of nodes from all graphs in the batch.
+        # We use the 'batch' tensor to determine the batch size and correctly
+        # reshape the data into a grid for the Conv2D layers.
+        if batch is None:
+            batch_size = 1
+        else:
+            batch_size = batch.max().item() + 1
+        
+        embedding_dim = x.size(1)
+
+        # Reshape from (B * 64, D) to (B, 64, D) and then to (B, D, 8, 8)
+        x_grid = x.view(batch_size, 64, embedding_dim)
+        x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
+        # --- END CORRECTION ---
         
         x = F.relu(self.conv1(x_grid))
         
@@ -82,21 +97,35 @@ class ValueHead(nn.Module):
         self.fc1 = nn.Linear(1 * 8 * 8, 256)
         self.fc2 = nn.Linear(256, 1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass for the Value Head.
 
         Args:
-            x (torch.Tensor): The input tensor from the cross-attention module.
-                              Shape: (batch_size, 64, embedding_dim)
+            x (torch.Tensor): The input tensor from the core network.
+                              Shape: (total_squares_in_batch, embedding_dim)
+            batch (torch.Tensor): The batch tensor indicating which graph each square belongs to.
+                                  Shape: (total_squares_in_batch,)
 
         Returns:
             torch.Tensor: The estimated value of the position, between -1 and 1.
                           Shape: (batch_size, 1)
         """
-        # Reshape from (B, 64, D) to (B, D, 8, 8)
-        batch_size, _, embedding_dim = x.shape
-        x_grid = x.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
+        # --- PHASE AB CORRECTION ---
+        # The input 'x' is a flattened tensor of nodes from all graphs in the batch.
+        # We use the 'batch' tensor to determine the batch size and correctly
+        # reshape the data into a grid for the Conv2D layers.
+        if batch is None:
+            batch_size = 1
+        else:
+            batch_size = batch.max().item() + 1
+
+        embedding_dim = x.size(1)
+
+        # Reshape from (B * 64, D) to (B, D, 8, 8)
+        x_grid = x.view(batch_size, 64, embedding_dim)
+        x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
+        # --- END CORRECTION ---
         
         x = F.relu(self.conv1(x_grid))
         
