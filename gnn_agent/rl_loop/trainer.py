@@ -193,7 +193,17 @@ class Trainer:
             piece_batch = torch.tensor([i for i, p in enumerate(piece_x_list) for _ in range(p.size(0))], dtype=torch.long).to(self.device)
             piece_to_square_map = torch.cat([pm + c for pm, c in zip(piece_map_list, csum_sq)], dim=0).to(self.device)
             
-            # 3. Prepare policy and value targets
+            # 3. Create the padding mask, which is required by the network's forward pass
+            max_pieces = max(p.size(0) for p in piece_x_list) if piece_x_list else 0
+            current_batch_size = len(batch_chunk)
+            piece_padding_mask = torch.ones((current_batch_size, max_pieces), dtype=torch.bool, device=self.device)
+            if piece_x_list:
+                for j, p_features in enumerate(piece_x_list):
+                    num_pieces = p_features.size(0)
+                    if num_pieces > 0:
+                        piece_padding_mask[j, :num_pieces] = 0
+
+            # 4. Prepare policy and value targets
             action_space_size = get_action_space_size()
             policy_targets = torch.stack([
                 self._convert_mcts_policy_to_tensor(p, b, action_space_size) 
@@ -201,7 +211,7 @@ class Trainer:
             ]).to(self.device)
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            # 4. Perform forward pass with correctly batched data
+            # 5. Perform forward pass with correctly batched data
             pred_policy_logits, pred_value = self.network(
                 square_features=square_features,
                 square_edge_index=square_edge_index,
@@ -210,10 +220,10 @@ class Trainer:
                 piece_edge_index=piece_edge_index,
                 piece_batch=piece_batch,
                 piece_to_square_map=piece_to_square_map,
-                piece_padding_mask=None # Not needed for training
+                piece_padding_mask=piece_padding_mask
             )
 
-            # 5. Calculate loss
+            # 6. Calculate loss
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
             is_game_data_mask = torch.tensor([t == 'game' for t in data_types], dtype=torch.bool, device=self.device)
             
