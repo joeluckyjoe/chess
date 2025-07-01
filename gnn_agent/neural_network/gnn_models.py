@@ -16,7 +16,6 @@ class SquareGNN(nn.Module):
         self.conv1 = GATv2Conv(in_features, hidden_features, heads=heads, concat=True, dropout=0.6)
         self.conv2 = GATv2Conv(hidden_features * heads, out_features, heads=1, concat=True, dropout=0.6)
 
-    # PHASE AB MODIFICATION: ADDED batch argument
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = F.dropout(x, p=0.6, training=self.training)
         # The 'batch' tensor is implicitly used by the PyG convolution layers
@@ -33,8 +32,8 @@ class PieceGNN(torch.nn.Module):
         self.conv1 = GCNConv(in_channels, hidden_channels)
         self.conv2 = GCNConv(hidden_channels, out_channels)
 
-    # PHASE AB MODIFICATION: ADDED batch_piece argument
-    def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor, batch_piece: Optional[torch.Tensor] = None) -> torch.Tensor:
+    # PHASE AB CORRECTION: Changed 'batch_piece' to 'batch' to match keyword argument
+    def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass for the PieceGNN.
         """
@@ -52,9 +51,9 @@ class PieceGNN(torch.nn.Module):
             out_dim = self.conv2.out_channels
             return torch.zeros((num_nodes, out_dim), device=x_piece.device)
 
-        # The 'batch_piece' tensor is implicitly used by the PyG convolution layers
+        # The 'batch' tensor is implicitly used by the PyG convolution layers
         x = self.conv1(x_piece, edge_index_piece)
         x = F.relu(x)
-        # The 'batch_piece' tensor is implicitly used by the PyG convolution layers
+        # The 'batch' tensor is implicitly used by the PyG convolution layers
         x = self.conv2(x, edge_index_piece)
         return x
