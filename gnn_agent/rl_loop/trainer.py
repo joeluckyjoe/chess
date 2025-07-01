@@ -14,6 +14,7 @@ import chess
 from ..neural_network.chess_network import ChessNetwork
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
+from torch_geometric.data import Batch
 
 class Trainer:
     """
@@ -136,29 +137,21 @@ class Trainer:
                        puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
         """
         Performs a single training step on a mixed batch of game and puzzle data.
-        This version correctly separates the loss calculation for games and puzzles.
+        This version is rewritten to use PyTorch Geometric's batching for efficiency.
         """
         if not game_examples and not puzzle_examples:
             return 0.0, 0.0
 
-        # 1. Convert puzzles to the standard training format and tag them
         converted_puzzles = self._convert_puzzles_to_training_format(puzzle_examples)
-        
-        # 2. Tag game examples
         tagged_game_examples = [(fen, policy, outcome, 'game') for fen, policy, outcome in game_examples]
-
-        # 3. Determine number of puzzles to add and sample them
+        
         num_puzzles_to_add = int(len(tagged_game_examples) * puzzle_ratio)
+        sampled_puzzles = []
         if len(converted_puzzles) > 0:
-            # --- TYPO FIX ---
             sampled_puzzles = random.sample(converted_puzzles, min(num_puzzles_to_add, len(converted_puzzles)))
-            # --- END FIX ---
-        else:
-            sampled_puzzles = []
 
-        # 4. Combine tagged game examples with sampled puzzles and shuffle
-        batch_data = tagged_game_examples + sampled_puzzles
-        random.shuffle(batch_data)
+        all_data = tagged_game_examples + sampled_puzzles
+        random.shuffle(all_data)
 
         self.network.train()
         
@@ -166,57 +159,72 @@ class Trainer:
         total_value_loss = 0.0
         game_data_count = 0
         
-        for i in range(0, len(batch_data), batch_size):
+        for i in range(0, len(all_data), batch_size):
             self.optimizer.zero_grad()
             
-            batch_chunk = batch_data[i:i+batch_size]
+            batch_chunk = all_data[i:i+batch_size]
             if not batch_chunk:
                 continue
             
-            # Unpack the 4-tuple including the new 'data_type' tag
             fen_strings, mcts_policies, game_outcomes, data_types = zip(*batch_chunk)
 
+            # --- PHASE AB REFACTOR: BATCHED DATA PREPARATION ---
+            # 1. Convert all boards in the chunk to PyG Data objects and collate them.
+            #    This assumes `convert_to_gnn_input` returns a PyG Data object.
             boards = [chess.Board(fen) for fen in fen_strings]
-            gnn_inputs = [convert_to_gnn_input(b, device=self.device) for b in boards]
+            data_list = [convert_to_gnn_input(b, self.device) for b in boards]
+            
+            # `Batch.from_data_list` creates a single large graph object.
+            # It handles concatenating features and creating the `batch` index tensor.
+            data_batch = Batch.from_data_list(data_list)
 
+            # 2. Prepare policy and value targets for the entire batch.
             action_space_size = get_action_space_size()
             policy_targets = torch.stack([
                 self._convert_mcts_policy_to_tensor(p, b, action_space_size) 
                 for p, b in zip(mcts_policies, boards)
-            ])
+            ]).to(self.device)
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            # Process one by one and accumulate loss conditionally
-            accumulated_loss = 0
-            for j in range(len(batch_chunk)):
-                pred_policy_logits, pred_value = self.network(*gnn_inputs[j])
-                
-                policy_loss = F.cross_entropy(pred_policy_logits.unsqueeze(0), policy_targets[j].unsqueeze(0))
-                
-                # Add policy loss for all data types
-                total_policy_loss += policy_loss.item()
-                
-                # --- THIS IS THE CORE FIX ---
-                # Only calculate and add value_loss for real game data
-                if data_types[j] == 'game':
-                    value_loss = self.value_criterion(pred_value, value_targets[j])
-                    total_value_loss += value_loss.item()
-                    game_data_count += 1
-                    # Add both losses for backpropagation
-                    accumulated_loss += policy_loss + value_loss
-                else: # It's a 'puzzle'
-                    # Only add policy loss for backpropagation
-                    accumulated_loss += policy_loss
-            
-            if accumulated_loss > 0:
-                # Average the loss over the chunk before backpropagating
-                (accumulated_loss / len(batch_chunk)).backward()
-            
-            self.optimizer.step()
+            # 3. Perform a single forward pass with the entire batch.
+            #    The network's forward method now receives all required arguments from the Batch object.
+            #    Note: The padding mask is not needed here as we are not doing MCTS-style search.
+            pred_policy_logits, pred_value = self.network(
+                square_features=data_batch.square_features,
+                square_edge_index=data_batch.square_edge_index,
+                square_batch=data_batch.square_features_batch,
+                piece_features=data_batch.piece_features,
+                piece_edge_index=data_batch.piece_edge_index,
+                piece_batch=data_batch.piece_features_batch,
+                piece_to_square_map=data_batch.piece_to_square_map,
+                piece_padding_mask=None 
+            )
 
-        num_samples = len(batch_data)
+            # 4. Calculate loss for the entire batch.
+            policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
+            
+            # Create a boolean mask to filter for 'game' data for value loss calculation.
+            is_game_data_mask = torch.tensor([t == 'game' for t in data_types], dtype=torch.bool, device=self.device)
+            
+            value_loss = 0.0
+            if is_game_data_mask.any():
+                # Filter predictions and targets using the mask before calculating loss.
+                value_loss = self.value_criterion(pred_value[is_game_data_mask], value_targets[is_game_data_mask])
+                total_value_loss += value_loss.item() * is_game_data_mask.sum()
+                game_data_count += is_game_data_mask.sum().item()
+
+            total_policy_loss += policy_loss.item() * len(batch_chunk)
+            
+            # The total loss for backpropagation is the policy loss plus the (possibly zero) value loss.
+            total_loss = policy_loss + value_loss
+            
+            if total_loss > 0:
+                total_loss.backward()
+                self.optimizer.step()
+            # --- END REFACTOR ---
+
+        num_samples = len(all_data)
         avg_policy_loss = total_policy_loss / num_samples if num_samples > 0 else 0
-        # Average value loss is now correctly calculated only over game data
         avg_value_loss = total_value_loss / game_data_count if game_data_count > 0 else 0
         
         return avg_policy_loss, avg_value_loss
