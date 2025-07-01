@@ -77,7 +77,11 @@ def main():
     print("--- Starting Analysis Corpus Generation ---")
 
     paths = get_paths()
-    code_project_root = paths.project_root
+    # --- BUG FIX ---
+    # The 'paths' object no longer has a 'project_root' attribute.
+    # We now use the 'project_root_path' variable defined at the top of the script.
+    code_project_root = project_root_path
+    # --- END FIX ---
     pgn_data_dir = paths.pgn_games_dir
     output_dir = paths.analysis_output_dir
 
