@@ -59,10 +59,16 @@ class MCTS:
         # 2. Use PyG's Batch.from_data_list to create a single batched graph object.
         data_batch = Batch.from_data_list(data_list)
         
-        # 3. Manually create the padding mask required by the attention mechanism.
+        # 3. Manually create the padding mask and piece_batch tensor.
         max_pieces = max(data.piece_features.size(0) for data in data_list) if data_list else 0
         batch_size = len(boards_to_process)
         piece_padding_mask = torch.ones((batch_size, max_pieces), dtype=torch.bool, device=self.device)
+        
+        # --- FIX: Manually create the piece_batch tensor ---
+        # This is necessary because PyG does not automatically create it when num_nodes is set for squares.
+        piece_batch_list = [torch.full((data.piece_features.size(0),), i, dtype=torch.long) for i, data in enumerate(data_list)]
+        piece_batch = torch.cat(piece_batch_list).to(self.device)
+        
         if data_list:
             for i, data in enumerate(data_list):
                 num_pieces = data.piece_features.size(0)
@@ -70,13 +76,14 @@ class MCTS:
                     piece_padding_mask[i, :num_pieces] = 0 # 0 means not masked (i.e., attend to this piece)
         
         # 4. Perform a single forward pass with the entire batch.
+        #    Use the correct batch tensor names.
         policy_logits_batch, value_batch = self.network(
             square_features=data_batch.square_features,
             square_edge_index=data_batch.square_edge_index,
-            square_batch=data_batch.square_features_batch,
+            square_batch=data_batch.batch, # Use the main 'batch' attribute for squares
             piece_features=data_batch.piece_features,
             piece_edge_index=data_batch.piece_edge_index,
-            piece_batch=data_batch.piece_features_batch,
+            piece_batch=piece_batch, # Use the manually created piece_batch
             piece_to_square_map=data_batch.piece_to_square_map,
             piece_padding_mask=piece_padding_mask
         )
