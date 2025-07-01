@@ -64,12 +64,13 @@ class PolicyHead(nn.Module):
         # Reshape from (B * 64, D) to (B, 64, D) and then to (B, D, 8, 8)
         x_grid = x.view(batch_size, 64, embedding_dim)
         x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
-        # --- END CORRECTION ---
         
         x = F.relu(self.conv1(x_grid))
         
-        # Flatten the feature maps
-        x = x.view(batch_size, -1)
+        # Flatten the feature maps. Use .reshape() instead of .view() to handle
+        # potentially non-contiguous tensors after the convolution.
+        x = x.reshape(batch_size, -1)
+        # --- END CORRECTION ---
         
         policy_logits = self.fc1(x)
         
@@ -125,12 +126,13 @@ class ValueHead(nn.Module):
         # Reshape from (B * 64, D) to (B, D, 8, 8)
         x_grid = x.view(batch_size, 64, embedding_dim)
         x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
-        # --- END CORRECTION ---
         
         x = F.relu(self.conv1(x_grid))
         
-        # Flatten
-        x = x.view(batch_size, -1)
+        # Flatten. Use .reshape() instead of .view() to handle
+        # potentially non-contiguous tensors after the convolution.
+        x = x.reshape(batch_size, -1)
+        # --- END CORRECTION ---
         
         x = F.relu(self.fc1(x))
         
