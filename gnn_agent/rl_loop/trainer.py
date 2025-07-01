@@ -14,7 +14,6 @@ import chess
 from ..neural_network.chess_network import ChessNetwork
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-from torch_geometric.data import Batch
 
 class Trainer:
     """
@@ -137,7 +136,7 @@ class Trainer:
                        puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
         """
         Performs a single training step on a mixed batch of game and puzzle data.
-        This version is rewritten to use PyTorch Geometric's batching for efficiency.
+        This version is rewritten to use manual batching for our dual-graph structure.
         """
         if not game_examples and not puzzle_examples:
             return 0.0, 0.0
@@ -168,17 +167,33 @@ class Trainer:
             
             fen_strings, mcts_policies, game_outcomes, data_types = zip(*batch_chunk)
 
-            # --- PHASE AB REFACTOR: BATCHED DATA PREPARATION ---
-            # 1. Convert all boards in the chunk to PyG Data objects and collate them.
-            #    This assumes `convert_to_gnn_input` returns a PyG Data object.
+            # --- FINAL FIX: Manual Batching for Dual-Graph Structure in Trainer ---
             boards = [chess.Board(fen) for fen in fen_strings]
-            data_list = [convert_to_gnn_input(b, self.device) for b in boards]
-            
-            # `Batch.from_data_list` creates a single large graph object.
-            # It handles concatenating features and creating the `batch` index tensor.
-            data_batch = Batch.from_data_list(data_list)
+            data_list = [convert_to_gnn_input(b, torch.device('cpu')) for b in boards]
 
-            # 2. Prepare policy and value targets for the entire batch.
+            # 1. Manually collate Square Graph tensors
+            square_x_list = [d.square_features for d in data_list]
+            square_edge_list = [d.square_edge_index for d in data_list]
+            csum_sq = torch.cumsum(torch.tensor([s.size(0) for s in square_x_list]), 0)
+            csum_sq = torch.cat([torch.tensor([0]), csum_sq[:-1]])
+            
+            square_features = torch.cat(square_x_list, dim=0).to(self.device)
+            square_edge_index = torch.cat([e + c for e, c in zip(square_edge_list, csum_sq)], dim=1).to(self.device)
+            square_batch = torch.tensor([i for i, s in enumerate(square_x_list) for _ in range(s.size(0))], dtype=torch.long).to(self.device)
+
+            # 2. Manually collate Piece Graph tensors
+            piece_x_list = [d.piece_features for d in data_list]
+            piece_edge_list = [d.piece_edge_index for d in data_list]
+            piece_map_list = [d.piece_to_square_map for d in data_list]
+            csum_pc = torch.cumsum(torch.tensor([p.size(0) for p in piece_x_list]), 0)
+            csum_pc = torch.cat([torch.tensor([0]), csum_pc[:-1]])
+
+            piece_features = torch.cat(piece_x_list, dim=0).to(self.device)
+            piece_edge_index = torch.cat([e + c for e, c in zip(piece_edge_list, csum_pc)], dim=1).to(self.device)
+            piece_batch = torch.tensor([i for i, p in enumerate(piece_x_list) for _ in range(p.size(0))], dtype=torch.long).to(self.device)
+            piece_to_square_map = torch.cat([pm + c for pm, c in zip(piece_map_list, csum_sq)], dim=0).to(self.device)
+            
+            # 3. Prepare policy and value targets
             action_space_size = get_action_space_size()
             policy_targets = torch.stack([
                 self._convert_mcts_policy_to_tensor(p, b, action_space_size) 
@@ -186,42 +201,36 @@ class Trainer:
             ]).to(self.device)
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            # 3. Perform a single forward pass with the entire batch.
-            #    The network's forward method now receives all required arguments from the Batch object.
-            #    Note: The padding mask is not needed here as we are not doing MCTS-style search.
+            # 4. Perform forward pass with correctly batched data
             pred_policy_logits, pred_value = self.network(
-                square_features=data_batch.square_features,
-                square_edge_index=data_batch.square_edge_index,
-                square_batch=data_batch.square_features_batch,
-                piece_features=data_batch.piece_features,
-                piece_edge_index=data_batch.piece_edge_index,
-                piece_batch=data_batch.piece_features_batch,
-                piece_to_square_map=data_batch.piece_to_square_map,
-                piece_padding_mask=None 
+                square_features=square_features,
+                square_edge_index=square_edge_index,
+                square_batch=square_batch,
+                piece_features=piece_features,
+                piece_edge_index=piece_edge_index,
+                piece_batch=piece_batch,
+                piece_to_square_map=piece_to_square_map,
+                piece_padding_mask=None # Not needed for training
             )
 
-            # 4. Calculate loss for the entire batch.
+            # 5. Calculate loss
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
-            
-            # Create a boolean mask to filter for 'game' data for value loss calculation.
             is_game_data_mask = torch.tensor([t == 'game' for t in data_types], dtype=torch.bool, device=self.device)
             
-            value_loss = 0.0
+            value_loss = torch.tensor(0.0, device=self.device)
             if is_game_data_mask.any():
-                # Filter predictions and targets using the mask before calculating loss.
                 value_loss = self.value_criterion(pred_value[is_game_data_mask], value_targets[is_game_data_mask])
-                total_value_loss += value_loss.item() * is_game_data_mask.sum()
+                total_value_loss += value_loss.item() * is_game_data_mask.sum().item()
                 game_data_count += is_game_data_mask.sum().item()
 
             total_policy_loss += policy_loss.item() * len(batch_chunk)
             
-            # The total loss for backpropagation is the policy loss plus the (possibly zero) value loss.
             total_loss = policy_loss + value_loss
             
             if total_loss > 0:
                 total_loss.backward()
                 self.optimizer.step()
-            # --- END REFACTOR ---
+            # --- END FIX ---
 
         num_samples = len(all_data)
         avg_policy_loss = total_policy_loss / num_samples if num_samples > 0 else 0
