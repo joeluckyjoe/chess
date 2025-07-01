@@ -2,174 +2,209 @@
 # File: analyze_corpus.py
 #
 """
-Analyzes a structured JSONL corpus of game data to identify patterns
-of agent weakness.
+Processes a master 'analysis_corpus.jsonl' file to generate a quantitative
+summary of the agent's performance and weaknesses compared to Stockfish.
 
-Usage:
-python analyze_corpus.py [--corpus_path /path/to/your/corpus.jsonl]
+This script calculates several key metrics:
+- Value Misalignment: How different the agent's evaluation is from Stockfish's.
+- Top Move Agreement: How often the agent's best move matches Stockfish's.
+- Blunder Rate: The percentage of moves that cause a significant drop in win probability.
+
+These metrics are broken down by game phase (Opening, Middlegame, Endgame) to
+provide a detailed diagnostic report.
 """
-import json
 import argparse
-import re
+import json
+import numpy as np
+import sys
+import os
 from pathlib import Path
+from collections import defaultdict
 
-# Import the centralized path management function
-from config import get_paths
+import chess
+import chess.engine
 
-def parse_stockfish_mate_eval(eval_str: str):
-    """
-    Parses a Stockfish evaluation string to find a mate-in-N value.
-    Example: "Mate(3)" -> 3, "Mate(-2)" -> -2.
-    Returns None if no mate is found.
-    """
-    if not isinstance(eval_str, str):
-        return None
-    
-    match = re.match(r"Mate\((-?\d+)\)", eval_str)
-    if match:
-        return int(match.group(1))
-    return None
+# Add project root to path to allow importing from config
+project_root_path = Path(os.path.abspath(__file__)).parent
+if str(project_root_path) not in sys.path:
+    # Handle cases where the script might be in a subdirectory like 'analysis_scripts'
+    if project_root_path.name == "analysis_scripts":
+        project_root_path = project_root_path.parent
+    sys.path.insert(0, str(project_root_path))
 
-def find_actual_mating_move(board):
-    """
-    Checks ALL legal moves on the board to find one that is an immediate checkmate.
-    This is only effective for finding a mate-in-1.
-    Returns the SAN of the mating move if found, otherwise None.
-    """
-    # Create a copy to not alter the original board passed to the function
-    board_copy = board.copy()
-    for move in board_copy.legal_moves:
-        # Create a second copy to test each move
-        temp_board = board_copy.copy()
-        temp_board.push(move)
-        if temp_board.is_checkmate():
-            # Return the Standard Algebraic Notation (SAN) of the move
-            return board_copy.san(move)
-    return None
+from config import config_params
 
-def analyze_checkmate_blindness(corpus_path: Path):
-    """
-    Scans the corpus for positions where a forced mate exists but the agent
-    does not select the move that continues the mating sequence.
-    """
-    print(f"--- Analyzing Corpus for Checkmate Blindness: {corpus_path.name} ---")
+# --- Constants for Analysis ---
+BLUNDER_THRESHOLD_CP = 150  # A 1.5 pawn swing is a blunder
+MATE_SCORE = 10000          # Arbitrary large number for mates
 
-    # This import is here because it's only needed for this analysis function
+def parse_stockfish_eval(eval_str: str, pov_color: chess.Color) -> float:
+    """
+    Parses the evaluation string from the log into a consistent centipawn score.
+    The score is always from the perspective of the current player (pov_color).
+    """
+    if not isinstance(eval_str, str) or "N/A" in eval_str or "Error" in eval_str:
+        return 0.0
+
+    if "Mate" in eval_str:
+        mate_in = int(eval_str.split('(')[1].replace(')', ''))
+        # Positive mate is good, negative mate is bad.
+        # A shorter mate is better/worse than a longer one.
+        score = MATE_SCORE - abs(mate_in)
+        return score if mate_in > 0 else -score
+
     try:
-        import chess
-    except ImportError:
-        print("Error: The 'python-chess' library is required. Please install it with 'pip install chess'")
+        # The log saves from White's perspective. Adjust for the current player.
+        score = float(eval_str)
+        return score if pov_color == chess.WHITE else -score
+    except (ValueError, TypeError):
+        return 0.0
+
+def get_game_phase(board: chess.Board) -> str:
+    """Determines the game phase based on the number of pieces."""
+    # Heuristic: Count pieces, excluding kings
+    num_pieces = chess.popcount(board.occupied & ~board.kings)
+    if num_pieces > 20:
+        return "opening"
+    elif num_pieces <= 8:
+        return "endgame"
+    else:
+        return "middlegame"
+
+def analyze_corpus(corpus_path: Path, stockfish_path: str):
+    """
+    Main analysis function.
+    """
+    if not corpus_path.exists():
+        print(f"Error: Corpus file not found at {corpus_path}")
         return
 
-    blindness_events = []
-    current_pgn_file = "N/A"
+    engine = None
+    try:
+        engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
+        print("Stockfish engine started successfully.")
+    except Exception as e:
+        print(f"Error: Could not start Stockfish engine at '{stockfish_path}'. {e}")
+        return
 
-    with open(corpus_path, 'r', encoding='utf-8') as f:
-        for line_num, line in enumerate(f, 1):
+    # Data structures to hold our metrics, categorized by game phase
+    phases = ["opening", "middlegame", "endgame", "total"]
+    metrics = {phase: defaultdict(list) for phase in phases}
+    
+    total_moves = 0
+
+    print(f"\nProcessing corpus file: {corpus_path.name}...")
+    with open(corpus_path, 'r') as f:
+        for line in f:
             try:
-                log_entry = json.loads(line)
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"Warning: Skipping malformed JSON line: {line.strip()}")
+                continue
 
-                # Capture metadata. It applies to all subsequent log entries
-                # until a new metadata line is found.
-                if log_entry.get("type") == "analysis_metadata":
-                    current_pgn_file = log_entry.get("pgn_file", "N/A")
-                    continue # Skip to the next line
+            # Skip metadata line or entries without agent eval
+            if entry.get("type") == "analysis_metadata" or "agent_eval" not in entry:
+                continue
 
-                # --- Core Analysis Logic ---
-                stockfish_eval = log_entry.get("stockfish_eval")
-                mate_in_n = parse_stockfish_mate_eval(stockfish_eval)
+            total_moves += 1
+            board = chess.Board(entry["board_fen_before"])
+            phase = get_game_phase(board)
 
-                # A mate is available if mate_in_n is not None
-                if mate_in_n is not None:
-                    board = chess.Board(log_entry.get("board_fen_before"))
-                    
-                    # Check if it's our agent's turn to deliver the mate
-                    is_agent_mate = (board.turn == chess.WHITE and mate_in_n > 0) or \
-                                      (board.turn == chess.BLACK and mate_in_n < 0)
+            # --- 1. Value Misalignment ---
+            agent_value_tanh = entry["agent_eval"]["value_before"] # Range [-1, 1]
+            stockfish_cp_before = parse_stockfish_eval(entry["stockfish_eval"], board.turn)
+            # Simple conversion: map tanh value to a centipawn range for comparison
+            agent_value_cp = agent_value_tanh * MATE_SCORE
+            value_error = abs(agent_value_cp - stockfish_cp_before)
+            metrics[phase]["value_error"].append(value_error)
 
-                    if is_agent_mate:
-                        agent_policy = log_entry.get("agent_eval", {}).get("policy_before", [])
-                        if not agent_policy:
-                            continue
+            # --- 2. Top Move Agreement & 3. Blunder Rate ---
+            agent_move_uci = entry["move_uci"]
+            agent_move = chess.Move.from_uci(agent_move_uci)
 
-                        agent_top_move = agent_policy[0]["move"]
-                        
-                        # We determine blindness if the agent's move is not the mating move.
-                        board_after_top_move = board.copy()
-                        try:
-                            board_after_top_move.push_san(agent_top_move)
-                        except (ValueError, chess.IllegalMoveError):
-                            pass # An illegal move is clearly not the mating move.
+            # Get Stockfish's opinion on the position
+            info = engine.analyse(board, chess.engine.Limit(depth=12))
+            stockfish_best_move = info["pv"][0] if "pv" in info and info["pv"] else None
 
-                        if not board_after_top_move.is_checkmate():
-                            # BLINDNESS DETECTED!
-                            
-                            actual_mating_move = "Unknown"
-                            if abs(mate_in_n) == 1:
-                                # For M1, we can find the exact move.
-                                actual_mating_move = find_actual_mating_move(board) or "Error: Mate-in-1 move not found"
-                            else:
-                                # For M > 1, we can't know the exact move from the log alone.
-                                actual_mating_move = f"(Should start Mate-in-{abs(mate_in_n)} sequence)"
+            # Agreement
+            if stockfish_best_move and agent_move == stockfish_best_move:
+                metrics[phase]["top_move_agreements"].append(1)
+            else:
+                metrics[phase]["top_move_agreements"].append(0)
 
-                            event = {
-                                "ply": log_entry.get("ply"),
-                                "fen": log_entry.get("board_fen_before"),
-                                "stockfish_eval": stockfish_eval,
-                                "agent_top_move": agent_top_move,
-                                "agent_top_prob": agent_policy[0]["prob"],
-                                "actual_mating_move": actual_mating_move,
-                                "pgn_source": current_pgn_file
-                            }
-                            blindness_events.append(event)
+            # Blunder check
+            # We need the evaluation *after* the agent's move
+            board.push(agent_move)
+            stockfish_cp_after_info = engine.analyse(board, chess.engine.Limit(depth=10))
+            stockfish_cp_after = parse_stockfish_eval(str(stockfish_cp_after_info['score']), board.turn)
             
-            except (json.JSONDecodeError, KeyError) as e:
-                print(f"Warning: Skipping malformed or incomplete log entry on line {line_num}. Error: {e}")
+            # Change in score is from the perspective of the player *who just moved*
+            # before: board.turn, after: not board.turn
+            pov_change = -stockfish_cp_after - stockfish_cp_before
+            
+            if pov_change < -BLUNDER_THRESHOLD_CP:
+                 metrics[phase]["blunders"].append(1)
+            else:
+                 metrics[phase]["blunders"].append(0)
 
-    # --- Print Report ---
-    if not blindness_events:
-        print("\n✅ Analysis Complete. No checkmate blindness events found.")
-    else:
-        print(f"\n🚨 Analysis Complete. Found {len(blindness_events)} checkmate blindness events:")
-        for i, event in enumerate(blindness_events, 1):
-            print(f"\n--- Event {i} (from PGN: {event['pgn_source']}) ---")
-            print(f"  Position (FEN): {event['fen']}")
-            print(f"  Ply: {event['ply']}")
-            print(f"  Stockfish found: {event['stockfish_eval']}")
-            print(f"  Agent's Top Move: '{event['agent_top_move']}' (Prob: {event['agent_top_prob']:.3f})")
-            print(f"  Correct Action: '{event['actual_mating_move']}'")
-            print("-" * (20 + len(str(event['pgn_source']))))
+    if engine:
+        engine.quit()
+
+    # --- Aggregate and Print Report ---
+    print("\n--- Agent Performance Analysis Report ---")
+    print(f"Total moves analyzed: {total_moves}\n")
+    
+    # Calculate totals first
+    for phase in ["opening", "middlegame", "endgame"]:
+        for key, values in metrics[phase].items():
+            metrics["total"][key].extend(values)
+
+    for phase in phases:
+        num_positions = len(metrics[phase]["value_error"])
+        if num_positions == 0:
+            continue
+            
+        avg_value_error = np.mean(metrics[phase]["value_error"])
+        agreement_rate = np.mean(metrics[phase]["top_move_agreements"]) * 100
+        blunder_rate = np.mean(metrics[phase]["blunders"]) * 100
+
+        print(f"--- {phase.upper()} ({num_positions} positions) ---")
+        print(f"  - Avg. Value Misalignment: {avg_value_error:,.0f} CP")
+        print(f"  - Top Move Agreement Rate: {agreement_rate:.1f}%")
+        print(f"  - Blunder Rate:            {blunder_rate:.1f}%\n")
 
 
 def main():
-    """
-    Main function to parse arguments and run the analysis.
-    """
-    # Get the correct project paths from the central config
-    paths = get_paths()
-    # The default corpus path should point to the output of create_corpus.py
-    # Access the path by attribute name, not dictionary key.
-    default_corpus_path = paths.analysis_output_dir / 'analysis_corpus.jsonl'
-    
     parser = argparse.ArgumentParser(
-        description="Analyze a JSONL corpus for agent weaknesses.",
+        description="Analyze a JSONL corpus of game data to quantify agent performance.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
-        "--corpus_path",
-        type=Path,
-        default=default_corpus_path,
-        help=f"Path to the JSONL corpus file to analyze.\nDefaults to: {default_corpus_path}"
+        "corpus_path",
+        type=str,
+        help="Path to the analysis_corpus.jsonl file."
     )
+    
+    stockfish_default_path = config_params.get("STOCKFISH_PATH")
+    parser.add_argument(
+        "--stockfish_path",
+        type=str,
+        default=stockfish_default_path,
+        help="Path to the Stockfish executable.\nDefaults to the path in your config.py."
+    )
+    
     args = parser.parse_args()
 
-    if not args.corpus_path.exists():
-        print(f"Error: Corpus file not found at '{args.corpus_path}'")
-        print("Please run 'create_corpus.py' first to generate the analysis corpus.")
-        return
+    if not args.stockfish_path or not os.path.exists(args.stockfish_path):
+        print("---")
+        print("ERROR: Stockfish path not found or not provided.")
+        print("Please provide a valid path using the --stockfish_path argument")
+        print(f"or ensure it is set correctly in your config.py file.")
+        print("---")
+        sys.exit(1)
 
-    analyze_checkmate_blindness(args.corpus_path)
+    analyze_corpus(Path(args.corpus_path), args.stockfish_path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
