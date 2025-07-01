@@ -51,6 +51,11 @@ class MCTS:
         # 1. Convert all boards in the queue to PyG Data objects.
         data_list = [convert_to_gnn_input(b, self.device) for b in boards_to_process]
         
+        # --- FIX: Explicitly set num_nodes to resolve ambiguity for PyG batching ---
+        # This addresses the "Unable to accurately infer 'num_nodes'" warning.
+        for data in data_list:
+            data.num_nodes = data.square_features.size(0)
+
         # 2. Use PyG's Batch.from_data_list to create a single batched graph object.
         data_batch = Batch.from_data_list(data_list)
         
