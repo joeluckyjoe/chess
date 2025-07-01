@@ -47,47 +47,62 @@ class MCTS:
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        # --- PHASE AB REFACTOR: BATCHED DATA PREPARATION ---
-        # 1. Convert all boards in the queue to PyG Data objects.
-        data_list = [convert_to_gnn_input(b, self.device) for b in boards_to_process]
-        
-        # --- FIX: Explicitly set num_nodes to resolve ambiguity for PyG batching ---
-        # This addresses the "Unable to accurately infer 'num_nodes'" warning.
-        for data in data_list:
-            data.num_nodes = data.square_features.size(0)
+        # --- FINAL FIX: Manual Batching for Dual-Graph Structure ---
+        # PyG's `Batch.from_data_list` is not suitable for our complex, dual-graph
+        # Data objects. We must manually collate the tensors for each graph type
+        # to ensure edge indices are adjusted correctly.
 
-        # 2. Use PyG's Batch.from_data_list to create a single batched graph object.
-        data_batch = Batch.from_data_list(data_list)
+        data_list = [convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process]
+
+        # 1. Manually collate Square Graph tensors
+        square_x_list = [d.square_features for d in data_list]
+        square_edge_list = [d.square_edge_index for d in data_list]
         
-        # 3. Manually create the padding mask and piece_batch tensor.
-        max_pieces = max(data.piece_features.size(0) for data in data_list) if data_list else 0
+        csum_sq = torch.cumsum(torch.tensor([s.size(0) for s in square_x_list]), 0)
+        csum_sq = torch.cat([torch.tensor([0]), csum_sq[:-1]])
+        
+        square_features = torch.cat(square_x_list, dim=0).to(self.device)
+        square_edge_index = torch.cat([e + c for e, c in zip(square_edge_list, csum_sq)], dim=1).to(self.device)
+        square_batch = torch.tensor([i for i, s in enumerate(square_x_list) for _ in range(s.size(0))], dtype=torch.long).to(self.device)
+
+        # 2. Manually collate Piece Graph tensors
+        piece_x_list = [d.piece_features for d in data_list]
+        piece_edge_list = [d.piece_edge_index for d in data_list]
+        piece_map_list = [d.piece_to_square_map for d in data_list]
+
+        # Correctly calculate cumulative sum based on the number of PIECE nodes
+        csum_pc = torch.cumsum(torch.tensor([p.size(0) for p in piece_x_list]), 0)
+        csum_pc = torch.cat([torch.tensor([0]), csum_pc[:-1]])
+
+        piece_features = torch.cat(piece_x_list, dim=0).to(self.device)
+        piece_edge_index = torch.cat([e + c for e, c in zip(piece_edge_list, csum_pc)], dim=1).to(self.device)
+        piece_batch = torch.tensor([i for i, p in enumerate(piece_x_list) for _ in range(p.size(0))], dtype=torch.long).to(self.device)
+        
+        # Adjust piece_to_square_map using the SQUARE cumulative sum
+        piece_to_square_map = torch.cat([pm + c for pm, c in zip(piece_map_list, csum_sq)], dim=0).to(self.device)
+
+        # 3. Create the padding mask
+        max_pieces = max(p.size(0) for p in piece_x_list) if piece_x_list else 0
         batch_size = len(boards_to_process)
         piece_padding_mask = torch.ones((batch_size, max_pieces), dtype=torch.bool, device=self.device)
-        
-        # --- FIX: Manually create the piece_batch tensor ---
-        # This is necessary because PyG does not automatically create it when num_nodes is set for squares.
-        piece_batch_list = [torch.full((data.piece_features.size(0),), i, dtype=torch.long) for i, data in enumerate(data_list)]
-        piece_batch = torch.cat(piece_batch_list).to(self.device)
-        
-        if data_list:
-            for i, data in enumerate(data_list):
-                num_pieces = data.piece_features.size(0)
+        if piece_x_list:
+            for i, p_features in enumerate(piece_x_list):
+                num_pieces = p_features.size(0)
                 if num_pieces > 0:
-                    piece_padding_mask[i, :num_pieces] = 0 # 0 means not masked (i.e., attend to this piece)
-        
-        # 4. Perform a single forward pass with the entire batch.
-        #    Use the correct batch tensor names.
+                    piece_padding_mask[i, :num_pieces] = 0
+
+        # 4. Perform the forward pass with correctly batched data
         policy_logits_batch, value_batch = self.network(
-            square_features=data_batch.square_features,
-            square_edge_index=data_batch.square_edge_index,
-            square_batch=data_batch.batch, # Use the main 'batch' attribute for squares
-            piece_features=data_batch.piece_features,
-            piece_edge_index=data_batch.piece_edge_index,
-            piece_batch=piece_batch, # Use the manually created piece_batch
-            piece_to_square_map=data_batch.piece_to_square_map,
+            square_features=square_features,
+            square_edge_index=square_edge_index,
+            square_batch=square_batch,
+            piece_features=piece_features,
+            piece_edge_index=piece_edge_index,
+            piece_batch=piece_batch,
+            piece_to_square_map=piece_to_square_map,
             piece_padding_mask=piece_padding_mask
         )
-        # --- END REFACTOR ---
+        # --- END FIX ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
