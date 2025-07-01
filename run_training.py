@@ -1,4 +1,3 @@
-# FILENAME: run_training.py
 import os
 import torch
 import pandas as pd
@@ -152,29 +151,45 @@ def main():
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
     supervisor = BayesianSupervisor(config=config_params)
 
-    last_mode, _ = get_last_game_info(loss_log_filepath)
-    current_mode = last_mode
-    print(f"Initialized mode based on last game in log: '{current_mode}'")
-
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        # --- PHASE T MODIFICATION: REMOVED ---
-        # The entire periodic tactics training session block has been removed.
-        # --- END MODIFICATION ---
+        # --- PHASE W MODIFICATION: IMPLEMENTED POST-MENTOR GRACE PERIOD ---
+        # This block implements the logic described in the Global Plan (Sec 4.1 & Phase W)
+        # to enforce a mandatory self-play period after a mentor game.
+        
+        current_mode = "self-play" # Default to self-play
+        
+        # Read the latest state of the loss log to see if a mentor game just occurred.
+        log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame()
+        
+        is_grace_period = False
+        grace_period_duration = config_params.get('SUPERVISOR_GRACE_PERIOD', 20)
 
-        previous_mode = current_mode
-        log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame(columns=['game', 'game_type'])
-        mentor_games = log_df[log_df['game_type'] == 'mentor-play']
-        last_mentor_game = mentor_games['game'].max() if not mentor_games.empty else -1
-        games_since_mentor = game_num - last_mentor_game
+        if not log_df.empty and 'game_type' in log_df.columns and 'mentor-play' in log_df['game_type'].values:
+            mentor_games = log_df[log_df['game_type'] == 'mentor-play']
+            if not mentor_games.empty:
+                last_mentor_game_num = mentor_games['game'].max()
+                # Calculate how many games have passed since the last mentor intervention.
+                games_since_mentor = (game_num - 1) - last_mentor_game_num
+                
+                if games_since_mentor < grace_period_duration:
+                    is_grace_period = True
 
-        if last_mentor_game != -1 and games_since_mentor <= config_params['SUPERVISOR_GRACE_PERIOD']:
+        if is_grace_period:
+            # We are in the grace period, so we force self-play and skip the supervisor.
+            games_remaining = grace_period_duration - games_since_mentor
+            print(f"INFO: In post-mentor grace period. Forcing self-play. Supervisor check skipped. ({games_remaining} games left in period)")
             current_mode = "self-play"
         else:
-            current_mode = "mentor-play" if supervisor.check_for_stagnation(loss_log_filepath) else "self-play"
-        
-        if current_mode != previous_mode:
-            print(f"Supervisor switched mode from '{previous_mode}' to '{current_mode}'.")
+            # If not in a grace period, let the supervisor decide the mode.
+            print("INFO: Grace period not active. Consulting Bayesian Supervisor...")
+            if supervisor.check_for_stagnation(loss_log_filepath):
+                current_mode = "mentor-play"
+                print("INFO: Supervisor detected stagnation. Switching to mentor-play.")
+            else:
+                current_mode = "self-play"
+                print("INFO: Supervisor indicates stable performance. Continuing with self-play.")
+        # --- END MODIFICATION ---
         
         print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode}) ---")
         
@@ -204,7 +219,6 @@ def main():
         
         # --- PHASE T MODIFICATION: MODIFIED ---
         # The trainer now receives the full list of puzzles to create a mixed batch.
-        # The signature and logic inside trainer.train_on_batch will need to be updated.
         policy_loss, value_loss = trainer.train_on_batch(
             game_examples=training_examples,
             puzzle_examples=tactical_puzzles, # Pass the loaded puzzles
