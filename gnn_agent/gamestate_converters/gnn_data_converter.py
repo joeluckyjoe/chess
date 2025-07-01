@@ -8,7 +8,8 @@ from typing import Dict
 from torch_geometric.data import Data
 
 # --- Constants for Feature Engineering ---
-GNN_INPUT_FEATURE_DIM = 12
+# PHASE AC AUDIT: Increased feature dimension to include global game state.
+GNN_INPUT_FEATURE_DIM = 19
 
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
     chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
@@ -40,8 +41,29 @@ _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
     """
     Converts a single python-chess board state into a PyTorch Geometric Data object.
-    This is the standard format for use with PyG batching.
+    This version includes global game state features.
     """
+    # --- PHASE AC AUDIT: ADDED GLOBAL FEATURES ---
+    # These features are crucial for the network to understand the game's context.
+    turn = 1.0 if board.turn == chess.WHITE else 0.0
+    can_castle_wk = 1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0
+    can_castle_wq = 1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0
+    can_castle_bk = 1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0
+    can_castle_bq = 1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0
+    
+    # Normalize en passant file (0-7 -> 0-1, or 0 if no en passant)
+    ep_square = board.ep_square
+    en_passant_file = (chess.square_file(ep_square) / 7.0) if ep_square is not None else 0.0
+    
+    # Normalize half-move clock (0-100 -> 0-1)
+    halfmove_clock = board.halfmove_clock / 100.0
+    
+    global_state_features = np.array([
+        turn, can_castle_wk, can_castle_wq, can_castle_bk, can_castle_bq,
+        en_passant_file, halfmove_clock
+    ], dtype=np.float32)
+    # --- END AUDIT ADDITION ---
+
     # 1. Square-based Graph Features (G_sq)
     square_features_list = []
     for sq in chess.SQUARES:
@@ -56,7 +78,10 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         is_attacked_by_white = float(board.is_attacked_by(chess.WHITE, sq))
         is_attacked_by_black = float(board.is_attacked_by(chess.BLACK, sq))
         control_status = [is_attacked_by_white, is_attacked_by_black]
-        square_features_list.append(np.concatenate([pos_encoding, piece_type_one_hot, piece_color_one_hot, control_status]))
+        
+        # Concatenate local square features with global game state features
+        local_features = np.concatenate([pos_encoding, piece_type_one_hot, piece_color_one_hot, control_status])
+        square_features_list.append(np.concatenate([local_features, global_state_features]))
 
     square_features = torch.from_numpy(np.array(square_features_list, dtype=np.float32))
     square_edge_index = _SQUARE_ADJACENCY_EDGE_INDEX.clone()
@@ -74,7 +99,6 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         
         piece_features_list, piece_edges = [], []
         piece_mobilities = {sq: 0 for sq in sorted_squares}
-        # Calculate mobility for each piece
         if board.is_valid():
             for move in board.legal_moves:
                 if move.from_square in piece_mobilities:
@@ -87,13 +111,18 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
             piece_color = [1.0 if piece.color == chess.WHITE else 0.0]
             rank, file = chess.square_rank(from_sq), chess.square_file(from_sq)
             location = [file / 7.0, rank / 7.0]
-            mobility = [piece_mobilities.get(from_sq, 0) / 28.0] # Normalize mobility
+            mobility = [piece_mobilities.get(from_sq, 0) / 28.0]
             attack_count = len(board.attacks(from_sq) & board.occupied_co[not piece.color])
             defense_count = len(board.attackers(piece.color, from_sq))
             attack_defense = [float(attack_count), float(defense_count)]
-            piece_features_list.append(np.concatenate([piece_type_one_hot, piece_color, location, mobility, attack_defense]))
             
-            # Create edges for piece graph
+            local_features = np.concatenate([piece_type_one_hot, piece_color, location, mobility, attack_defense])
+            
+            # --- PHASE AC AUDIT: Padded piece features to match square feature dimension ---
+            padding = np.zeros(GNN_INPUT_FEATURE_DIM - len(local_features), dtype=np.float32)
+            piece_features_list.append(np.concatenate([local_features, padding]))
+            # --- END AUDIT ADDITION ---
+            
             for to_sq in board.attacks(from_sq):
                 if to_sq in piece_node_indices:
                     piece_edges.append((piece_node_indices[from_sq], piece_node_indices[to_sq]))
@@ -102,9 +131,6 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         piece_edge_index = torch.tensor(piece_edges, dtype=torch.long).t().contiguous() if piece_edges else torch.empty((2, 0), dtype=torch.long)
 
     # 3. Create the PyG Data object
-    # The attribute names here (e.g., 'square_features') are important.
-    # PyG's Batch.from_data_list will use these names to create the final batched object,
-    # automatically creating 'square_features_batch', 'piece_features_batch', etc.
     data = Data(
         square_features=square_features,
         square_edge_index=square_edge_index,

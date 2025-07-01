@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple, Any, Optional
 import chess
 from ..neural_network.chess_network import ChessNetwork
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
-from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
+from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input, GNN_INPUT_FEATURE_DIM
 
 class Trainer:
     """
@@ -36,8 +36,13 @@ class Trainer:
         from ..neural_network.policy_value_heads import PolicyHead, ValueHead
 
         print("Creating new network from scratch...")
-        square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
-        piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
+        
+        # --- PHASE AC AUDIT: Updated GNN input dimensions ---
+        # The input dimension is now 19 to account for the new global state features.
+        square_gnn = SquareGNN(in_features=GNN_INPUT_FEATURE_DIM, hidden_features=256, out_features=128, heads=4)
+        piece_gnn = PieceGNN(in_channels=GNN_INPUT_FEATURE_DIM, hidden_channels=256, out_channels=128)
+        # --- END AUDIT ---
+
         cross_attention = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4)
         policy_head = PolicyHead(embedding_dim=128, num_possible_moves=get_action_space_size())
         value_head = ValueHead(embedding_dim=128)
