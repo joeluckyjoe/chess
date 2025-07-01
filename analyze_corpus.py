@@ -47,11 +47,14 @@ def parse_stockfish_eval(eval_str: str, pov_color: chess.Color) -> float:
         return 0.0
 
     if "Mate" in eval_str:
-        mate_in = int(eval_str.split('(')[1].replace(')', ''))
-        # Positive mate is good, negative mate is bad.
-        # A shorter mate is better/worse than a longer one.
-        score = MATE_SCORE - abs(mate_in)
-        return score if mate_in > 0 else -score
+        try:
+            mate_in = int(eval_str.split('(')[1].replace(')', ''))
+            # Positive mate is good, negative mate is bad.
+            # A shorter mate is better/worse than a longer one.
+            score = MATE_SCORE - abs(mate_in)
+            return score if mate_in > 0 else -score
+        except (ValueError, IndexError):
+             return 0.0 # Handle malformed "Mate" strings
 
     try:
         # The log saves from White's perspective. Adjust for the current player.
@@ -136,11 +139,25 @@ def analyze_corpus(corpus_path: Path, stockfish_path: str):
             # We need the evaluation *after* the agent's move
             board.push(agent_move)
             stockfish_cp_after_info = engine.analyse(board, chess.engine.Limit(depth=10))
-            stockfish_cp_after = parse_stockfish_eval(str(stockfish_cp_after_info['score']), board.turn)
+            
+            # --- BUG FIX ---
+            # Directly process the live score object instead of parsing a string
+            score_obj_after = stockfish_cp_after_info.get("score")
+            stockfish_cp_after = 0.0
+            if score_obj_after:
+                # The POV is for the player whose turn it is now (i.e., opponent)
+                pov_score_after = score_obj_after.pov(board.turn)
+                if pov_score_after.is_mate():
+                    # Positive mate for the opponent is a very bad score for us.
+                    stockfish_cp_after = -(MATE_SCORE - abs(pov_score_after.mate()))
+                else:
+                    # score() is from white's POV. pov().score() is from the current player's.
+                    # A positive score for the opponent is a negative score for us.
+                    stockfish_cp_after = -(pov_score_after.score(mate_score=MATE_SCORE) or 0)
+            # --- END FIX ---
             
             # Change in score is from the perspective of the player *who just moved*
-            # before: board.turn, after: not board.turn
-            pov_change = -stockfish_cp_after - stockfish_cp_before
+            pov_change = stockfish_cp_after - stockfish_cp_before
             
             if pov_change < -BLUNDER_THRESHOLD_CP:
                  metrics[phase]["blunders"].append(1)
