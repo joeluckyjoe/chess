@@ -2,7 +2,7 @@
 import torch
 import os
 import re
-import random # --- PHASE T MODIFICATION: ADDED ---
+import random
 from datetime import datetime
 from pathlib import Path
 import torch.optim as optim
@@ -79,11 +79,13 @@ class Trainer:
 
         try:
             print(f"Loading checkpoint: {file_to_load}")
+            # Initialize network structure first before loading state dict
             self._initialize_new_network()
             checkpoint = torch.load(file_to_load, map_location=self.device)
             self.network.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             game_number = checkpoint.get('game_number', 0)
+            # Ensure optimizer state is on the correct device
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
@@ -105,59 +107,64 @@ class Trainer:
                 idx = move_to_index(move, board)
                 policy_tensor[idx] = prob
             except Exception as e:
+                # This can happen if a move from an old action space is loaded.
+                # It's safe to ignore as it won't contribute to the policy target.
                 pass
         return policy_tensor
 
-    # --- PHASE T MODIFICATION: ADDED ---
-    def _convert_puzzles_to_training_format(self, puzzle_examples: List[Dict]) -> List[Tuple[str, Dict[chess.Move, float], float]]:
-        """Converts raw puzzle data into the standard (FEN, policy_dict, outcome) format."""
+    def _convert_puzzles_to_training_format(self, puzzle_examples: List[Dict]) -> List[Tuple[str, Dict[chess.Move, float], float, str]]:
+        """
+        Converts raw puzzle data into the standard training format.
+        Now returns a 4-tuple that includes a 'type' tag.
+        """
         converted_puzzles = []
         for puzzle in puzzle_examples:
             try:
                 board = chess.Board(puzzle['fen'])
                 # The puzzle is from the perspective of the side to move. A correct move leads to a win.
-                outcome = 1.0
+                outcome = 1.0 # This outcome is for policy training only and should be ignored for value training.
                 # The policy is deterministic: 100% probability on the single best move.
                 best_move = chess.Move.from_uci(puzzle['best_move_uci'])
                 policy_dict = {best_move: 1.0}
-                converted_puzzles.append((board.fen(), policy_dict, outcome))
+                # Add the 'puzzle' tag
+                converted_puzzles.append((board.fen(), policy_dict, outcome, 'puzzle'))
             except Exception as e:
-                # print(f"Warning: Could not process puzzle with FEN {puzzle.get('fen')}: {e}")
                 pass
         return converted_puzzles
-    # --- END MODIFICATION ---
 
-    # --- PHASE T MODIFICATION: MODIFIED ---
     def train_on_batch(self, game_examples: List[Tuple[str, Dict[chess.Move, float], float]], 
                        puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
         """
         Performs a single training step on a mixed batch of game and puzzle data.
+        This version correctly separates the loss calculation for games and puzzles.
         """
         if not game_examples and not puzzle_examples:
             return 0.0, 0.0
 
-        # --- PHASE T MODIFICATION: ADDED ---
-        # 1. Convert puzzles to the standard training format
+        # 1. Convert puzzles to the standard training format and tag them
         converted_puzzles = self._convert_puzzles_to_training_format(puzzle_examples)
         
-        # 2. Determine number of puzzles to add and sample them
-        num_puzzles_to_add = int(len(game_examples) * puzzle_ratio)
+        # 2. Tag game examples
+        tagged_game_examples = [(fen, policy, outcome, 'game') for fen, policy, outcome in game_examples]
+
+        # 3. Determine number of puzzles to add and sample them
+        num_puzzles_to_add = int(len(tagged_game_examples) * puzzle_ratio)
         if len(converted_puzzles) > 0:
+            # --- TYPO FIX ---
             sampled_puzzles = random.sample(converted_puzzles, min(num_puzzles_to_add, len(converted_puzzles)))
+            # --- END FIX ---
         else:
             sampled_puzzles = []
 
-        # 3. Combine game examples with sampled puzzles to create the final batch
-        batch_data = game_examples + sampled_puzzles
-        # --- END MODIFICATION ---
+        # 4. Combine tagged game examples with sampled puzzles and shuffle
+        batch_data = tagged_game_examples + sampled_puzzles
+        random.shuffle(batch_data)
 
         self.network.train()
         
-        indices = torch.randperm(len(batch_data))
-        batch_data = [batch_data[i] for i in indices]
-
         total_policy_loss = 0.0
         total_value_loss = 0.0
+        game_data_count = 0
         
         for i in range(0, len(batch_data), batch_size):
             self.optimizer.zero_grad()
@@ -166,7 +173,8 @@ class Trainer:
             if not batch_chunk:
                 continue
             
-            fen_strings, mcts_policies, game_outcomes = zip(*batch_chunk)
+            # Unpack the 4-tuple including the new 'data_type' tag
+            fen_strings, mcts_policies, game_outcomes, data_types = zip(*batch_chunk)
 
             boards = [chess.Board(fen) for fen in fen_strings]
             gnn_inputs = [convert_to_gnn_input(b, device=self.device) for b in boards]
@@ -178,27 +186,38 @@ class Trainer:
             ])
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            # Batching graph data is complex; we process one by one for clarity and safety.
-            chunk_policy_loss = 0
-            chunk_value_loss = 0
+            # Process one by one and accumulate loss conditionally
+            accumulated_loss = 0
             for j in range(len(batch_chunk)):
                 pred_policy_logits, pred_value = self.network(*gnn_inputs[j])
-                policy_loss = F.cross_entropy(pred_policy_logits.unsqueeze(0), policy_targets[j].unsqueeze(0))
-                value_loss = self.value_criterion(pred_value, value_targets[j])
                 
-                total_loss = policy_loss + value_loss
-                (total_loss / len(batch_chunk)).backward()
-
-                chunk_policy_loss += policy_loss.item()
-                chunk_value_loss += value_loss.item()
+                policy_loss = F.cross_entropy(pred_policy_logits.unsqueeze(0), policy_targets[j].unsqueeze(0))
+                
+                # Add policy loss for all data types
+                total_policy_loss += policy_loss.item()
+                
+                # --- THIS IS THE CORE FIX ---
+                # Only calculate and add value_loss for real game data
+                if data_types[j] == 'game':
+                    value_loss = self.value_criterion(pred_value, value_targets[j])
+                    total_value_loss += value_loss.item()
+                    game_data_count += 1
+                    # Add both losses for backpropagation
+                    accumulated_loss += policy_loss + value_loss
+                else: # It's a 'puzzle'
+                    # Only add policy loss for backpropagation
+                    accumulated_loss += policy_loss
+            
+            if accumulated_loss > 0:
+                # Average the loss over the chunk before backpropagating
+                (accumulated_loss / len(batch_chunk)).backward()
             
             self.optimizer.step()
-            total_policy_loss += chunk_policy_loss
-            total_value_loss += chunk_value_loss
 
         num_samples = len(batch_data)
         avg_policy_loss = total_policy_loss / num_samples if num_samples > 0 else 0
-        avg_value_loss = total_value_loss / num_samples if num_samples > 0 else 0
+        # Average value loss is now correctly calculated only over game data
+        avg_value_loss = total_value_loss / game_data_count if game_data_count > 0 else 0
         
         return avg_policy_loss, avg_value_loss
     
