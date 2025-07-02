@@ -105,12 +105,13 @@ def main():
     tactical_puzzles_path = paths.tactical_puzzles_file
 
     device_str = config_params['DEVICE']
-    device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
+    device = torch.device("cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu")
 
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
 
-    trainer = Trainer(model_config=config_params)
+    # --- BUG FIX: Pass the correct 'device' to the Trainer constructor ---
+    trainer = Trainer(model_config=config_params, device=device)
 
     print("Attempting to load checkpoint...")
     checkpoint_to_load = None
@@ -144,7 +145,6 @@ def main():
     print("Loading tactical puzzles for integrated training...")
     tactical_puzzles = load_tactical_puzzles(tactical_puzzles_path)
 
-    # --- BUG FIX: Removed 'num_simulations' from MCTS constructor ---
     mcts_player = MCTS(
         network=chess_network,
         device=device,
@@ -152,7 +152,6 @@ def main():
         batch_size=config_params['BATCH_SIZE']
     )
     
-    # --- BUG FIX: Added 'num_simulations' back to SelfPlay and MentorPlay ---
     self_player = SelfPlay(
         mcts_white=mcts_player,
         mcts_black=mcts_player,
@@ -166,7 +165,6 @@ def main():
         num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
-    # --- END BUG FIX ---
 
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
     supervisor = BayesianSupervisor(config=config_params)
