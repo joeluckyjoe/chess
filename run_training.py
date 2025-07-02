@@ -59,7 +59,6 @@ def get_last_game_info(log_file_path):
     except (pd.errors.EmptyDataError, IndexError):
         return "self-play", 0
 
-# --- PHASE T MODIFICATION: ADDED ---
 def load_tactical_puzzles(puzzles_path: Path):
     """Loads tactical puzzles from a .jsonl file."""
     if not puzzles_path.exists():
@@ -71,7 +70,6 @@ def load_tactical_puzzles(puzzles_path: Path):
             puzzles.append(json.loads(line))
     print(f"Successfully loaded {len(puzzles)} tactical puzzles.")
     return puzzles
-# --- END MODIFICATION ---
 
 def main():
     """
@@ -84,7 +82,22 @@ def main():
         default=None,
         help="Force the training to start from a specific game number, ignoring the latest checkpoint number."
     )
+    # --- PHASE AE (Revised) MODIFICATION: ADDED ---
+    # This flag allows us to run a diagnostic test by disabling puzzle mixing.
+    parser.add_argument(
+        '--disable-puzzle-mixing',
+        action='store_true',  # Makes this a boolean flag
+        help="If set, disables the mixing of tactical puzzles during training."
+    )
+    # --- END MODIFICATION ---
     args = parser.parse_args()
+
+    # --- PHASE AE (Revised) MODIFICATION: ADDED ---
+    if args.disable_puzzle_mixing:
+        print("\n" + "#"*60)
+        print("--- TACTICAL PUZZLE MIXING IS DISABLED FOR THIS RUN ---")
+        print("#"*60 + "\n")
+    # --- END MODIFICATION ---
 
     paths = get_paths()
     checkpoints_path = paths.checkpoints_dir
@@ -94,9 +107,7 @@ def main():
     loss_log_filepath = drive_root / 'loss_log_v2.csv'
     supervisor_log_filepath = drive_root / 'supervisor_log.txt'
     
-    # --- PHASE T MODIFICATION: ADDED ---
     tactical_puzzles_path = paths.tactical_puzzles_file
-    # --- END MODIFICATION ---
 
     device_str = config_params['DEVICE']
     device = "cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu"
@@ -104,12 +115,8 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
 
-    trainer = Trainer(
-        model_config=config_params,
-        learning_rate=config_params['LEARNING_RATE'],
-        weight_decay=config_params['WEIGHT_DECAY'],
-        device=device
-    )
+    # --- This Trainer initialization is from the user-provided file ---
+    trainer = Trainer(model_config=config_params)
 
     print("Attempting to load checkpoint...")
     checkpoint_to_load = None
@@ -131,8 +138,9 @@ def main():
             return path_to_load
         checkpoint_to_load = find_checkpoint_for_game(args.force_start_game - 1)
 
+    # --- This method is from the user-provided file ---
     chess_network, start_game = trainer.load_or_initialize_network(
-        checkpoints_path, specific_checkpoint_path=checkpoint_to_load
+        directory=checkpoints_path, specific_checkpoint_path=checkpoint_to_load
     )
 
     if args.force_start_game is not None:
@@ -140,56 +148,45 @@ def main():
 
     print(f"Resuming training from game {start_game + 1}")
 
-    # --- PHASE T MODIFICATION: ADDED ---
     print("Loading tactical puzzles for integrated training...")
     tactical_puzzles = load_tactical_puzzles(tactical_puzzles_path)
-    # --- END MODIFICATION ---
 
-    # --- PHASE AB MODIFICATION: ADDED batch_size ---
     mcts_player = MCTS(
-        network=chess_network, 
-        device=device, 
-        c_puct=config_params['CPUCT'], 
+        network=chess_network,
+        device=device,
+        c_puct=config_params['CPUCT'],
+        num_simulations=config_params['MCTS_SIMULATIONS'], # Corrected key
         batch_size=config_params['BATCH_SIZE']
     )
-    # --- END MODIFICATION ---
     
-    self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], num_simulations=config_params['MCTS_SIMULATIONS'])
-    mentor_player = MentorPlay(mcts_agent=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350), num_simulations=config_params['MCTS_SIMULATIONS'], agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'])
+    self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'])
+    mentor_player = MentorPlay(mcts_agent=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350), agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'])
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
     supervisor = BayesianSupervisor(config=config_params)
 
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        # --- PHASE W MODIFICATION: IMPLEMENTED POST-MENTOR GRACE PERIOD ---
-        # This block implements the logic described in the Global Plan (Sec 4.1 & Phase W)
-        # to enforce a mandatory self-play period after a mentor game.
-        
         current_mode = "self-play" # Default to self-play
         
-        # Read the latest state of the loss log to see if a mentor game just occurred.
         log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame()
         
         is_grace_period = False
-        grace_period_duration = config_params.get('SUPERVISOR_GRACE_PERIOD', 20)
+        grace_period_duration = config_params.get('SUPERVISOR_GRACE_PERIOD', 10)
 
         if not log_df.empty and 'game_type' in log_df.columns and 'mentor-play' in log_df['game_type'].values:
             mentor_games = log_df[log_df['game_type'] == 'mentor-play']
             if not mentor_games.empty:
                 last_mentor_game_num = mentor_games['game'].max()
-                # Calculate how many games have passed since the last mentor intervention.
                 games_since_mentor = (game_num - 1) - last_mentor_game_num
                 
                 if games_since_mentor < grace_period_duration:
                     is_grace_period = True
 
         if is_grace_period:
-            # We are in the grace period, so we force self-play and skip the supervisor.
             games_remaining = grace_period_duration - games_since_mentor
             print(f"INFO: In post-mentor grace period. Forcing self-play. Supervisor check skipped. ({games_remaining} games left in period)")
             current_mode = "self-play"
         else:
-            # If not in a grace period, let the supervisor decide the mode.
             print("INFO: Grace period not active. Consulting Bayesian Supervisor...")
             if supervisor.check_for_stagnation(loss_log_filepath):
                 current_mode = "mentor-play"
@@ -197,7 +194,6 @@ def main():
             else:
                 current_mode = "self-play"
                 print("INFO: Supervisor indicates stable performance. Continuing with self-play.")
-        # --- END MODIFICATION ---
         
         print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode}) ---")
         
@@ -223,16 +219,23 @@ def main():
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
-        print(f"Training on {len(training_examples)} examples mixed with tactical puzzles...")
-        
-        # --- PHASE T MODIFICATION: MODIFIED ---
+        # --- PHASE AE (Revised) MODIFICATION: ADDED ---
+        # Conditionally decide which puzzles to pass to the trainer.
+        puzzles_for_training = []
+        if not args.disable_puzzle_mixing:
+            puzzles_for_training = tactical_puzzles
+            print(f"Training on {len(training_examples)} examples mixed with tactical puzzles...")
+        else:
+            print(f"Training on {len(training_examples)} examples (puzzle mixing disabled)...")
+        # --- END MODIFICATION ---
+
         # The trainer now receives the full list of puzzles to create a mixed batch.
         policy_loss, value_loss = trainer.train_on_batch(
             game_examples=training_examples,
-            puzzle_examples=tactical_puzzles, # Pass the loaded puzzles
-            batch_size=config_params['BATCH_SIZE']
+            puzzle_examples=puzzles_for_training, # Pass the (potentially empty) list
+            batch_size=config_params['BATCH_SIZE'],
+            puzzle_ratio=config_params.get('PUZZLE_RATIO', 0.25)
         )
-        # --- END MODIFICATION ---
         
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
