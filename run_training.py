@@ -82,22 +82,17 @@ def main():
         default=None,
         help="Force the training to start from a specific game number, ignoring the latest checkpoint number."
     )
-    # --- PHASE AE (Revised) MODIFICATION: ADDED ---
-    # This flag allows us to run a diagnostic test by disabling puzzle mixing.
     parser.add_argument(
         '--disable-puzzle-mixing',
-        action='store_true',  # Makes this a boolean flag
+        action='store_true',
         help="If set, disables the mixing of tactical puzzles during training."
     )
-    # --- END MODIFICATION ---
     args = parser.parse_args()
 
-    # --- PHASE AE (Revised) MODIFICATION: ADDED ---
     if args.disable_puzzle_mixing:
         print("\n" + "#"*60)
         print("--- TACTICAL PUZZLE MIXING IS DISABLED FOR THIS RUN ---")
         print("#"*60 + "\n")
-    # --- END MODIFICATION ---
 
     paths = get_paths()
     checkpoints_path = paths.checkpoints_dir
@@ -115,7 +110,6 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
 
-    # --- This Trainer initialization is from the user-provided file ---
     trainer = Trainer(model_config=config_params)
 
     print("Attempting to load checkpoint...")
@@ -138,7 +132,6 @@ def main():
             return path_to_load
         checkpoint_to_load = find_checkpoint_for_game(args.force_start_game - 1)
 
-    # --- This method is from the user-provided file ---
     chess_network, start_game = trainer.load_or_initialize_network(
         directory=checkpoints_path, specific_checkpoint_path=checkpoint_to_load
     )
@@ -151,22 +144,36 @@ def main():
     print("Loading tactical puzzles for integrated training...")
     tactical_puzzles = load_tactical_puzzles(tactical_puzzles_path)
 
+    # --- BUG FIX: Removed 'num_simulations' from MCTS constructor ---
     mcts_player = MCTS(
         network=chess_network,
         device=device,
         c_puct=config_params['CPUCT'],
-        num_simulations=config_params['MCTS_SIMULATIONS'], # Corrected key
         batch_size=config_params['BATCH_SIZE']
     )
     
-    self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'])
-    mentor_player = MentorPlay(mcts_agent=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350), agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'])
+    # --- BUG FIX: Added 'num_simulations' back to SelfPlay and MentorPlay ---
+    self_player = SelfPlay(
+        mcts_white=mcts_player,
+        mcts_black=mcts_player,
+        stockfish_path=config_params['STOCKFISH_PATH'],
+        num_simulations=config_params['MCTS_SIMULATIONS']
+    )
+    mentor_player = MentorPlay(
+        mcts_agent=mcts_player,
+        stockfish_path=config_params['STOCKFISH_PATH'],
+        stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350),
+        num_simulations=config_params['MCTS_SIMULATIONS'],
+        agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
+    )
+    # --- END BUG FIX ---
+
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
     supervisor = BayesianSupervisor(config=config_params)
 
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        current_mode = "self-play" # Default to self-play
+        current_mode = "self-play"
         
         log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame()
         
@@ -219,20 +226,16 @@ def main():
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
-        # --- PHASE AE (Revised) MODIFICATION: ADDED ---
-        # Conditionally decide which puzzles to pass to the trainer.
         puzzles_for_training = []
         if not args.disable_puzzle_mixing:
             puzzles_for_training = tactical_puzzles
             print(f"Training on {len(training_examples)} examples mixed with tactical puzzles...")
         else:
             print(f"Training on {len(training_examples)} examples (puzzle mixing disabled)...")
-        # --- END MODIFICATION ---
 
-        # The trainer now receives the full list of puzzles to create a mixed batch.
         policy_loss, value_loss = trainer.train_on_batch(
             game_examples=training_examples,
-            puzzle_examples=puzzles_for_training, # Pass the (potentially empty) list
+            puzzle_examples=puzzles_for_training,
             batch_size=config_params['BATCH_SIZE'],
             puzzle_ratio=config_params.get('PUZZLE_RATIO', 0.25)
         )
