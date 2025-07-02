@@ -8,6 +8,7 @@ from pathlib import Path
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.nn import MSELoss
+from torch.optim.lr_scheduler import StepLR
 from typing import Dict, List, Tuple, Any, Optional
 
 import chess
@@ -24,11 +25,19 @@ class Trainer:
         self.model_config = model_config
         self.device = device
         self.optimizer = None
+        # --- PHASE AG: Add scheduler attribute ---
+        self.scheduler = None 
         self.value_criterion = MSELoss()
         
         if self.network:
             self.network.to(self.device)
             self.optimizer = optim.Adam(self.network.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            # --- PHASE AG: Initialize scheduler ---
+            self.scheduler = StepLR(
+                self.optimizer, 
+                step_size=self.model_config.get('LR_SCHEDULER_STEP_SIZE', 100), 
+                gamma=self.model_config.get('LR_SCHEDULER_GAMMA', 0.9)
+            )
 
     def _initialize_new_network(self) -> Tuple[ChessNetwork, int]:
         from ..neural_network.gnn_models import SquareGNN, PieceGNN
@@ -60,6 +69,13 @@ class Trainer:
             lr=self.model_config['LEARNING_RATE'], 
             weight_decay=self.model_config['WEIGHT_DECAY']
         )
+        
+        # --- PHASE AG: Initialize scheduler with optimizer ---
+        self.scheduler = StepLR(
+            self.optimizer, 
+            step_size=self.model_config.get('LR_SCHEDULER_STEP_SIZE', 100), 
+            gamma=self.model_config.get('LR_SCHEDULER_GAMMA', 0.9)
+        )
         return self.network, 0
 
     def _get_game_number_from_filename(self, filepath: Path) -> int:
@@ -85,11 +101,20 @@ class Trainer:
         try:
             print(f"Loading checkpoint: {file_to_load}")
             # Initialize network structure first before loading state dict
-            self._initialize_new_network()
+            # This also correctly initializes the optimizer and scheduler
+            self._initialize_new_network() 
+            
             checkpoint = torch.load(file_to_load, map_location=self.device)
             self.network.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+            # --- PHASE AG: Load scheduler state ---
+            if 'scheduler_state_dict' in checkpoint and self.scheduler:
+                self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+                print("Scheduler state loaded from checkpoint.")
+
             game_number = checkpoint.get('game_number', 0)
+            
             # Ensure optimizer state is on the correct device
             for state in self.optimizer.state.values():
                 for k, v in state.items():
@@ -152,6 +177,7 @@ class Trainer:
         num_puzzles_to_add = int(len(tagged_game_examples) * puzzle_ratio)
         sampled_puzzles = []
         if len(converted_puzzles) > 0:
+            # --- FIX: Corrected typo from converted_pzzles to converted_puzzles ---
             sampled_puzzles = random.sample(converted_puzzles, min(num_puzzles_to_add, len(converted_puzzles)))
 
         all_data = tagged_game_examples + sampled_puzzles
@@ -247,6 +273,13 @@ class Trainer:
                 self.optimizer.step()
             # --- END FIX ---
 
+        # --- PHASE AG: Step the scheduler after each training cycle (e.g., per game) ---
+        if self.scheduler:
+            self.scheduler.step()
+            # Optional: log the learning rate to see it change over time
+            # current_lr = self.scheduler.get_last_lr()[0]
+            # print(f"LR scheduler stepped. New LR: {current_lr}")
+
         num_samples = len(all_data)
         avg_policy_loss = total_policy_loss / num_samples if num_samples > 0 else 0
         avg_value_loss = total_value_loss / game_data_count if game_data_count > 0 else 0
@@ -269,6 +302,8 @@ class Trainer:
             'game_number': game_number,
             'model_state_dict': self.network.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
+            # --- PHASE AG: Save scheduler state ---
+            'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'config_params': self.model_config,
         }
         torch.save(state, filepath)
