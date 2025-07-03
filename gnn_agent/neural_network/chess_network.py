@@ -30,7 +30,9 @@ class ChessNetwork(nn.Module):
             cross_attention.pc_embed_dim + cross_attention.sq_embed_dim,
             cross_attention.sq_embed_dim
         )
-        self.relu = nn.ReLU()
+        # --- FIX: Replaced dying ReLU with non-saturating GELU ---
+        self.activation = nn.GELU()
+        # --- END FIX ---
 
     def forward(self,
                 square_features: torch.Tensor,
@@ -57,16 +59,11 @@ class ChessNetwork(nn.Module):
             max_pieces_in_batch = piece_padding_mask.size(1)
             pc_embed_padded = torch.zeros(batch_size, max_pieces_in_batch, piece_embeddings.size(-1), device=piece_embeddings.device)
             
-            # --- THIS IS THE FIX ---
-            # The previous indexing logic was incorrect. This new logic correctly calculates
-            # the local index for each piece within its own graph in the batch.
             _, counts = torch.unique_consecutive(piece_batch, return_counts=True)
             local_piece_indices = torch.cat([torch.arange(c) for c in counts]).to(piece_embeddings.device)
             
-            # The corrected index now correctly scatters the piece embeddings into the padded tensor.
             flat_padded_indices = piece_batch * max_pieces_in_batch + local_piece_indices
             pc_embed_padded.view(-1, piece_embeddings.size(-1))[flat_padded_indices] = piece_embeddings
-            # --- END FIX ---
 
             pc_embed_b = pc_embed_padded
 
@@ -87,7 +84,9 @@ class ChessNetwork(nn.Module):
                 [piece_centric_board_representation, attended_square_embeddings],
                 dim=1
             )
-            final_square_representation = self.relu(self.embedding_layer(fused_representation))
+            # --- FIX: Apply GELU activation ---
+            final_square_representation = self.activation(self.embedding_layer(fused_representation))
+            # --- END FIX ---
         
         policy_logits = self.policy_head(final_square_representation, square_batch)
         value = self.value_head(final_square_representation, square_batch)

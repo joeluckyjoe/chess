@@ -6,10 +6,13 @@ import chess
 import numpy as np
 from typing import Dict
 from torch_geometric.data import Data
+from torch_geometric.utils import add_self_loops # <-- Import the utility
 
 # --- Constants for Feature Engineering ---
-# PHASE AC AUDIT: Increased feature dimension to include global game state.
-GNN_INPUT_FEATURE_DIM = 19
+# The dimension for the square-centric graph, which includes global features.
+SQUARE_FEATURE_DIM = 19
+# The natural, dense dimension for the piece-centric graph. NO PADDING.
+PIECE_FEATURE_DIM = 12
 
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
     chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
@@ -41,28 +44,23 @@ _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
     """
     Converts a single python-chess board state into a PyTorch Geometric Data object.
-    This version includes global game state features.
+    This version uses two distinct, dense feature sets for squares and pieces.
     """
-    # --- PHASE AC AUDIT: ADDED GLOBAL FEATURES ---
-    # These features are crucial for the network to understand the game's context.
+    # --- Global Game State Features (for Square GNN) ---
     turn = 1.0 if board.turn == chess.WHITE else 0.0
     can_castle_wk = 1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0
     can_castle_wq = 1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0
     can_castle_bk = 1.0 if board.has_kingside_castling_rights(chess.BLACK) else 0.0
     can_castle_bq = 1.0 if board.has_queenside_castling_rights(chess.BLACK) else 0.0
     
-    # Normalize en passant file (0-7 -> 0-1, or 0 if no en passant)
     ep_square = board.ep_square
     en_passant_file = (chess.square_file(ep_square) / 7.0) if ep_square is not None else 0.0
-    
-    # Normalize half-move clock (0-100 -> 0-1)
     halfmove_clock = board.halfmove_clock / 100.0
     
     global_state_features = np.array([
         turn, can_castle_wk, can_castle_wq, can_castle_bk, can_castle_bq,
         en_passant_file, halfmove_clock
     ], dtype=np.float32)
-    # --- END AUDIT ADDITION ---
 
     # 1. Square-based Graph Features (G_sq)
     square_features_list = []
@@ -79,7 +77,6 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         is_attacked_by_black = float(board.is_attacked_by(chess.BLACK, sq))
         control_status = [is_attacked_by_white, is_attacked_by_black]
         
-        # Concatenate local square features with global game state features
         local_features = np.concatenate([pos_encoding, piece_type_one_hot, piece_color_one_hot, control_status])
         square_features_list.append(np.concatenate([local_features, global_state_features]))
 
@@ -89,11 +86,12 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
     # 2. Piece-based Graph Features (G_pc)
     piece_map = board.piece_map()
     if not piece_map:
-        piece_features = torch.empty((0, GNN_INPUT_FEATURE_DIM))
+        piece_features = torch.empty((0, PIECE_FEATURE_DIM))
         piece_edge_index = torch.empty((2, 0), dtype=torch.long)
         piece_to_square_map = torch.empty((0), dtype=torch.long)
     else:
         sorted_squares = sorted(piece_map.keys())
+        num_pieces = len(sorted_squares)
         piece_node_indices = {sq: i for i, sq in enumerate(sorted_squares)}
         piece_to_square_map = torch.tensor(sorted_squares, dtype=torch.long)
         
@@ -117,18 +115,18 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
             attack_defense = [float(attack_count), float(defense_count)]
             
             local_features = np.concatenate([piece_type_one_hot, piece_color, location, mobility, attack_defense])
-            
-            # --- PHASE AC AUDIT: Padded piece features to match square feature dimension ---
-            padding = np.zeros(GNN_INPUT_FEATURE_DIM - len(local_features), dtype=np.float32)
-            piece_features_list.append(np.concatenate([local_features, padding]))
-            # --- END AUDIT ADDITION ---
+            piece_features_list.append(local_features)
             
             for to_sq in board.attacks(from_sq):
                 if to_sq in piece_node_indices:
                     piece_edges.append((piece_node_indices[from_sq], piece_node_indices[to_sq]))
         
         piece_features = torch.from_numpy(np.array(piece_features_list, dtype=np.float32))
-        piece_edge_index = torch.tensor(piece_edges, dtype=torch.long).t().contiguous() if piece_edges else torch.empty((2, 0), dtype=torch.long)
+        piece_edge_index_no_loops = torch.tensor(piece_edges, dtype=torch.long).t().contiguous() if piece_edges else torch.empty((2, 0), dtype=torch.long)
+        
+        # --- FINAL FIX: Add self-loops to prevent isolated nodes from creating zero-vectors ---
+        piece_edge_index, _ = add_self_loops(piece_edge_index_no_loops, num_nodes=num_pieces)
+
 
     # 3. Create the PyG Data object
     data = Data(

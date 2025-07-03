@@ -20,33 +20,36 @@ class CrossAttentionModule(nn.Module):
         self.pc_embed_dim = pc_embed_dim
         self.num_heads = num_heads
 
-        # FIX: Set batch_first=True to match the batch-first tensors from ChessNetwork.
         # Attention mechanism 1: Pieces attend to Squares (P -> S)
         self.p_to_s_attention = nn.MultiheadAttention(
-            embed_dim=pc_embed_dim,
+            embed_dim=pc_embed_dim,  # Query dim
             num_heads=num_heads,
-            kdim=sq_embed_dim,
-            vdim=sq_embed_dim,
+            kdim=sq_embed_dim,       # Key dim
+            vdim=sq_embed_dim,       # Value dim
             dropout=dropout_rate,
-            batch_first=True  # <-- CORRECTED
+            batch_first=True
         )
 
-        # FIX: Set batch_first=True to match the batch-first tensors from ChessNetwork.
         # Attention mechanism 2: Squares attend to Pieces (S -> P)
         self.s_to_p_attention = nn.MultiheadAttention(
-            embed_dim=sq_embed_dim,
+            embed_dim=sq_embed_dim,  # Query dim
             num_heads=num_heads,
-            kdim=pc_embed_dim,
-            vdim=pc_embed_dim,
+            kdim=pc_embed_dim,       # Key dim
+            vdim=pc_embed_dim,       # Value dim
             dropout=dropout_rate,
-            batch_first=True  # <-- CORRECTED
+            batch_first=True
         )
+
+        # --- FIX: Add projection layers to match dimensions for residual connections ---
+        self.p_projection = nn.Linear(sq_embed_dim, pc_embed_dim)
+        self.s_projection = nn.Linear(pc_embed_dim, sq_embed_dim)
+        # --- END FIX ---
 
         # Processing block for the P -> S path
         self.p_layer_norm1 = nn.LayerNorm(pc_embed_dim)
         self.p_feed_forward = nn.Sequential(
             nn.Linear(pc_embed_dim, pc_embed_dim * 4),
-            nn.ReLU(),
+            nn.GELU(), # Replaced ReLU with GELU as per previous findings
             nn.Dropout(dropout_rate),
             nn.Linear(pc_embed_dim * 4, pc_embed_dim)
         )
@@ -57,7 +60,7 @@ class CrossAttentionModule(nn.Module):
         self.s_layer_norm1 = nn.LayerNorm(sq_embed_dim)
         self.s_feed_forward = nn.Sequential(
             nn.Linear(sq_embed_dim, sq_embed_dim * 4),
-            nn.ReLU(),
+            nn.GELU(), # Replaced ReLU with GELU as per previous findings
             nn.Dropout(dropout_rate),
             nn.Linear(sq_embed_dim * 4, sq_embed_dim)
         )
@@ -94,7 +97,10 @@ class CrossAttentionModule(nn.Module):
             value=square_embeddings,
             need_weights=return_attention
         )
-        attended_pieces = self.p_layer_norm1(piece_embeddings + self.p_dropout(p_to_s_attn_output))
+        # --- FIX: Project attention output back to piece_embedding dimension ---
+        projected_p_output = self.p_projection(p_to_s_attn_output)
+        # --- END FIX ---
+        attended_pieces = self.p_layer_norm1(piece_embeddings + self.p_dropout(projected_p_output))
         p_ff_output = self.p_feed_forward(attended_pieces)
         processed_attended_pieces = self.p_layer_norm2(attended_pieces + self.p_dropout(p_ff_output))
 
@@ -103,10 +109,13 @@ class CrossAttentionModule(nn.Module):
             query=square_embeddings,
             key=piece_embeddings,
             value=piece_embeddings,
-            key_padding_mask=piece_padding_mask, # Crucial for ignoring padded pieces
+            key_padding_mask=piece_padding_mask,
             need_weights=return_attention
         )
-        attended_squares = self.s_layer_norm1(square_embeddings + self.s_dropout(s_to_p_attn_output))
+        # --- FIX: Project attention output back to square_embedding dimension ---
+        projected_s_output = self.s_projection(s_to_p_attn_output)
+        # --- END FIX ---
+        attended_squares = self.s_layer_norm1(square_embeddings + self.s_dropout(projected_s_output))
         s_ff_output = self.s_feed_forward(attended_squares)
         processed_attended_squares = self.s_layer_norm2(attended_squares + self.s_dropout(s_ff_output))
 

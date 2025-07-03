@@ -50,10 +50,6 @@ class PolicyHead(nn.Module):
             torch.Tensor: The output policy logits.
                           Shape: (batch_size, num_possible_moves)
         """
-        # --- PHASE AB CORRECTION ---
-        # The input 'x' is a flattened tensor of nodes from all graphs in the batch.
-        # We use the 'batch' tensor to determine the batch size and correctly
-        # reshape the data into a grid for the Conv2D layers.
         if batch is None:
             batch_size = 1
         else:
@@ -61,16 +57,17 @@ class PolicyHead(nn.Module):
         
         embedding_dim = x.size(1)
 
-        # Reshape from (B * 64, D) to (B, 64, D) and then to (B, D, 8, 8)
+        # Reshape from (B * 64, D) to (B, D, 8, 8)
         x_grid = x.view(batch_size, 64, embedding_dim)
         x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
         
-        x = F.relu(self.conv1(x_grid))
+        # --- FIX: Replaced F.relu with F.gelu ---
+        x = F.gelu(self.conv1(x_grid))
+        # --- END FIX ---
         
         # Flatten the feature maps. Use .reshape() instead of .view() to handle
         # potentially non-contiguous tensors after the convolution.
         x = x.reshape(batch_size, -1)
-        # --- END CORRECTION ---
         
         policy_logits = self.fc1(x)
         
@@ -112,10 +109,6 @@ class ValueHead(nn.Module):
             torch.Tensor: The estimated value of the position, between -1 and 1.
                           Shape: (batch_size, 1)
         """
-        # --- PHASE AB CORRECTION ---
-        # The input 'x' is a flattened tensor of nodes from all graphs in the batch.
-        # We use the 'batch' tensor to determine the batch size and correctly
-        # reshape the data into a grid for the Conv2D layers.
         if batch is None:
             batch_size = 1
         else:
@@ -127,14 +120,17 @@ class ValueHead(nn.Module):
         x_grid = x.view(batch_size, 64, embedding_dim)
         x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
         
-        x = F.relu(self.conv1(x_grid))
+        # --- FIX: Replaced F.relu with F.gelu ---
+        x = F.gelu(self.conv1(x_grid))
+        # --- END FIX ---
         
         # Flatten. Use .reshape() instead of .view() to handle
         # potentially non-contiguous tensors after the convolution.
         x = x.reshape(batch_size, -1)
-        # --- END CORRECTION ---
         
-        x = F.relu(self.fc1(x))
+        # --- FIX: Replaced F.relu with F.gelu ---
+        x = F.gelu(self.fc1(x))
+        # --- END FIX ---
         
         # Output is a single value, squashed by tanh to be in [-1, 1]
         value = torch.tanh(self.fc2(x))

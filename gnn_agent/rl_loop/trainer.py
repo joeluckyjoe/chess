@@ -14,7 +14,8 @@ from typing import Dict, List, Tuple, Any, Optional
 import chess
 from ..neural_network.chess_network import ChessNetwork
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
-from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input, GNN_INPUT_FEATURE_DIM
+# --- FIX: Import both feature dimension constants ---
+from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input, SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
 
 class Trainer:
     """
@@ -46,11 +47,10 @@ class Trainer:
 
         print("Creating new network from scratch...")
         
-        # --- PHASE AC AUDIT: Updated GNN input dimensions ---
-        # The input dimension is now 19 to account for the new global state features.
-        square_gnn = SquareGNN(in_features=GNN_INPUT_FEATURE_DIM, hidden_features=256, out_features=128, heads=4)
-        piece_gnn = PieceGNN(in_channels=GNN_INPUT_FEATURE_DIM, hidden_channels=256, out_channels=128)
-        # --- END AUDIT ---
+        # --- FIX: Use distinct feature dimensions for each GNN ---
+        square_gnn = SquareGNN(in_features=SQUARE_FEATURE_DIM, hidden_features=256, out_features=128, heads=4)
+        piece_gnn = PieceGNN(in_channels=PIECE_FEATURE_DIM, hidden_channels=256, out_channels=128)
+        # --- END FIX ---
 
         cross_attention = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4)
         policy_head = PolicyHead(embedding_dim=128, num_possible_moves=get_action_space_size())
@@ -84,15 +84,15 @@ class Trainer:
             return int(match.group(1))
         return -1
 
-    def load_or_initialize_network(self, directory: Path, specific_checkpoint_path: Optional[Path] = None) -> Tuple[ChessNetwork, int]:
+    def load_or_initialize_network(self, directory: Optional[Path], specific_checkpoint_path: Optional[Path] = None) -> Tuple[ChessNetwork, int]:
         file_to_load = None
         if specific_checkpoint_path and specific_checkpoint_path.exists():
             file_to_load = specific_checkpoint_path
-        elif not specific_checkpoint_path:
-            if directory.is_dir():
-                files = [f for f in directory.glob('*.pth.tar')]
-                if files:
-                    file_to_load = max(files, key=self._get_game_number_from_filename)
+        # --- FIX: Added 'directory is not None' check to handle test case ---
+        elif not specific_checkpoint_path and directory is not None and directory.is_dir():
+            files = [f for f in directory.glob('*.pth.tar')]
+            if files:
+                file_to_load = max(files, key=self._get_game_number_from_filename)
 
         if not file_to_load:
             print("No checkpoint found or specified. Initializing new network.")
@@ -163,7 +163,7 @@ class Trainer:
         return converted_puzzles
 
     def train_on_batch(self, game_examples: List[Tuple[str, Dict[chess.Move, float], float]], 
-                       puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
+                           puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
         """
         Performs a single training step on a mixed batch of game and puzzle data.
         This version is rewritten to use manual batching for our dual-graph structure.
