@@ -32,9 +32,10 @@ config_params = {
     
     # -- Bayesian Supervisor Specific --
     # FINALIZED: Set penalty to 0.8 based on comparative analysis
-    'SUPERVISOR_BAYESIAN_PENALTY': 0.8, # <-- CHANGED FROM 1.0
+    'SUPERVISOR_BAYESIAN_PENALTY': 0.8,
     'SUPERVISOR_RECENCY_WINDOW': 50, 
     'SUPERVISOR_GRACE_PERIOD': 10, # Games to wait after a mentor session
+    'MAX_INTERVENTION_GAMES': 5,   # NEW: Max games in a mentor burst
 
     # -- Mentor & Opponent Settings --
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")

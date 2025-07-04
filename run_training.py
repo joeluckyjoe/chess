@@ -1,3 +1,5 @@
+# FILENAME: run_training.py
+
 import os
 import torch
 import pandas as pd
@@ -110,7 +112,6 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
 
-    # --- BUG FIX: Pass the correct 'device' to the Trainer constructor ---
     trainer = Trainer(model_config=config_params, device=device)
 
     print("Attempting to load checkpoint...")
@@ -169,6 +170,11 @@ def main():
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
     supervisor = BayesianSupervisor(config=config_params)
 
+    # --- NEW: State tracking for dynamic intervention ---
+    intervention_mode_active = False
+    intervention_game_count = 0
+    max_intervention_games = config_params.get('MAX_INTERVENTION_GAMES', 5)
+
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         current_mode = "self-play"
@@ -187,15 +193,21 @@ def main():
                 if games_since_mentor < grace_period_duration:
                     is_grace_period = True
 
-        if is_grace_period:
+        # --- REVISED: Dynamic Intervention Logic ---
+        if intervention_mode_active:
+            print(f"INFO: Continuing dynamic intervention. Mentor game {intervention_game_count + 1}/{max_intervention_games}.")
+            current_mode = "mentor-play"
+        elif is_grace_period:
             games_remaining = grace_period_duration - games_since_mentor
             print(f"INFO: In post-mentor grace period. Forcing self-play. Supervisor check skipped. ({games_remaining} games left in period)")
             current_mode = "self-play"
         else:
             print("INFO: Grace period not active. Consulting Bayesian Supervisor...")
             if supervisor.check_for_stagnation(loss_log_filepath):
+                print("INFO: Supervisor detected stagnation. Initiating dynamic intervention burst.")
+                intervention_mode_active = True
+                intervention_game_count = 0
                 current_mode = "mentor-play"
-                print("INFO: Supervisor detected stagnation. Switching to mentor-play.")
             else:
                 current_mode = "self-play"
                 print("INFO: Supervisor indicates stable performance. Continuing with self-play.")
@@ -204,6 +216,8 @@ def main():
         
         if current_mode == "mentor-play":
             training_examples, pgn_data = mentor_player.play_game()
+            if intervention_mode_active:
+                intervention_game_count += 1
         else:
             training_examples, pgn_data = self_player.play_game()
 
@@ -241,6 +255,21 @@ def main():
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
         write_loss_to_csv(loss_log_filepath, game_num, policy_loss, value_loss, current_mode)
+
+        # --- NEW: Check if the intervention burst should end ---
+        if intervention_mode_active:
+            if intervention_game_count >= max_intervention_games:
+                print(f"INFO: Intervention burst ended after hitting max of {max_intervention_games} mentor games.")
+                intervention_mode_active = False
+                intervention_game_count = 0
+            else:
+                print("INFO: Re-evaluating performance to see if intervention can end early...")
+                if not supervisor.check_for_stagnation(loss_log_filepath):
+                    print("INFO: Performance has stabilized. Ending intervention burst.")
+                    intervention_mode_active = False
+                    intervention_game_count = 0
+                else:
+                    print("INFO: Stagnation persists. Continuing intervention.")
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
