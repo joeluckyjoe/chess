@@ -1,5 +1,5 @@
 #
-# File: gnn_models.py (Corrected)
+# File: gnn_models.py (Updated for Phase AK)
 #
 import torch
 import torch.nn as nn
@@ -26,22 +26,33 @@ class PieceGNN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels):
         super(PieceGNN, self).__init__()
         self.conv1 = GCNConv(in_channels, hidden_channels)
-        self.conv2 = GCNConv(hidden_channels, out_channels)
+        # --- PHASE AK MODIFICATION: Add layer to create 3-layer GNN ---
+        self.conv2 = GCNConv(hidden_channels, hidden_channels) # Intermediate layer
+        self.conv3 = GCNConv(hidden_channels, out_channels) # Output layer
+        # --- END MODIFICATION ---
 
     def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass for the PieceGNN.
         """
+        # --- PHASE AK MODIFICATION: Update output channel reference for empty tensor case ---
         if x_piece is None or x_piece.size(0) == 0:
-            return torch.empty((0, self.conv2.out_channels), device=x_piece.device if x_piece is not None else 'cpu')
+            return torch.empty((0, self.conv3.out_channels), device=x_piece.device if x_piece is not None else 'cpu')
+        # --- END MODIFICATION ---
 
         if edge_index_piece.size(1) == 0:
             num_nodes = x_piece.size(0)
-            out_dim = self.conv2.out_channels
+            # --- PHASE AK MODIFICATION: Update output channel reference for no-edge case ---
+            out_dim = self.conv3.out_channels
+            # --- END MODIFICATION ---
             return torch.zeros((num_nodes, out_dim), device=x_piece.device)
 
         x = self.conv1(x_piece, edge_index_piece)
-        # --- FIX: Replaced ReLU with GELU to prevent neuron death ---
         x = F.gelu(x)
+        
+        # --- PHASE AK MODIFICATION: Add forward pass for the new layer ---
         x = self.conv2(x, edge_index_piece)
+        x = F.gelu(x)
+        x = self.conv3(x, edge_index_piece)
+        # --- END MODIFICATION ---
         return x
