@@ -1,13 +1,6 @@
 #
-# File: evaluate_on_puzzles.py (Modified for Diagnostics)
+# File: evaluate_on_puzzles.py (Corrected)
 #
-"""
-A script to evaluate a trained agent's performance on a specific set of tactical puzzles.
-
-This script loads the latest model checkpoint, reads a .jsonl file of puzzles
-(where each line contains a FEN and the UCI representation of the best move),
-and calculates the percentage of puzzles the agent solves correctly.
-"""
 import sys
 import os
 import json
@@ -43,7 +36,6 @@ def find_latest_checkpoint(checkpoint_dir):
 
 def load_model_from_checkpoint(model_path, device):
     """Loads a ChessNetwork model from a .pth checkpoint file."""
-    # This architecture must match the one used during training.
     square_gnn = SquareGNN(in_features=19, hidden_features=256, out_features=128, heads=4)
     piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
     attention_module = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4, dropout_rate=0.1)
@@ -57,7 +49,7 @@ def load_model_from_checkpoint(model_path, device):
     checkpoint = torch.load(model_path, map_location=device)
     state_dict = checkpoint.get('model_state_dict', checkpoint.get('state_dict', checkpoint))
     network.load_state_dict(state_dict)
-    network.eval()  # Set the model to evaluation mode
+    network.eval()
     print(f"✅ Successfully loaded model for evaluation from {os.path.basename(str(model_path))}")
     return network
 
@@ -65,19 +57,33 @@ def load_model_from_checkpoint(model_path, device):
 def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.device) -> str:
     """
     Gets the agent's top-ranked move for a given board position.
-    
-    Returns:
-        The agent's best move in UCI format (e.g., 'e2e4').
     """
     legal_moves = list(board.legal_moves)
     if not legal_moves:
         return ""
 
+    # 1. Get the single data object
     single_data = gnn_data_converter.convert_to_gnn_input(board, device=device)
-    batch_data = Batch.from_data_list([single_data])
-    
+
+    # 2. Manually construct the required batch arguments for a "batch of one"
+    num_pieces = single_data.piece_features.size(0)
+    square_batch = torch.zeros(64, dtype=torch.long, device=device)
+    piece_batch = torch.zeros(num_pieces, dtype=torch.long, device=device)
+    # For a batch of one, the padding mask is all False (nothing is padded)
+    piece_padding_mask = torch.zeros((1, num_pieces), dtype=torch.bool, device=device)
+
     with torch.no_grad():
-        policy_logits, _ = network(batch_data)
+        # 3. Call the network with the full, ordered list of arguments
+        policy_logits, _ = network(
+            square_features=single_data.square_features,
+            square_edge_index=single_data.square_edge_index,
+            square_batch=square_batch,
+            piece_features=single_data.piece_features,
+            piece_edge_index=single_data.piece_edge_index,
+            piece_batch=piece_batch,
+            piece_to_square_map=single_data.piece_to_square_map,
+            piece_padding_mask=piece_padding_mask
+        )
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
     
@@ -98,11 +104,8 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
         return ""
 
     legal_move_indices = torch.tensor(legal_move_indices_list, device=device, dtype=torch.long)
-
     legal_probs = torch.gather(policy_probs, 0, legal_move_indices)
-
     best_move_index_in_legal_list = torch.argmax(legal_probs)
-    
     best_move = valid_legal_moves[best_move_index_in_legal_list]
 
     return best_move.uci()
@@ -180,8 +183,6 @@ def main():
         print("❌ Error: Could not find a model checkpoint to evaluate.")
         return
         
-    # ** THE FIX IS HERE **
-    # Construct the full path to the puzzle file using the Google Drive project root
     puzzle_file_full_path = paths.drive_project_root / args.puzzles
 
     run_evaluation(str(model_to_evaluate), str(puzzle_file_full_path), device)
