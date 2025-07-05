@@ -9,15 +9,12 @@ import sys
 import re
 import argparse
 import json
+import importlib # <-- PROTOCOL-COMPLIANT FIX
 
 # --- Import from config ---
 from config import get_paths, config_params
 
 # --- PHASE AP: EXPERIMENTAL MODIFICATION (User Suggestion) ---
-# Overriding configuration for pure reinforcement learning validation.
-# Per the action plan, we are testing a more aggressive learning rate.
-# NOTE: This assumes the key in your config dict is 'LEARNING_RATE'.
-# Please adjust if the key name is different (e.g., 'LR').
 config_params['LEARNING_RATE'] = 3e-4
 print("\n" + "#"*65)
 print(f"--- PHASE AP: Applied experimental learning rate: {config_params['LEARNING_RATE']} ---")
@@ -26,6 +23,7 @@ print("#"*65 + "\n")
 
 
 # Core components from the gnn_agent package
+from gnn_agent.neural_network import chess_network # <-- PROTOCOL-COMPLIANT FIX
 from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
@@ -121,6 +119,15 @@ def main():
 
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
+    
+    # --- PROTOCOL-COMPLIANT FIX: Forcibly reload the network module ---
+    # This command tells the Python interpreter to discard any cached version
+    # of the chess_network module and reload it from the .py source file.
+    # This resolves the issue of a stale .pyc file being used.
+    print("Forcing reload of the neural network module to bypass cache...")
+    importlib.reload(chess_network)
+    print("Module reload complete.")
+    # --- END FIX ---
 
     trainer = Trainer(model_config=config_params, device=device)
 
