@@ -86,10 +86,7 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
     
     if num_pieces == 0:
         piece_features = torch.empty((0, PIECE_FEATURE_DIM))
-        # ** THE FIX IS HERE **
-        # Ensure piece_edge_index is a 2x0 tensor, and handle self-loops correctly for an empty graph
-        piece_edge_index_no_loops = torch.empty((2, 0), dtype=torch.long)
-        piece_edge_index, _ = add_self_loops(piece_edge_index_no_loops, num_nodes=num_pieces)
+        piece_edge_index = torch.empty((2, 0), dtype=torch.long)
         piece_to_square_map = torch.empty((0), dtype=torch.long)
     else:
         sorted_squares = sorted(piece_map.keys())
@@ -133,7 +130,8 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         square_edge_index=square_edge_index,
         piece_features=piece_features,
         piece_edge_index=piece_edge_index,
-        piece_to_square_map=piece_to_square_map
+        piece_to_square_map=piece_to_square_map,
+        num_nodes=num_pieces  # ** THE FIX IS HERE **
     )
     
     return data.to(device)
