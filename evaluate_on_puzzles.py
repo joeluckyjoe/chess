@@ -43,7 +43,7 @@ def find_latest_checkpoint(checkpoint_dir):
 def load_model_from_checkpoint(model_path, device):
     """Loads a ChessNetwork model from a .pth checkpoint file."""
     # This architecture must match the one used during training.
-    square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
+    square_gnn = SquareGNN(in_features=19, hidden_features=256, out_features=128, heads=4)
     piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
     attention_module = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4, dropout_rate=0.1)
     policy_head = PolicyHead(embedding_dim=128, num_possible_moves=4672)
@@ -151,7 +151,7 @@ def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device)
         if not agent_move_uci:
             result_str = "❌ ERROR (No valid move produced)"
 
-        print(f"Puzzle {i+1}/{total_puzzles}: Agent chose {agent_move_uci}, solution is {solution_move_uci}.  [{result_str}]")
+        print(f"Puzzle {i+1}/{total_puzzles}: Agent chose {agent_move_uci}, solution is {solution_move_uci}.  [{result_str}]")
 
     # --- Final Report ---
     success_rate = (puzzles_solved / total_puzzles) * 100 if total_puzzles > 0 else 0
@@ -189,7 +189,10 @@ def main():
         return
         
     # Construct the full path to the puzzle file
-    puzzle_file_full_path = paths.training_data_dir / args.puzzles
+    # This line has an error, it should refer to the root directory, not the training_data directory
+    # puzzle_file_full_path = paths.training_data_dir / args.puzzles
+    puzzle_file_full_path = paths.drive_project_root / args.puzzles
+
 
     run_evaluation(str(model_to_evaluate), str(puzzle_file_full_path), device)
 
