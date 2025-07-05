@@ -38,6 +38,8 @@ config_params = {
     'MAX_INTERVENTION_GAMES': 5,   # NEW: Max games in a mentor burst
 
     # -- Mentor & Opponent Settings --
+    # Phase AM: Increased Mentor Elo from 1350 to 2000.
+    "MENTOR_ELO": 2000,
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
     "STOCKFISH_DEPTH_MENTOR": 10,        # Stockfish depth for mentor games
     "STOCKFISH_DEPTH_EVAL": 10,          # Stockfish depth for formal evaluation

@@ -1,5 +1,3 @@
-# FILENAME: run_training.py
-
 import os
 import torch
 import pandas as pd
@@ -162,7 +160,7 @@ def main():
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
-        stockfish_elo=config_params.get('MENTOR_ELO_RATING', 1350),
+        stockfish_elo=config_params['MENTOR_ELO'],
         num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
