@@ -9,7 +9,7 @@ import sys
 import re
 import argparse
 import json
-import importlib # <-- PROTOCOL-COMPLIANT FIX
+import importlib
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -23,14 +23,15 @@ print("#"*65 + "\n")
 
 
 # Core components from the gnn_agent package
-from gnn_agent.neural_network import chess_network # <-- PROTOCOL-COMPLIANT FIX
+# --- FIX: Use an alias for the module to avoid name collision ---
+from gnn_agent.neural_network import chess_network as chess_network_module
 from gnn_agent.neural_network.chess_network import ChessNetwork
+# --- END FIX ---
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
-# --- Import the BayesianSupervisor ---
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 
 
@@ -120,12 +121,9 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     
-    # --- PROTOCOL-COMPLIANT FIX: Forcibly reload the network module ---
-    # This command tells the Python interpreter to discard any cached version
-    # of the chess_network module and reload it from the .py source file.
-    # This resolves the issue of a stale .pyc file being used.
+    # --- FIX: Forcibly reload the network module using the alias ---
     print("Forcing reload of the neural network module to bypass cache...")
-    importlib.reload(chess_network)
+    importlib.reload(chess_network_module)
     print("Module reload complete.")
     # --- END FIX ---
 
@@ -167,7 +165,7 @@ def main():
         network=chess_network,
         device=device,
         c_puct=config_params['CPUCT'],
-        batch_size=config_params['BATCH_SIZE']
+        batch__size=config_params['BATCH_SIZE']
     )
     
     self_player = SelfPlay(
@@ -176,7 +174,7 @@ def main():
         stockfish_path=config_params['STOCKFISH_PATH'],
         num_simulations=config_params['MCTS_SIMULATIONS']
     )
-    # Mentor player is kept for potential future use or analysis, but not used in the loop
+
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
@@ -191,16 +189,8 @@ def main():
 
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        # =====================================================================
-        # --- PHASE AP: SUPERVISOR DISABLED ---
-        # For this experiment, the BayesianSupervisor's intervention logic is
-        # disabled. The agent will only perform self-play to test the
-        # hypothesis that it can achieve stable learning on its own.
-        # =====================================================================
         current_mode = "self-play"
         
-        # We still call the supervisor to log its analysis for later evaluation,
-        # but we ignore the output for decision-making in this phase.
         if os.path.exists(loss_log_filepath):
             print("INFO: Consulting Bayesian Supervisor for analysis logging...")
             _ = supervisor.check_for_stagnation(loss_log_filepath)
@@ -209,7 +199,6 @@ def main():
 
         print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode}) ---")
         
-        # Since current_mode is always "self-play", we only call the self_player
         training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
