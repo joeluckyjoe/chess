@@ -6,12 +6,10 @@ import chess
 import numpy as np
 from typing import Dict
 from torch_geometric.data import Data
-from torch_geometric.utils import add_self_loops # <-- Import the utility
+from torch_geometric.utils import add_self_loops
 
 # --- Constants for Feature Engineering ---
-# The dimension for the square-centric graph, which includes global features.
 SQUARE_FEATURE_DIM = 19
-# The natural, dense dimension for the piece-centric graph. NO PADDING.
 PIECE_FEATURE_DIM = 12
 
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
@@ -36,7 +34,6 @@ def _create_square_adjacency_edges() -> torch.Tensor:
                     edges.append((i, neighbor_sq))
     return torch.tensor(edges, dtype=torch.long).t().contiguous()
 
-# Create the static edge index once to be reused.
 _SQUARE_ADJACENCY_EDGE_INDEX = _create_square_adjacency_edges()
 
 # --- Main Conversion Function ---
@@ -85,13 +82,14 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
 
     # 2. Piece-based Graph Features (G_pc)
     piece_map = board.piece_map()
+    num_pieces = len(piece_map) # Get num_pieces here
+    
     if not piece_map:
         piece_features = torch.empty((0, PIECE_FEATURE_DIM))
         piece_edge_index = torch.empty((2, 0), dtype=torch.long)
         piece_to_square_map = torch.empty((0), dtype=torch.long)
     else:
         sorted_squares = sorted(piece_map.keys())
-        num_pieces = len(sorted_squares)
         piece_node_indices = {sq: i for i, sq in enumerate(sorted_squares)}
         piece_to_square_map = torch.tensor(sorted_squares, dtype=torch.long)
         
@@ -120,11 +118,12 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
             for to_sq in board.attacks(from_sq):
                 if to_sq in piece_node_indices:
                     piece_edges.append((piece_node_indices[from_sq], piece_node_indices[to_sq]))
-        
+            
         piece_features = torch.from_numpy(np.array(piece_features_list, dtype=np.float32))
         piece_edge_index_no_loops = torch.tensor(piece_edges, dtype=torch.long).t().contiguous() if piece_edges else torch.empty((2, 0), dtype=torch.long)
         
-        # --- FINAL FIX: Add self-loops to prevent isolated nodes from creating zero-vectors ---
+        # ** THE FIX IS HERE **
+        # Explicitly set num_nodes to ensure it's not None, even if there are no pieces.
         piece_edge_index, _ = add_self_loops(piece_edge_index_no_loops, num_nodes=num_pieces)
 
 
