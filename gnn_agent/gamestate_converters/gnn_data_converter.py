@@ -1,5 +1,5 @@
 #
-# File: gnn_data_converter.py (Corrected)
+# File: gnn_agent/gnn_data_converter.py (Updated for Phase AO)
 #
 import torch
 import chess
@@ -10,13 +10,23 @@ from torch_geometric.utils import add_self_loops
 
 # --- Constants for Feature Engineering ---
 SQUARE_FEATURE_DIM = 19
-PIECE_FEATURE_DIM = 12
+# --- PHASE AO MODIFICATION: Add material value feature ---
+PIECE_FEATURE_DIM = 13  # Was 12
+# --- END MODIFICATION ---
 
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
     chess.PAWN: 0, chess.KNIGHT: 1, chess.BISHOP: 2,
     chess.ROOK: 3, chess.QUEEN: 4, chess.KING: 5,
 }
 NUM_PIECE_TYPES = len(PIECE_TYPE_MAP)
+
+# --- PHASE AO MODIFICATION: Add material value map ---
+PIECE_MATERIAL_VALUE: Dict[chess.PieceType, float] = {
+    chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0,
+    chess.ROOK: 5.0, chess.QUEEN: 9.0, chess.KING: 0.0,  # King has no material value
+}
+# --- END MODIFICATION ---
+
 
 # --- Helper Functions ---
 
@@ -96,9 +106,14 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         piece_features_list, piece_edges = [], []
         piece_mobilities = {sq: 0 for sq in sorted_squares}
         if board.is_valid():
-            for move in board.legal_moves:
-                if move.from_square in piece_mobilities:
-                    piece_mobilities[move.from_square] += 1
+            try:
+                for move in board.legal_moves:
+                    if move.from_square in piece_mobilities:
+                        piece_mobilities[move.from_square] += 1
+            except (AssertionError, ValueError):
+                # In rare cases with invalid FENs, legal_moves can fail.
+                # We can proceed with mobilities as 0.
+                pass
         
         for from_sq in sorted_squares:
             piece = board.piece_at(from_sq)
@@ -107,12 +122,21 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
             piece_color = [1.0 if piece.color == chess.WHITE else 0.0]
             rank, file = chess.square_rank(from_sq), chess.square_file(from_sq)
             location = [file / 7.0, rank / 7.0]
-            mobility = [piece_mobilities.get(from_sq, 0) / 28.0]
+            mobility = [piece_mobilities.get(from_sq, 0) / 28.0]  # Normalize by max possible moves
             attack_count = len(board.attacks(from_sq) & board.occupied_co[not piece.color])
             defense_count = len(board.attackers(piece.color, from_sq))
             attack_defense = [float(attack_count), float(defense_count)]
             
-            local_features = np.concatenate([piece_type_one_hot, piece_color, location, mobility, attack_defense])
+            # --- PHASE AO MODIFICATION: Add material value feature ---
+            material_value = [PIECE_MATERIAL_VALUE[piece.piece_type] / 9.0]  # Normalize by queen value
+            # --- END MODIFICATION ---
+            
+            # --- PHASE AO MODIFICATION: Concatenate new feature ---
+            local_features = np.concatenate([
+                piece_type_one_hot, piece_color, location, mobility,
+                attack_defense, material_value
+            ])
+            # --- END MODIFICATION ---
             piece_features_list.append(local_features)
             
             for to_sq in board.attacks(from_sq):
@@ -131,7 +155,7 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         piece_features=piece_features,
         piece_edge_index=piece_edge_index,
         piece_to_square_map=piece_to_square_map,
-        num_nodes=num_pieces  # ** THE FIX IS HERE **
+        num_nodes=num_pieces 
     )
     
     return data.to(device)

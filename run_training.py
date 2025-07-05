@@ -13,6 +13,18 @@ import json
 # --- Import from config ---
 from config import get_paths, config_params
 
+# --- PHASE AP: EXPERIMENTAL MODIFICATION (User Suggestion) ---
+# Overriding configuration for pure reinforcement learning validation.
+# Per the action plan, we are testing a more aggressive learning rate.
+# NOTE: This assumes the key in your config dict is 'LEARNING_RATE'.
+# Please adjust if the key name is different (e.g., 'LR').
+config_params['LEARNING_RATE'] = 3e-4
+print("\n" + "#"*65)
+print(f"--- PHASE AP: Applied experimental learning rate: {config_params['LEARNING_RATE']} ---")
+print("#"*65 + "\n")
+# -----------------------------------------------------------
+
+
 # Core components from the gnn_agent package
 from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.search.mcts import MCTS
@@ -157,6 +169,7 @@ def main():
         stockfish_path=config_params['STOCKFISH_PATH'],
         num_simulations=config_params['MCTS_SIMULATIONS']
     )
+    # Mentor player is kept for potential future use or analysis, but not used in the loop
     mentor_player = MentorPlay(
         mcts_agent=mcts_player,
         stockfish_path=config_params['STOCKFISH_PATH'],
@@ -168,56 +181,29 @@ def main():
     training_data_manager = TrainingDataManager(data_directory=training_data_path)
     supervisor = BayesianSupervisor(config=config_params)
 
-    # --- NEW: State tracking for dynamic intervention ---
-    intervention_mode_active = False
-    intervention_game_count = 0
-    max_intervention_games = config_params.get('MAX_INTERVENTION_GAMES', 5)
 
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
+        # =====================================================================
+        # --- PHASE AP: SUPERVISOR DISABLED ---
+        # For this experiment, the BayesianSupervisor's intervention logic is
+        # disabled. The agent will only perform self-play to test the
+        # hypothesis that it can achieve stable learning on its own.
+        # =====================================================================
         current_mode = "self-play"
         
-        log_df = pd.read_csv(loss_log_filepath) if os.path.exists(loss_log_filepath) else pd.DataFrame()
-        
-        is_grace_period = False
-        grace_period_duration = config_params.get('SUPERVISOR_GRACE_PERIOD', 10)
-
-        if not log_df.empty and 'game_type' in log_df.columns and 'mentor-play' in log_df['game_type'].values:
-            mentor_games = log_df[log_df['game_type'] == 'mentor-play']
-            if not mentor_games.empty:
-                last_mentor_game_num = mentor_games['game'].max()
-                games_since_mentor = (game_num - 1) - last_mentor_game_num
-                
-                if games_since_mentor < grace_period_duration:
-                    is_grace_period = True
-
-        # --- REVISED: Dynamic Intervention Logic ---
-        if intervention_mode_active:
-            print(f"INFO: Continuing dynamic intervention. Mentor game {intervention_game_count + 1}/{max_intervention_games}.")
-            current_mode = "mentor-play"
-        elif is_grace_period:
-            games_remaining = grace_period_duration - games_since_mentor
-            print(f"INFO: In post-mentor grace period. Forcing self-play. Supervisor check skipped. ({games_remaining} games left in period)")
-            current_mode = "self-play"
+        # We still call the supervisor to log its analysis for later evaluation,
+        # but we ignore the output for decision-making in this phase.
+        if os.path.exists(loss_log_filepath):
+            print("INFO: Consulting Bayesian Supervisor for analysis logging...")
+            _ = supervisor.check_for_stagnation(loss_log_filepath)
         else:
-            print("INFO: Grace period not active. Consulting Bayesian Supervisor...")
-            if supervisor.check_for_stagnation(loss_log_filepath):
-                print("INFO: Supervisor detected stagnation. Initiating dynamic intervention burst.")
-                intervention_mode_active = True
-                intervention_game_count = 0
-                current_mode = "mentor-play"
-            else:
-                current_mode = "self-play"
-                print("INFO: Supervisor indicates stable performance. Continuing with self-play.")
-        
+            print("INFO: Loss log not found, supervisor check skipped for this cycle.")
+
         print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode}) ---")
         
-        if current_mode == "mentor-play":
-            training_examples, pgn_data = mentor_player.play_game()
-            if intervention_mode_active:
-                intervention_game_count += 1
-        else:
-            training_examples, pgn_data = self_player.play_game()
+        # Since current_mode is always "self-play", we only call the self_player
+        training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
             print(f"Game type '{current_mode}' resulted in no examples. Skipping.")
@@ -253,21 +239,6 @@ def main():
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
         write_loss_to_csv(loss_log_filepath, game_num, policy_loss, value_loss, current_mode)
-
-        # --- NEW: Check if the intervention burst should end ---
-        if intervention_mode_active:
-            if intervention_game_count >= max_intervention_games:
-                print(f"INFO: Intervention burst ended after hitting max of {max_intervention_games} mentor games.")
-                intervention_mode_active = False
-                intervention_game_count = 0
-            else:
-                print("INFO: Re-evaluating performance to see if intervention can end early...")
-                if not supervisor.check_for_stagnation(loss_log_filepath):
-                    print("INFO: Performance has stabilized. Ending intervention burst.")
-                    intervention_mode_active = False
-                    intervention_game_count = 0
-                else:
-                    print("INFO: Stagnation persists. Continuing intervention.")
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
