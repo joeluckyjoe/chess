@@ -21,6 +21,7 @@ if project_root not in sys.path:
 
 import torch
 import chess
+from torch_geometric.data import Batch # <--- 1. IMPORT BATCH
 
 # --- Project-specific Imports ---
 from config import get_paths, config_params
@@ -72,10 +73,13 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
     if not legal_moves:
         return ""
 
-    gnn_input_data = gnn_data_converter.convert_to_gnn_input(board, device=device)
+    # --- 2. WRAP THE SINGLE DATA OBJECT INTO A BATCH ---
+    single_data = gnn_data_converter.convert_to_gnn_input(board, device=device)
+    batch_data = Batch.from_data_list([single_data])
     
     with torch.no_grad():
-        policy_logits, _ = network(*gnn_input_data)
+        # Pass the entire batch object to the network
+        policy_logits, _ = network(batch_data)
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
     
@@ -151,7 +155,7 @@ def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device)
         if not agent_move_uci:
             result_str = "❌ ERROR (No valid move produced)"
 
-        print(f"Puzzle {i+1}/{total_puzzles}: Agent chose {agent_move_uci}, solution is {solution_move_uci}.  [{result_str}]")
+        print(f"Puzzle {i+1}/{total_puzzles}: Agent chose {agent_move_uci}, solution is {solution_move_uci}.  [{result_str}]")
 
     # --- Final Report ---
     success_rate = (puzzles_solved / total_puzzles) * 100 if total_puzzles > 0 else 0
@@ -168,7 +172,7 @@ def main():
     """Parses arguments and launches the evaluation."""
     parser = argparse.ArgumentParser(description="Evaluate a chess agent on tactical puzzles.")
     parser.add_argument("--model", type=str, default=None, help="Path to a specific model checkpoint. If not provided, the latest will be used.")
-    parser.add_argument("--puzzles", type=str, default="puzzles_eval.jsonl", help="Name of the puzzle file inside the 'training_data' directory.")
+    parser.add_argument("--puzzles", type=str, default="puzzles_eval.jsonl", help="Name of the puzzle file relative to the project root.")
     args = parser.parse_args()
 
     # To get a clearer error message from CUDA, we run it in blocking mode.
@@ -189,9 +193,7 @@ def main():
         return
         
     # Construct the full path to the puzzle file
-    # This line has an error, it should refer to the root directory, not the training_data directory
-    # puzzle_file_full_path = paths.training_data_dir / args.puzzles
-    puzzle_file_full_path = paths.drive_project_root / args.puzzles
+    puzzle_file_full_path = paths.local_project_root / args.puzzles
 
 
     run_evaluation(str(model_to_evaluate), str(puzzle_file_full_path), device)
