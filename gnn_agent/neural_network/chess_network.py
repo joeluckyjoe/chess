@@ -1,49 +1,11 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GATv2Conv, GCNConv
 from typing import Tuple, Optional, Union
 
-# --- Integrated from gnn_models.py and Corrected ---
+# --- Reverted to import from the now-correct gnn_models.py ---
+from .gnn_models import SquareGNN, PieceGNN
 from .attention_module import CrossAttentionModule
 from .policy_value_heads import PolicyHead, ValueHead
-
-class SquareGNN(nn.Module):
-    """GNN to process the 8x8 board graph."""
-    def __init__(self, in_channels, out_channels, num_layers=2, heads=4):
-        super(SquareGNN, self).__init__()
-        self.convs = nn.ModuleList()
-        # Input layer
-        self.convs.append(GATv2Conv(in_channels, out_channels, heads=heads, concat=True))
-        # Hidden layers
-        for _ in range(num_layers - 1):
-            self.convs.append(GATv2Conv(out_channels * heads, out_channels, heads=heads, concat=True))
-        self.activation = nn.GELU()
-
-    def forward(self, x, edge_index, batch): # <-- FIX: Added 'batch' parameter
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index, batch=batch) # <-- FIX: Pass 'batch' to conv layer
-            x = self.activation(x)
-        return x
-
-class PieceGNN(nn.Module):
-    """GNN to process the graph of pieces."""
-    def __init__(self, in_channels, out_channels, num_layers=3):
-        super(PieceGNN, self).__init__()
-        self.convs = nn.ModuleList()
-        # Input layer
-        self.convs.append(GCNConv(in_channels, out_channels))
-        # Hidden layers
-        for _ in range(num_layers - 1):
-            self.convs.append(GCNConv(out_channels, out_channels))
-        self.activation = nn.GELU()
-
-    def forward(self, x, edge_index, batch): # <-- FIX: Added 'batch' parameter
-        for conv in self.convs:
-            x = conv(x, edge_index, batch=batch) # <-- FIX: Pass 'batch' to conv layer
-            x = self.activation(x)
-        return x
-# --- End of Integrated Code ---
-
 
 class ChessNetwork(nn.Module):
     """
@@ -69,9 +31,8 @@ class ChessNetwork(nn.Module):
             cross_attention.pc_embed_dim + cross_attention.sq_embed_dim,
             cross_attention.sq_embed_dim
         )
-        # --- FIX: Replaced dying ReLU with non-saturating GELU ---
         self.activation = nn.GELU()
-        # --- END FIX ---
+
 
     def forward(self,
                 square_features: torch.Tensor,
@@ -86,6 +47,7 @@ class ChessNetwork(nn.Module):
                ) -> Union[Tuple[torch.Tensor, torch.Tensor],
                           Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]]:
         
+        # Pass the batch argument to the GNNs
         square_embeddings = self.square_gnn(square_features, square_edge_index, batch=square_batch)
         piece_embeddings = self.piece_gnn(piece_features, piece_edge_index, batch=piece_batch)
 
@@ -124,9 +86,7 @@ class ChessNetwork(nn.Module):
                 [piece_centric_board_representation, attended_square_embeddings],
                 dim=1
             )
-            # --- FIX: Apply GELU activation ---
             final_square_representation = self.activation(self.embedding_layer(fused_representation))
-            # --- END FIX ---
         
         policy_logits = self.policy_head(final_square_representation, square_batch)
         value = self.value_head(final_square_representation, square_batch)

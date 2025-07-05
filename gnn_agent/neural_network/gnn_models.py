@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/gnn_models.py (Corrected for Phase AO)
+# File: gnn_agent/neural_network/gnn_models.py (Corrected)
 #
 import torch
 import torch.nn as nn
@@ -20,10 +20,12 @@ class SquareGNN(nn.Module):
         self.conv1 = GATv2Conv(in_features, hidden_features, heads=heads, concat=True)
         self.conv2 = GATv2Conv(hidden_features * heads, out_features, heads=1, concat=True)
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        x = self.conv1(x, edge_index)
+    # <-- FIX: Added the 'batch' parameter to the method signature
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        # <-- FIX: Pass the 'batch' tensor to the convolutional layers
+        x = self.conv1(x, edge_index, batch=batch)
         x = F.gelu(x)
-        x = self.conv2(x, edge_index)
+        x = self.conv2(x, edge_index, batch=batch)
         return x
 
 class PieceGNN(nn.Module):
@@ -34,18 +36,22 @@ class PieceGNN(nn.Module):
         self.conv2 = GCNConv(hidden_channels, hidden_channels)
         self.conv3 = GCNConv(hidden_channels, out_channels)
 
-    def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor) -> torch.Tensor:
+    # <-- FIX: Added the 'batch' parameter to the method signature
+    def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
         if x_piece is None or x_piece.size(0) == 0:
             return torch.empty((0, self.conv3.out_channels), device=edge_index_piece.device)
         
-        x = self.conv1(x_piece, edge_index_piece)
+        # <-- FIX: Pass the 'batch' tensor to the convolutional layers
+        x = self.conv1(x_piece, edge_index_piece, batch=batch)
         x = F.gelu(x)
-        x = self.conv2(x, edge_index_piece)
+        x = self.conv2(x, edge_index_piece, batch=batch)
         x = F.gelu(x)
-        x = self.conv3(x, edge_index_piece)
+        x = self.conv3(x, edge_index_piece, batch=batch)
         return x
 
 # --- Fusion and Head Modules ---
+# NOTE: The following classes are part of the original file but are not directly used by the Trainer,
+# which uses components from chess_network.py. They are kept for completeness.
 
 class CrossAttentionModule(nn.Module):
     """A symmetric cross-attention module."""
