@@ -82,11 +82,14 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
 
     # 2. Piece-based Graph Features (G_pc)
     piece_map = board.piece_map()
-    num_pieces = len(piece_map) # Get num_pieces here
+    num_pieces = len(piece_map)
     
-    if not piece_map:
+    if num_pieces == 0:
         piece_features = torch.empty((0, PIECE_FEATURE_DIM))
-        piece_edge_index = torch.empty((2, 0), dtype=torch.long)
+        # ** THE FIX IS HERE **
+        # Ensure piece_edge_index is a 2x0 tensor, and handle self-loops correctly for an empty graph
+        piece_edge_index_no_loops = torch.empty((2, 0), dtype=torch.long)
+        piece_edge_index, _ = add_self_loops(piece_edge_index_no_loops, num_nodes=num_pieces)
         piece_to_square_map = torch.empty((0), dtype=torch.long)
     else:
         sorted_squares = sorted(piece_map.keys())
@@ -122,10 +125,7 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         piece_features = torch.from_numpy(np.array(piece_features_list, dtype=np.float32))
         piece_edge_index_no_loops = torch.tensor(piece_edges, dtype=torch.long).t().contiguous() if piece_edges else torch.empty((2, 0), dtype=torch.long)
         
-        # ** THE FIX IS HERE **
-        # Explicitly set num_nodes to ensure it's not None, even if there are no pieces.
         piece_edge_index, _ = add_self_loops(piece_edge_index_no_loops, num_nodes=num_pieces)
-
 
     # 3. Create the PyG Data object
     data = Data(
