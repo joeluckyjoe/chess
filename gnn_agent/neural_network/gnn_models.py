@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/gnn_models.py (Corrected)
+# File: gnn_agent/neural_network/gnn_models.py (Final Correction)
 #
 import torch
 import torch.nn as nn
@@ -20,12 +20,13 @@ class SquareGNN(nn.Module):
         self.conv1 = GATv2Conv(in_features, hidden_features, heads=heads, concat=True)
         self.conv2 = GATv2Conv(hidden_features * heads, out_features, heads=1, concat=True)
 
-    # <-- FIX: Added the 'batch' parameter to the method signature
+    # The 'batch' parameter is accepted but not used directly by the conv layers.
+    # PyTorch Geometric handles this implicitly.
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        # <-- FIX: Pass the 'batch' tensor to the convolutional layers
-        x = self.conv1(x, edge_index, batch=batch)
+        # <-- FIX: Removed the incorrect 'batch=batch' argument ---
+        x = self.conv1(x, edge_index)
         x = F.gelu(x)
-        x = self.conv2(x, edge_index, batch=batch)
+        x = self.conv2(x, edge_index)
         return x
 
 class PieceGNN(nn.Module):
@@ -36,23 +37,21 @@ class PieceGNN(nn.Module):
         self.conv2 = GCNConv(hidden_channels, hidden_channels)
         self.conv3 = GCNConv(hidden_channels, out_channels)
 
-    # <-- FIX: Added the 'batch' parameter to the method signature
+    # The 'batch' parameter is accepted but not used directly by the conv layers.
     def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
         if x_piece is None or x_piece.size(0) == 0:
             return torch.empty((0, self.conv3.out_channels), device=edge_index_piece.device)
         
-        # <-- FIX: Pass the 'batch' tensor to the convolutional layers
-        x = self.conv1(x_piece, edge_index_piece, batch=batch)
+        # <-- FIX: Removed the incorrect 'batch=batch' argument ---
+        x = self.conv1(x_piece, edge_index_piece)
         x = F.gelu(x)
-        x = self.conv2(x, edge_index_piece, batch=batch)
+        x = self.conv2(x, edge_index_piece)
         x = F.gelu(x)
-        x = self.conv3(x, edge_index_piece, batch=batch)
+        x = self.conv3(x, edge_index_piece)
         return x
 
 # --- Fusion and Head Modules ---
-# NOTE: The following classes are part of the original file but are not directly used by the Trainer,
-# which uses components from chess_network.py. They are kept for completeness.
-
+# NOTE: The following classes are part of the original file but are not directly used by the Trainer.
 class CrossAttentionModule(nn.Module):
     """A symmetric cross-attention module."""
     def __init__(self, embed_dim: int, num_heads: int):
@@ -136,20 +135,14 @@ class ChessNetwork(nn.Module):
         if pc_embed.size(0) > 0:
             sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, p_to_sq_map)
             
-            # --- BUG FIX: Use the dedicated 'piece_batch' for pooling piece features ---
-            # The global_max_pool function needs to know the total number of graphs
-            # in the batch to avoid size mismatch errors, especially if some graphs
-            # in the batch have no pieces.
             piece_batch = data.piece_batch
-            batch_size = data.num_graphs # Get the true number of graphs in the batch
+            batch_size = data.num_graphs 
             global_graph_embed = global_max_pool(
                 pc_embed_fused, 
                 piece_batch.to(pc_embed_fused.device),
-                size=batch_size # Explicitly provide the output size
+                size=batch_size
             )
-            # --- END BUG FIX ---
         else:
-            # Fallback for batches with no pieces at all
             global_graph_embed = global_max_pool(sq_embed, square_batch)
 
         policy_logits = self.policy_head(global_graph_embed)
