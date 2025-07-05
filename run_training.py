@@ -23,10 +23,9 @@ print("#"*65 + "\n")
 
 
 # Core components from the gnn_agent package
-# --- FIX: Use an alias for the module to avoid name collision ---
 from gnn_agent.neural_network import chess_network as chess_network_module
+from gnn_agent.rl_loop import trainer as trainer_module
 from gnn_agent.neural_network.chess_network import ChessNetwork
-# --- END FIX ---
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.mentor_play import MentorPlay
@@ -121,9 +120,10 @@ def main():
     print(f"Using device: {device}")
     print(f"Checkpoints will be saved to: {checkpoints_path}")
     
-    # --- FIX: Forcibly reload the network module using the alias ---
-    print("Forcing reload of the neural network module to bypass cache...")
-    importlib.reload(chess_network_module)
+    # --- FINAL FIX: Forcibly reload modules in dependency order ---
+    print("Forcing reload of modules to bypass cache...")
+    importlib.reload(chess_network_module) # 1. Reload the dependency first
+    importlib.reload(trainer_module)       # 2. Reload the module that uses it
     print("Module reload complete.")
     # --- END FIX ---
 
@@ -165,7 +165,7 @@ def main():
         network=chess_network,
         device=device,
         c_puct=config_params['CPUCT'],
-        batch__size=config_params['BATCH_SIZE']
+        batch_size=config_params['BATCH_SIZE']
     )
     
     self_player = SelfPlay(
