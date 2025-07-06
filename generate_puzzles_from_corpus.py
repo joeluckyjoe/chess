@@ -65,7 +65,10 @@ def generate_puzzles(args):
     print("-" * 60)
 
     stockfish_engine = None
+    # NEW: Counters for the final summary
     puzzles_found_total = 0
+    total_moves_analyzed = 0
+    total_games_processed = 0
     
     # A large centipawn value to represent a checkmate advantage
     MATE_SCORE = 100000 
@@ -75,22 +78,23 @@ def generate_puzzles(args):
         
         for pgn_file_path in files_to_process:
             print(f"Scanning file: {pgn_file_path.name}...")
-            puzzles_in_file = 0
             
             with open(pgn_file_path, 'r', encoding='utf-8', errors='ignore') as pgn_file:
-                game_count_in_file = 0
                 while True:
                     try:
                         game = chess.pgn.read_game(pgn_file)
                         if game is None:
                             break
-                        game_count_in_file += 1
+                        
+                        # FIX: Use a counter that increments across all files
+                        total_games_processed += 1
 
                         # Iterate through nodes to have access to board state before the move
                         for node in game.mainline():
-                            # MODIFIED: Print a new line for Colab compatibility.
                             if node.ply() > 0:
-                                print(f"  -> Game {game_count_in_file}, Analyzing Ply {node.ply()}...")
+                                # MODIFIED: Use the global game counter and print a new line
+                                print(f"  -> Game {total_games_processed}, Analyzing Ply {node.ply()}...")
+                                total_moves_analyzed += 1
 
                             if node.parent is None: # Skip the root node
                                 continue
@@ -127,7 +131,7 @@ def generate_puzzles(args):
                             eval_drop = eval_best_cp - eval_played_cp
                             
                             if eval_drop >= args.blunder_threshold:
-                                puzzles_in_file += 1
+                                puzzles_found_total += 1
                                 puzzle = {"fen": board_before_move.fen(), "best_move": best_move_found.uci()}
                                 with open(output_path, 'a') as f:
                                     f.write(json.dumps(puzzle) + '\n')
@@ -139,11 +143,6 @@ def generate_puzzles(args):
                     except Exception as e:
                         print(f"\nAn unexpected error occurred while processing a game: {e}")
                         continue
-            
-            if puzzles_in_file > 0:
-                print(f"  -> Found {puzzles_in_file} new puzzles in {pgn_file_path.name}.")
-                puzzles_found_total += puzzles_in_file
-
     finally:
         if stockfish_engine:
             stockfish_engine.quit()
@@ -151,8 +150,17 @@ def generate_puzzles(args):
     
     print("-" * 60)
     print("Corpus analysis complete.")
-    print(f"Found a total of {puzzles_found_total} new puzzles.")
+    
+    # NEW: Calculate and print the blunder summary
+    blunder_rate = (puzzles_found_total / total_moves_analyzed * 100) if total_moves_analyzed > 0 else 0
+    print("\nBlunder Analysis Summary:")
+    print(f"- Games Processed: {total_games_processed}")
+    print(f"- Moves Analyzed:  {total_moves_analyzed}")
+    print(f"- Blunders Found:  {puzzles_found_total}")
+    print(f"- Blunder Rate:    {blunder_rate:.2f}%")
+    print("-" * 60)
     print(f"All puzzles have been appended to {output_path}")
+
 
 def main():
     """
