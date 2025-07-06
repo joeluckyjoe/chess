@@ -100,12 +100,10 @@ def main():
     # --- Initialization ---
     trainer = Trainer(model_config=config_params, device=device)
     
-    # FIX: The game number from the loaded checkpoint is now the single source of truth.
     chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
     
     print(f"Resuming training run from game {start_game + 1}")
 
-    # NEW: Load puzzles from both static and generated files
     all_puzzle_sources = [paths.tactical_puzzles_file, paths.generated_puzzles_file]
     all_puzzles = load_puzzles_from_sources(all_puzzle_sources)
 
@@ -131,8 +129,7 @@ def main():
     # --- Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        # 1. Determine Game Mode (Grace Period -> Supervisor -> Default Self-Play)
-        current_mode = "self-play" # Default mode
+        current_mode = "self-play"
 
         grace_period_active = is_in_grace_period(
             paths.loss_log_file,
@@ -141,7 +138,6 @@ def main():
 
         if grace_period_active:
             print(f"\nINFO: Post-intervention grace period active for Game {game_num}. Forcing self-play.")
-            current_mode = "self-play"
         else:
             print("\nINFO: Consulting Bayesian Supervisor for stagnation check...")
             needs_intervention = supervisor.check_for_stagnation(paths.loss_log_file)
@@ -162,6 +158,12 @@ def main():
                         puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles across {num_primer_batches} batches.")
                         
+                        # NEW: Log the FEN of each puzzle being used
+                        print("--- Puzzles selected for this primer ---")
+                        for i, puzzle in enumerate(puzzles_for_primer):
+                            print(f"  {i+1}: FEN: {puzzle.get('fen', 'N/A')}")
+                        print("----------------------------------------")
+                        
                         primer_policy_loss, _ = trainer.train_on_batch(
                             game_examples=[],
                             puzzle_examples=puzzles_for_primer,
@@ -179,7 +181,6 @@ def main():
                 current_mode = "mentor-play"
             else:
                 print("INFO: No intervention needed. Proceeding with self-play.")
-                current_mode = "self-play"
 
         # 2. Play the Game
         print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
