@@ -1,5 +1,5 @@
 #
-# File: evaluate_on_puzzles.py (Refactored to use the Trainer)
+# File: evaluate_on_puzzles.py (Final Correction)
 #
 import sys
 import os
@@ -12,14 +12,12 @@ import torch
 import chess
 
 # --- Setup Python Path ---
-# This allows the script to find the gnn_agent package
 project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # --- Project-specific Imports ---
 from config import config_params
-# --- FIX: Import the Trainer to use its canonical model loading method ---
 from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.gamestate_converters import gnn_data_converter, action_space_converter
@@ -33,17 +31,15 @@ def load_model_via_trainer(checkpoint_path: str, device: torch.device) -> ChessN
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Model checkpoint not found at: {checkpoint_path}")
 
-    # Instantiate a Trainer, which knows how to build the correct, modern network
     trainer = Trainer(model_config=config_params, device=device)
     
-    # Use the trainer's method to load the network from the checkpoint
     network, game_number = trainer.load_or_initialize_network(
-        directory=None, # Not needed as we provide a specific path
+        directory=None,
         specific_checkpoint_path=Path(checkpoint_path)
     )
     
     network.to(device)
-    network.eval() # Set the model to evaluation mode
+    network.eval()
     
     print(f"✅ Successfully loaded model from game {game_number} for evaluation.")
     return network
@@ -57,22 +53,17 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
     if not legal_moves:
         return ""
 
-    # --- FIX: Prepare input tensors exactly as the network expects ---
-    # This matches the format used in MCTS and the Trainer.
     gnn_input = gnn_data_converter.convert_to_gnn_input(board, device)
 
-    # The network expects a batch, so we add a batch dimension of 0 to all tensors
     square_batch = torch.zeros(gnn_input.square_features.size(0), dtype=torch.long, device=device)
     piece_batch = torch.zeros(gnn_input.piece_features.size(0), dtype=torch.long, device=device)
     
-    # Create the padding mask required for a batch size of 1
     max_pieces = gnn_input.piece_features.size(0)
     piece_padding_mask = torch.ones((1, max_pieces), dtype=torch.bool, device=device)
     if max_pieces > 0:
         piece_padding_mask[0, :max_pieces] = 0
 
     with torch.no_grad():
-        # Call the network with the correct, separated tensor arguments
         policy_logits, _ = network(
             square_features=gnn_input.square_features,
             square_edge_index=gnn_input.square_edge_index,
@@ -83,7 +74,6 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
             piece_to_square_map=gnn_input.piece_to_square_map,
             piece_padding_mask=piece_padding_mask
         )
-    # --- END FIX ---
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
     
@@ -113,7 +103,6 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
 
 def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device):
     """ Main loop to run evaluation against a puzzle file. """
-    # --- FIX: Use the new robust loading function ---
     network = load_model_via_trainer(model_path, device)
 
     if not os.path.exists(puzzle_file_path):
@@ -132,8 +121,8 @@ def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device)
 
     for i, puzzle in enumerate(puzzles):
         fen = puzzle['fen']
-        # The puzzle solution in the JSONL is under 'best_move_uci'
-        solution_move_uci = puzzle['best_move_uci']
+        # --- FIX: Changed the key from 'best_move_uci' back to the correct 'best_move' ---
+        solution_move_uci = puzzle['best_move']
         board = chess.Board(fen)
         
         agent_move_uci = get_agent_top_move(board, network, device)
@@ -168,7 +157,6 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    # Use Path for robust path handling
     model_path = Path(args.model)
     puzzle_path = Path(args.puzzles)
 
