@@ -30,20 +30,35 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
 
-def get_last_game_info(log_file_path):
-    """Reads the log file to determine the mode and game number of the last completed game."""
+def get_start_game_number(log_file_path):
+    """Reads the log file to determine the number of the last completed game."""
     if not os.path.exists(log_file_path):
-        return "self-play", 0  # Default if no log exists
+        return 0
     try:
         df = pd.read_csv(log_file_path)
         if df.empty:
-            return "self-play", 0
-        last_row = df.iloc[-1]
-        # Ensure correct types are returned
-        return str(last_row['game_type']), int(last_row['game'])
+            return 0
+        return int(df.iloc[-1]['game'])
     except (pd.errors.EmptyDataError, IndexError, KeyError):
-        # Return defaults if log is empty or malformed
-        return "self-play", 0
+        return 0
+
+def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
+    """
+    Checks if a mentor game has occurred within the last N games,
+    indicating that the system is in a grace period.
+    """
+    if not log_file_path.exists():
+        return False
+    try:
+        df = pd.read_csv(log_file_path)
+        if df.empty or 'game_type' not in df.columns:
+            return False
+        # Check the 'game_type' in the last N rows
+        recent_games = df.tail(grace_period_length)
+        return 'mentor-play' in recent_games['game_type'].values
+    except Exception as e:
+        print(f"[WARNING] Could not check grace period due to error: {e}")
+        return False
 
 def load_tactical_puzzles(puzzles_path: Path):
     """Loads tactical puzzles from a .jsonl file."""
@@ -82,7 +97,10 @@ def main():
 
     # --- Initialization ---
     trainer = Trainer(model_config=config_params, device=device)
-    chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
+    # The network is loaded based on the latest checkpoint, not the log file.
+    chess_network, _ = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
+    # The starting game number is determined by the log file for continuity.
+    start_game = get_start_game_number(paths.loss_log_file)
     print(f"Resuming training from game {start_game + 1}")
 
     tactical_puzzles = load_tactical_puzzles(paths.tactical_puzzles_file)
@@ -105,16 +123,19 @@ def main():
 
     training_data_manager = TrainingDataManager(data_directory=paths.training_data_dir)
     supervisor = BayesianSupervisor(config=config_params)
-    
-    last_game_type, _ = get_last_game_info(paths.loss_log_file)
-    
+        
     # --- Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         # 1. Determine Game Mode (Grace Period -> Supervisor -> Default Self-Play)
         current_mode = "self-play" # Default mode
 
-        if last_game_type == "mentor-play":
+        grace_period_active = is_in_grace_period(
+            paths.loss_log_file,
+            config_params.get('SUPERVISOR_GRACE_PERIOD', 10)
+        )
+
+        if grace_period_active:
             print(f"\nINFO: Post-intervention grace period active for Game {game_num}. Forcing self-play.")
             current_mode = "self-play"
         else:
@@ -129,7 +150,7 @@ def main():
                 # --- Stage 1: Tactical Primer ---
                 print("\n--- Stage 1: Tactical Primer ---")
                 if tactical_puzzles:
-                    num_primer_batches = config_params.get('TACTICAL_PRIMER_BATCHES', 3)
+                    num_primer_batches = config_params.get('TACTICAL_PRIMER_BATCHES', 1)
                     primer_batch_size = config_params['BATCH_SIZE']
                     num_puzzles_for_primer = num_primer_batches * primer_batch_size
                     
@@ -137,7 +158,7 @@ def main():
                         puzzles_for_primer = random.sample(tactical_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles across {num_primer_batches} batches.")
                         
-                        primer_policy_loss, primer_value_loss = trainer.train_on_batch(
+                        primer_policy_loss, _ = trainer.train_on_batch(
                             game_examples=[],
                             puzzle_examples=puzzles_for_primer,
                             batch_size=primer_batch_size,
@@ -145,7 +166,7 @@ def main():
                         )
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
-                        print(f"[WARNING] Not enough puzzles ({len(tactical_puzzles)}) for a full primer session ({num_puzzles_for_primer}). Skipping primer.")
+                        print(f"[WARNING] Not enough puzzles ({len(tactical_puzzles)}) for a full primer ({num_puzzles_for_primer}). Skipping primer.")
                 else:
                     print("[WARNING] No tactical puzzles loaded. Cannot execute tactical primer.")
 
@@ -166,7 +187,6 @@ def main():
 
         if not training_examples:
             print(f"Game type '{current_mode}' resulted in no examples. Skipping training and saving for this cycle.")
-            last_game_type = current_mode # Update state for next loop
             continue
         
         print(f"{current_mode.capitalize()} game complete. Generated {len(training_examples)} examples.")
@@ -203,9 +223,6 @@ def main():
             print(f"Saving checkpoint at game {game_num}...")
             trainer.save_checkpoint(directory=paths.checkpoints_dir, game_number=game_num)
             
-        # 6. Update state for the next loop
-        last_game_type = current_mode
-
     print("\n--- Training Run Finished ---")
     self_player.close()
     mentor_player.close()

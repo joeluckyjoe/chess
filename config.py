@@ -28,22 +28,20 @@ config_params = {
     "PUZZLE_RATIO": 0.25, # Ratio of puzzles to mix into a standard training batch
 
     # -- Phase AR: Tactical Primer Settings --
-    "TACTICAL_PRIMER_BATCHES": 3, # Number of batches for the tactical primer intervention.
+    # FIX: Reduced to 1 to work with the available 115 puzzles. (1 * 64 < 115)
+    "TACTICAL_PRIMER_BATCHES": 1, 
     
     # -- Supervisor Parameters --
     'SUPERVISOR_WINDOW_SIZE': 20,
     'SUPERVISOR_PERFORMANCE_THRESHOLD': 7.0,
     
     # -- Bayesian Supervisor Specific --
-    # FINALIZED: Set penalty to 0.8 based on comparative analysis
     'SUPERVISOR_BAYESIAN_PENALTY': 0.8,
     'SUPERVISOR_RECENCY_WINDOW': 50,
-    # NOTE: Grace period logic is now handled in run_training.py by checking the last game type.
-    # The parameter below is currently unused but kept for potential future logic.
-    'SUPERVISOR_GRACE_PERIOD': 1, 
+    # FIX: Set a meaningful grace period to prevent re-triggering.
+    'SUPERVISOR_GRACE_PERIOD': 10, 
 
     # -- Mentor & Opponent Settings --
-    # Phase AM: Increased Mentor Elo from 1350 to 2000.
     "MENTOR_ELO": 2000,
     "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
     "STOCKFISH_DEPTH_MENTOR": 10,       # Stockfish depth for mentor games
