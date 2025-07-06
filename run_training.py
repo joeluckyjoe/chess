@@ -1,26 +1,17 @@
+# FILENAME: run_training.py
 import os
 import torch
 import pandas as pd
 from pathlib import Path
 import chess.pgn
 import datetime
-import subprocess
+import random
 import sys
-import re
 import argparse
 import json
-import importlib
 
 # --- Import from config ---
 from config import get_paths, config_params
-
-# --- PHASE AP: EXPERIMENTAL MODIFICATION (User Suggestion) ---
-config_params['LEARNING_RATE'] = 3e-4
-print("\n" + "#"*65)
-print(f"--- PHASE AP: Applied experimental learning rate: {config_params['LEARNING_RATE']} ---")
-print("#"*65 + "\n")
-# -----------------------------------------------------------
-
 
 # Core components from the gnn_agent package
 from gnn_agent.neural_network.chess_network import ChessNetwork
@@ -30,21 +21,6 @@ from gnn_agent.rl_loop.mentor_play import MentorPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
-
-
-def find_latest_checkpoint_by_time(checkpoints_path: Path):
-    """
-    Finds the latest checkpoint file in the given directory by finding the
-    most recently modified file.
-    """
-    if not checkpoints_path.is_dir():
-        print(f"[Warning] Checkpoint directory not found at: {checkpoints_path}")
-        return None
-    files = list(checkpoints_path.glob('*.pth.tar'))
-    if not files:
-        return None
-    latest_checkpoint_path = max(files, key=os.path.getmtime)
-    return latest_checkpoint_path
 
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
@@ -57,20 +33,22 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
 def get_last_game_info(log_file_path):
     """Reads the log file to determine the mode and game number of the last completed game."""
     if not os.path.exists(log_file_path):
-        return "self-play", 0
+        return "self-play", 0  # Default if no log exists
     try:
         df = pd.read_csv(log_file_path)
         if df.empty:
             return "self-play", 0
         last_row = df.iloc[-1]
-        return last_row['game_type'], last_row['game']
-    except (pd.errors.EmptyDataError, IndexError):
+        # Ensure correct types are returned
+        return str(last_row['game_type']), int(last_row['game'])
+    except (pd.errors.EmptyDataError, IndexError, KeyError):
+        # Return defaults if log is empty or malformed
         return "self-play", 0
 
 def load_tactical_puzzles(puzzles_path: Path):
     """Loads tactical puzzles from a .jsonl file."""
     if not puzzles_path.exists():
-        print(f"[WARNING] Tactical puzzles file not found at {puzzles_path}. Continuing without them.")
+        print(f"[WARNING] Tactical puzzles file not found at {puzzles_path}. Interventions will fail.")
         return []
     puzzles = []
     with open(puzzles_path, 'r') as f:
@@ -81,19 +59,14 @@ def load_tactical_puzzles(puzzles_path: Path):
 
 def main():
     """
-    Main training loop that orchestrates self-play, mentor-play, and network training.
+    Main training loop that orchestrates self-play, mentor-play, and network training,
+    now featuring the two-stage "Tactical Primer" intervention protocol.
     """
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
     parser.add_argument(
-        '--force-start-game',
-        type=int,
-        default=None,
-        help="Force the training to start from a specific game number, ignoring the latest checkpoint number."
-    )
-    parser.add_argument(
         '--disable-puzzle-mixing',
         action='store_true',
-        help="If set, disables the mixing of tactical puzzles during training."
+        help="If set, disables the mixing of tactical puzzles during standard training."
     )
     args = parser.parse_args()
 
@@ -103,119 +76,117 @@ def main():
         print("#"*60 + "\n")
 
     paths = get_paths()
-    checkpoints_path = paths.checkpoints_dir
-    training_data_path = paths.training_data_dir
-    pgn_path = paths.pgn_games_dir
-    drive_root = paths.drive_project_root
-    loss_log_filepath = drive_root / 'loss_log_v2.csv'
-    supervisor_log_filepath = drive_root / 'supervisor_log.txt'
-    
-    tactical_puzzles_path = paths.tactical_puzzles_file
-
     device_str = config_params['DEVICE']
     device = torch.device("cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu")
-
     print(f"Using device: {device}")
-    print(f"Checkpoints will be saved to: {checkpoints_path}")
 
+    # --- Initialization ---
     trainer = Trainer(model_config=config_params, device=device)
-
-    print("Attempting to load checkpoint...")
-    checkpoint_to_load = None
-    if args.force_start_game is not None:
-        print("\n" + "*"*60)
-        print(f"COMMAND-LINE OVERRIDE: Forcing start from game {args.force_start_game}.")
-        print("*"*60 + "\n")
-
-        def find_checkpoint_for_game(max_game: int):
-            max_game_num = -1
-            path_to_load = None
-            for f in checkpoints_path.glob('*.pth.tar'):
-                match = re.search(r'_game_(\d+)', f.name)
-                if match:
-                    game_num = int(match.group(1))
-                    if game_num <= max_game and game_num > max_game_num:
-                        max_game_num = game_num
-                        path_to_load = f
-            return path_to_load
-        checkpoint_to_load = find_checkpoint_for_game(args.force_start_game - 1)
-
-    chess_network, start_game = trainer.load_or_initialize_network(
-        directory=checkpoints_path, specific_checkpoint_path=checkpoint_to_load
-    )
-
-    if args.force_start_game is not None:
-        start_game = args.force_start_game - 1
-
+    chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
     print(f"Resuming training from game {start_game + 1}")
 
-    print("Loading tactical puzzles for integrated training...")
-    tactical_puzzles = load_tactical_puzzles(tactical_puzzles_path)
+    tactical_puzzles = load_tactical_puzzles(paths.tactical_puzzles_file)
 
     mcts_player = MCTS(
-        network=chess_network,
-        device=device,
-        c_puct=config_params['CPUCT'],
-        batch_size=config_params['BATCH_SIZE']
+        network=chess_network, device=device,
+        c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE']
     )
     
     self_player = SelfPlay(
-        mcts_white=mcts_player,
-        mcts_black=mcts_player,
-        stockfish_path=config_params['STOCKFISH_PATH'],
-        num_simulations=config_params['MCTS_SIMULATIONS']
+        mcts_white=mcts_player, mcts_black=mcts_player,
+        stockfish_path=config_params['STOCKFISH_PATH'], num_simulations=config_params['MCTS_SIMULATIONS']
     )
 
     mentor_player = MentorPlay(
-        mcts_agent=mcts_player,
-        stockfish_path=config_params['STOCKFISH_PATH'],
-        stockfish_elo=config_params['MENTOR_ELO'],
-        num_simulations=config_params['MCTS_SIMULATIONS'],
+        mcts_agent=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'],
+        stockfish_elo=config_params['MENTOR_ELO'], num_simulations=config_params['MCTS_SIMULATIONS'],
         agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
     )
 
-    training_data_manager = TrainingDataManager(data_directory=training_data_path)
+    training_data_manager = TrainingDataManager(data_directory=paths.training_data_dir)
     supervisor = BayesianSupervisor(config=config_params)
-
-
+    
+    last_game_type, _ = get_last_game_info(paths.loss_log_file)
+    
+    # --- Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
-        current_mode = "self-play"
-        
-        if os.path.exists(loss_log_filepath):
-            print("INFO: Consulting Bayesian Supervisor for analysis logging...")
-            _ = supervisor.check_for_stagnation(loss_log_filepath)
-        else:
-            print("INFO: Loss log not found, supervisor check skipped for this cycle.")
+        # 1. Determine Game Mode (Grace Period -> Supervisor -> Default Self-Play)
+        current_mode = "self-play" # Default mode
 
-        print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode}) ---")
+        if last_game_type == "mentor-play":
+            print(f"\nINFO: Post-intervention grace period active for Game {game_num}. Forcing self-play.")
+            current_mode = "self-play"
+        else:
+            print("\nINFO: Consulting Bayesian Supervisor for stagnation check...")
+            needs_intervention = supervisor.check_for_stagnation(paths.loss_log_file)
+            
+            if needs_intervention:
+                print("\n" + "="*70)
+                print(f"STAGNATION DETECTED: Initiating Two-Stage Intervention for Game {game_num}.")
+                print("="*70)
+
+                # --- Stage 1: Tactical Primer ---
+                print("\n--- Stage 1: Tactical Primer ---")
+                if tactical_puzzles:
+                    num_primer_batches = config_params.get('TACTICAL_PRIMER_BATCHES', 3)
+                    primer_batch_size = config_params['BATCH_SIZE']
+                    num_puzzles_for_primer = num_primer_batches * primer_batch_size
+                    
+                    if len(tactical_puzzles) >= num_puzzles_for_primer:
+                        puzzles_for_primer = random.sample(tactical_puzzles, num_puzzles_for_primer)
+                        print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles across {num_primer_batches} batches.")
+                        
+                        primer_policy_loss, primer_value_loss = trainer.train_on_batch(
+                            game_examples=[],
+                            puzzle_examples=puzzles_for_primer,
+                            batch_size=primer_batch_size,
+                            puzzle_ratio=1.0 # Ensure only puzzles are used
+                        )
+                        print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
+                    else:
+                        print(f"[WARNING] Not enough puzzles ({len(tactical_puzzles)}) for a full primer session ({num_puzzles_for_primer}). Skipping primer.")
+                else:
+                    print("[WARNING] No tactical puzzles loaded. Cannot execute tactical primer.")
+
+                # --- Stage 2: Strategic Integration ---
+                print("\n--- Stage 2: Strategic Integration ---")
+                current_mode = "mentor-play"
+            else:
+                print("INFO: No intervention needed. Proceeding with self-play.")
+                current_mode = "self-play"
+
+        # 2. Play the Game
+        print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
         
-        training_examples, pgn_data = self_player.play_game()
+        if current_mode == "self-play":
+            training_examples, pgn_data = self_player.play_game()
+        else: # "mentor-play"
+            training_examples, pgn_data = mentor_player.play_game()
 
         if not training_examples:
-            print(f"Game type '{current_mode}' resulted in no examples. Skipping.")
+            print(f"Game type '{current_mode}' resulted in no examples. Skipping training and saving for this cycle.")
+            last_game_type = current_mode # Update state for next loop
             continue
         
         print(f"{current_mode.capitalize()} game complete. Generated {len(training_examples)} examples.")
         
+        # 3. Save Data and PGN
         data_filename = f"{current_mode}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
         
         if pgn_data:
-            pgn_filename = pgn_path / f"{current_mode}_game_{game_num}.pgn"
+            pgn_filename = paths.pgn_games_dir / f"{current_mode}_game_{game_num}.pgn"
             try:
                 with open(pgn_filename, "w", encoding="utf-8") as f:
                     print(pgn_data, file=f, end="\n\n")
             except Exception as e:
                 print(f"[ERROR] Could not save PGN file: {e}")
 
-        puzzles_for_training = []
-        if not args.disable_puzzle_mixing:
-            puzzles_for_training = tactical_puzzles
-            print(f"Training on {len(training_examples)} examples mixed with tactical puzzles...")
-        else:
-            print(f"Training on {len(training_examples)} examples (puzzle mixing disabled)...")
-
+        # 4. Standard Training Step on New Data
+        puzzles_for_training = [] if args.disable_puzzle_mixing else tactical_puzzles
+        
+        print(f"Training on {len(training_examples)} new examples...")
         policy_loss, value_loss = trainer.train_on_batch(
             game_examples=training_examples,
             puzzle_examples=puzzles_for_training,
@@ -225,11 +196,15 @@ def main():
         
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
-        write_loss_to_csv(loss_log_filepath, game_num, policy_loss, value_loss, current_mode)
+        # 5. Log and Save Checkpoint
+        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, current_mode)
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
-            trainer.save_checkpoint(directory=checkpoints_path, game_number=game_num)
+            trainer.save_checkpoint(directory=paths.checkpoints_dir, game_number=game_num)
+            
+        # 6. Update state for the next loop
+        last_game_type = current_mode
 
     print("\n--- Training Run Finished ---")
     self_player.close()
