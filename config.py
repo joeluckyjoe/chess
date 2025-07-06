@@ -25,6 +25,8 @@ config_params = {
     
     # -- Tactical Puzzle Settings --
     "TACTICAL_PUZZLE_FILENAME": "tactical_puzzles.jsonl",
+    # NEW: Added filename for dynamically generated puzzles
+    "GENERATED_PUZZLE_FILENAME": "generated_puzzles.jsonl",
     "PUZZLE_RATIO": 0.25, # Ratio of puzzles to mix into a standard training batch
 
     # -- Phase AR: Tactical Primer Settings --
@@ -61,12 +63,14 @@ config_params = {
 # 2. Path Configuration (Colab-aware)
 # =================================================================
 
+# MODIFIED: Added generated_puzzles_file
 Paths = namedtuple('Paths', [
     'checkpoints_dir', 
     'training_data_dir', 
     'pgn_games_dir', 
     'analysis_output_dir',
     'tactical_puzzles_file',
+    'generated_puzzles_file', # <-- ADDED
     'drive_project_root',
     'loss_log_file',
     'supervisor_log_file'
@@ -104,16 +108,20 @@ def get_paths():
     pgn_games_path.mkdir(parents=True, exist_ok=True)
     analysis_output_path.mkdir(parents=True, exist_ok=True)
     
+    # MODIFIED: Define paths for both puzzle files
     tactical_puzzles_path = drive_root_path / config_params["TACTICAL_PUZZLE_FILENAME"]
+    generated_puzzles_path = drive_root_path / config_params["GENERATED_PUZZLE_FILENAME"] # <-- ADDED
     loss_log_filepath = drive_root_path / 'loss_log_v2.csv'
     supervisor_log_filepath = drive_root_path / 'supervisor_log.txt'
     
+    # MODIFIED: Return the new path in the named tuple
     return Paths(
         checkpoints_dir=checkpoints_path,
         training_data_dir=training_data_path,
         pgn_games_dir=pgn_games_path,
         analysis_output_dir=analysis_output_path,
         tactical_puzzles_file=tactical_puzzles_path,
+        generated_puzzles_file=generated_puzzles_path, # <-- ADDED
         drive_project_root=drive_root_path,
         loss_log_file=loss_log_filepath,
         supervisor_log_file=supervisor_log_filepath

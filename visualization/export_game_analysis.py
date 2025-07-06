@@ -12,13 +12,14 @@ This tool can be run in one of two modes:
     - A structured JSON Lines (.jsonl) log file containing detailed,
       machine-readable data for each move, including agent evaluations
       and full symmetric attention data.
-    This mode loads the agent's neural network.
+    This mode loads the agent's neural network and graphics libraries.
 
 2.  puzzle:
     A high-speed mode for scanning one or more PGN files to find and
-    export tactical puzzles. It looks for positions where Stockfish
-    finds a forced mate-in-N (N<=3) and saves them to a specified
-    output file. This mode does NOT load the agent network or any
+    export tactical puzzles based on blunders. It analyzes each move,
+    and if a move causes a significant evaluation drop compared to
+    Stockfish's best move, it saves the position (FEN) and the correct
+    move to a JSONL file. This mode does NOT load the agent network or any
     graphics libraries, making it very fast.
 """
 import sys
@@ -80,8 +81,11 @@ def find_latest_checkpoint(checkpoint_dir):
 
 def load_model_from_checkpoint(model_path, device):
     """Loads a ChessNetwork model from a .pth checkpoint file."""
+    # Note: These parameters should match the saved model's architecture.
+    # This is suitable for demonstration but for a robust system, architecture
+    # details might be saved in the checkpoint itself.
     square_gnn = SquareGNN(in_features=12, hidden_features=256, out_features=128, heads=4)
-    piece_gnn = PieceGNN(in_channels=12, hidden_channels=256, out_channels=128)
+    piece_gnn = PieceGNN(in_channels=13, hidden_channels=256, out_channels=128, num_layers=3) # Updated PieceGNN
     attention_module = CrossAttentionModule(sq_embed_dim=128, pc_embed_dim=128, num_heads=4, dropout_rate=0.1)
     policy_head = PolicyHead(embedding_dim=128, num_possible_moves=4672)
     value_head = ValueHead(embedding_dim=128)
@@ -115,6 +119,7 @@ def get_model_outputs_for_board(board, network, device):
     legal_move_indices_tensor = torch.tensor(legal_move_indices, device=policy_logits.device)
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
+    # Ensure indices are within the bounds of policy_probs
     legal_move_indices_tensor = legal_move_indices_tensor[legal_move_indices_tensor < len(policy_probs)]
     legal_probs = torch.gather(policy_probs, 0, legal_move_indices_tensor)
 
@@ -208,6 +213,7 @@ def load_piece_images():
 
 def draw_frame(surface, board, piece_images, info_lines, piece_attention_vector=None, moving_piece_square=None, k=3):
     """Draws a single frame, including board, multi-line info pane, and visual attention."""
+    # Draw board squares
     for i in range(64):
         row, col = divmod(i, 8)
         py_row = 7 - row
@@ -215,6 +221,7 @@ def draw_frame(surface, board, piece_images, info_lines, piece_attention_vector=
         color = COLOR_LIGHT_SQ if (row + col) % 2 == 0 else COLOR_DARK_SQ
         surface.fill(color, rect)
 
+    # Draw attention overlay
     if piece_attention_vector is not None:
         gradient_colors = [COLOR_ATTENTION_1, COLOR_ATTENTION_2, COLOR_ATTENTION_3]
         num_to_display = min(k, len(piece_attention_vector))
@@ -234,12 +241,14 @@ def draw_frame(surface, board, piece_images, info_lines, piece_attention_vector=
                 overlay.fill((*color[:3], alpha))
                 surface.blit(overlay, rect.topleft)
 
+    # Highlight the piece that is about to move
     if moving_piece_square is not None:
         row, col = divmod(moving_piece_square, 8)
         py_row = 7 - row
         rect = pygame.Rect(col * SQUARE_SIZE, py_row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
         pygame.draw.circle(surface, COLOR_MOVING_PIECE_HIGHLIGHT, rect.center, SQUARE_SIZE // 2, 5)
 
+    # Draw pieces
     for i in range(64):
         piece = board.piece_at(i)
         if piece:
@@ -250,6 +259,7 @@ def draw_frame(surface, board, piece_images, info_lines, piece_attention_vector=
             img_rect = piece_img.get_rect(center=rect.center)
             surface.blit(piece_img, img_rect)
 
+    # Draw info pane
     info_rect = pygame.Rect(0, BOARD_SIZE, BOARD_SIZE, INFO_PANE_HEIGHT)
     surface.fill(COLOR_INFO_BG, info_rect)
     font_main = pygame.font.SysFont('monospace', 16)
@@ -449,7 +459,9 @@ def run_visual_analysis(args, paths):
 
 def run_puzzle_generation(args):
     """
-    Executes the puzzle generation mode, scanning PGNs for tactical mates.
+    Executes the puzzle generation mode, scanning PGNs for blunders.
+    A blunder is defined as a move that causes a significant drop in evaluation
+    compared to the best possible move in a position.
     """
     stockfish_path = config_params.get("STOCKFISH_PATH")
     if not stockfish_path or not os.path.exists(stockfish_path):
@@ -465,49 +477,94 @@ def run_puzzle_generation(args):
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
+    BLUNDER_THRESHOLD_CP = args.blunder_threshold
+    ANALYSIS_DEPTH = args.depth
+    # A large centipawn value to represent a checkmate advantage
+    MATE_SCORE = 100000 
+    
     stockfish_engine = None
     puzzles_found_total = 0
     
-    print(f"Starting puzzle generation from: {pgn_path}")
+    print(f"Starting blunder analysis on: {pgn_path}")
+    print(f"Using Analysis Depth: {ANALYSIS_DEPTH} | Blunder Threshold: {BLUNDER_THRESHOLD_CP}cp")
     print(f"Output will be appended to: {output_path}")
 
     try:
         stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
-        with open(pgn_path, encoding='latin-1') as pgn_file:
+        with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_file:
             game_num = 0
             while True:
-                game = chess.pgn.read_game(pgn_file)
+                try:
+                    game = chess.pgn.read_game(pgn_file)
+                except Exception as e:
+                    print(f"\nWarning: Failed to parse a game. Error: {e}. Skipping.")
+                    continue
+                    
                 if game is None:
                     break
+                    
                 game_num += 1
                 puzzles_in_game = 0
-                board = game.board()
-                print(f"  Scanning Game #{game_num}...", end='', flush=True)
+                print(f"  Scanning Game #{game_num} ({game.headers.get('White', '?')} vs {game.headers.get('Black', '?')})...", end='', flush=True)
 
-                for move in game.mainline_moves():
-                    # Analyze the position *before* the move is made
+                # Iterate through nodes to have access to board state before the move
+                for node in game.mainline():
+                    # Skip the root node which has no preceding move
+                    if node.parent is None:
+                        continue
+
+                    board_before_move = node.parent.board()
+                    move_played = node.move
+                    
                     try:
-                        info = stockfish_engine.analyse(board, chess.engine.Limit(depth=15))
-                        score = info.get("score")
-                        if score:
-                            pov_score = score.pov(board.turn)
-                            if pov_score.is_mate():
-                                mate_in_n = pov_score.mate()
-                                if 0 < mate_in_n <= 3:
-                                    if 'pv' in info and info['pv']:
-                                        best_move = info['pv'][0].uci()
-                                        puzzle = {"fen": board.fen(), "best_move": best_move}
-                                        with open(output_path, 'a') as f:
-                                            f.write(json.dumps(puzzle) + '\n')
-                                        puzzles_found_total += 1
-                                        puzzles_in_game += 1
-                    except (chess.engine.EngineTerminatedError, chess.engine.EngineError) as e:
-                        print(f"\nStockfish analysis failed for a position: {e}")
+                        # 1. Analyze the position BEFORE the move to find the best move and its eval
+                        info_before = stockfish_engine.analyse(board_before_move, chess.engine.Limit(depth=ANALYSIS_DEPTH))
+                        
+                        if 'score' not in info_before or 'pv' not in info_before or not info_before['pv']:
+                            continue
+                        
+                        best_move_found = info_before['pv'][0]
+                        
+                        # Don't create a puzzle if the move played was Stockfish's best move
+                        if move_played == best_move_found:
+                            continue
 
-                    board.push(move) # Move to the next position
+                        # Get the evaluation from the current player's perspective for the best possible move
+                        eval_best_pov = info_before['score'].pov(board_before_move.turn)
+                        
+                        # 2. Get the evaluation AFTER the move was played
+                        board_after_move = node.board()
+                        info_after = stockfish_engine.analyse(board_after_move, chess.engine.Limit(depth=ANALYSIS_DEPTH - 2))
+
+                        if 'score' not in info_after:
+                            continue
+
+                        # Evaluation is now from the other player's perspective.
+                        # We get their POV and then take the .opponent() to flip it back.
+                        eval_played_pov = info_after['score'].pov(board_after_move.turn).opponent()
+                        
+                        # 3. Compare evaluations in centipawns to find the drop
+                        eval_best_cp = eval_best_pov.score(mate_score=MATE_SCORE)
+                        eval_played_cp = eval_played_pov.score(mate_score=MATE_SCORE)
+                        
+                        eval_drop = eval_best_cp - eval_played_cp
+                        
+                        # 4. If the drop is a blunder, save the puzzle
+                        if eval_drop >= BLUNDER_THRESHOLD_CP:
+                            puzzles_in_game += 1
+                            puzzles_found_total += 1
+                            puzzle = {"fen": board_before_move.fen(), "best_move": best_move_found.uci()}
+                            with open(output_path, 'a') as f:
+                                f.write(json.dumps(puzzle) + '\n')
+                                
+                    except (chess.engine.EngineTerminatedError, chess.engine.EngineError, ValueError) as e:
+                        print(f"\nStockfish analysis failed for a position: {e}")
+                        # If the engine crashes, better to restart it
+                        stockfish_engine.quit()
+                        stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
                 
                 if puzzles_in_game > 0:
-                    print(f" Found {puzzles_in_game} puzzle(s).")
+                    print(f" Found {puzzles_in_game} blunder(s).")
                 else:
                     print(" Done.")
 
@@ -516,7 +573,7 @@ def run_puzzle_generation(args):
             stockfish_engine.quit()
     
     print("\n-------------------------------------------------")
-    print(f"Puzzle generation complete.")
+    print(f"Blunder analysis complete.")
     print(f"Found a total of {puzzles_found_total} new puzzles.")
     print(f"All puzzles have been appended to {output_path}")
     print("-------------------------------------------------")
@@ -528,14 +585,14 @@ def main():
     """
     parser = argparse.ArgumentParser(description="Generate analysis artifacts or tactical puzzles for a chess game.")
     
-    # Arguments for both modes
+    # --- Arguments for both modes ---
     parser.add_argument("--pgn_path", required=True, help="Path to the PGN file to process.")
     
-    # Mode selector
+    # --- Mode selector ---
     parser.add_argument("--mode", type=str, choices=['analysis', 'puzzle'], default='analysis', 
-                        help="Choose operation mode: 'analysis' for visual logs, 'puzzle' for tactical puzzle generation.")
+                        help="Choose operation mode: 'analysis' for visual logs, 'puzzle' for blunder-based puzzle generation.")
     
-    # Arguments specific to 'analysis' mode
+    # --- Arguments specific to 'analysis' mode ---
     parser.add_argument("--model_path", type=str, default=None, 
                         help="(Analysis Mode) Optional path to a model checkpoint. If not provided, the latest is used.")
     parser.add_argument("--output_dir", default="analysis_output", 
@@ -543,9 +600,13 @@ def main():
     parser.add_argument("--no-loop", action="store_true", 
                         help="(Analysis Mode) Provide this flag for the output GIF to play only once.")
 
-    # Argument specific to 'puzzle' mode
-    parser.add_argument("--output", default="tactical_puzzles.jsonl",
-                        help="(Puzzle Mode) Path to the output JSONL file for appending puzzles.")
+    # --- Arguments specific to 'puzzle' mode ---
+    parser.add_argument("--output", default="generated_puzzles.jsonl",
+                        help="(Puzzle Mode) Path to the output JSONL file for appending puzzles. Default: generated_puzzles.jsonl")
+    parser.add_argument("--blunder-threshold", type=int, default=200,
+                        help="(Puzzle Mode) The minimum evaluation drop in centipawns to be considered a blunder. Default: 200 (2 pawns).")
+    parser.add_argument("--depth", type=int, default=20,
+                        help="(Puzzle Mode) The depth for the primary Stockfish analysis. Default: 20.")
 
     args = parser.parse_args()
     paths = get_paths()

@@ -47,17 +47,32 @@ def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
         print(f"[WARNING] Could not check grace period due to error: {e}")
         return False
 
-def load_tactical_puzzles(puzzles_path: Path):
-    """Loads tactical puzzles from a .jsonl file."""
-    if not puzzles_path.exists():
-        print(f"[WARNING] Tactical puzzles file not found at {puzzles_path}. Interventions will fail.")
-        return []
-    puzzles = []
-    with open(puzzles_path, 'r') as f:
-        for line in f:
-            puzzles.append(json.loads(line))
-    print(f"Successfully loaded {len(puzzles)} tactical puzzles.")
-    return puzzles
+def load_puzzles_from_sources(puzzle_paths: list[Path]):
+    """
+    Loads tactical puzzles from a list of .jsonl file paths,
+    combining them into a single list.
+    """
+    all_puzzles = []
+    print("Loading tactical puzzles...")
+    for path in puzzle_paths:
+        if not path.exists():
+            print(f"  - INFO: Puzzle file not found at {path}. Skipping.")
+            continue
+        try:
+            with open(path, 'r') as f:
+                puzzles_from_file = [json.loads(line) for line in f]
+                all_puzzles.extend(puzzles_from_file)
+                print(f"  - Successfully loaded {len(puzzles_from_file)} puzzles from {os.path.basename(str(path))}.")
+        except Exception as e:
+            print(f"  - ERROR: Failed to load puzzles from {path}: {e}")
+            
+    if not all_puzzles:
+        print("[WARNING] No tactical puzzles were loaded in total. Interventions may fail.")
+    else:
+        print(f"Total puzzles loaded: {len(all_puzzles)}")
+        
+    return all_puzzles
+
 
 def main():
     """
@@ -90,7 +105,9 @@ def main():
     
     print(f"Resuming training run from game {start_game + 1}")
 
-    tactical_puzzles = load_tactical_puzzles(paths.tactical_puzzles_file)
+    # NEW: Load puzzles from both static and generated files
+    all_puzzle_sources = [paths.tactical_puzzles_file, paths.generated_puzzles_file]
+    all_puzzles = load_puzzles_from_sources(all_puzzle_sources)
 
     mcts_player = MCTS(
         network=chess_network, device=device,
@@ -136,13 +153,13 @@ def main():
 
                 # --- Stage 1: Tactical Primer ---
                 print("\n--- Stage 1: Tactical Primer ---")
-                if tactical_puzzles:
+                if all_puzzles:
                     num_primer_batches = config_params.get('TACTICAL_PRIMER_BATCHES', 1)
                     primer_batch_size = config_params['BATCH_SIZE']
                     num_puzzles_for_primer = num_primer_batches * primer_batch_size
                     
-                    if len(tactical_puzzles) >= num_puzzles_for_primer:
-                        puzzles_for_primer = random.sample(tactical_puzzles, num_puzzles_for_primer)
+                    if len(all_puzzles) >= num_puzzles_for_primer:
+                        puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles across {num_primer_batches} batches.")
                         
                         primer_policy_loss, _ = trainer.train_on_batch(
@@ -153,7 +170,7 @@ def main():
                         )
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
-                        print(f"[WARNING] Not enough puzzles ({len(tactical_puzzles)}) for a full primer ({num_puzzles_for_primer}). Skipping primer.")
+                        print(f"[WARNING] Not enough puzzles ({len(all_puzzles)}) for a full primer ({num_puzzles_for_primer}). Skipping primer.")
                 else:
                     print("[WARNING] No tactical puzzles loaded. Cannot execute tactical primer.")
 
@@ -191,7 +208,7 @@ def main():
                 print(f"[ERROR] Could not save PGN file: {e}")
 
         # 4. Standard Training Step on New Data
-        puzzles_for_training = [] if args.disable_puzzle_mixing else tactical_puzzles
+        puzzles_for_training = [] if args.disable_puzzle_mixing else all_puzzles
         
         print(f"Training on {len(training_examples)} new examples...")
         policy_loss, value_loss = trainer.train_on_batch(
