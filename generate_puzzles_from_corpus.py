@@ -78,16 +78,19 @@ def generate_puzzles(args):
             puzzles_in_file = 0
             
             with open(pgn_file_path, 'r', encoding='utf-8', errors='ignore') as pgn_file:
+                game_count_in_file = 0
                 while True:
                     try:
                         game = chess.pgn.read_game(pgn_file)
                         if game is None:
                             break
+                        game_count_in_file += 1
 
                         # Iterate through nodes to have access to board state before the move
                         for node in game.mainline():
-                            # NEW: Progress indicator
-                            print(f"  -> Analyzing Ply {node.ply()}...", end='\r', flush=True)
+                            # MODIFIED: Print a new line for Colab compatibility.
+                            if node.ply() > 0:
+                                print(f"  -> Game {game_count_in_file}, Analyzing Ply {node.ply()}...")
 
                             if node.parent is None: # Skip the root node
                                 continue
@@ -116,7 +119,6 @@ def generate_puzzles(args):
                             if 'score' not in info_after:
                                 continue
                             
-                            # Get the score of the new position from the perspective of the player who made the move.
                             eval_played_pov = info_after['score'].pov(board_before_move.turn)
                             
                             # 3. Compare evaluations and check for a blunder
@@ -135,15 +137,11 @@ def generate_puzzles(args):
                         stockfish_engine.quit()
                         stockfish_engine = chess.engine.SimpleEngine.popen_uci(stockfish_path)
                     except Exception as e:
-                        # Clear the line before printing the error
-                        print(" " * 50, end="\r")
                         print(f"\nAn unexpected error occurred while processing a game: {e}")
                         continue
             
-            # Clear the progress indicator line before printing the summary
-            print(" " * 50, end="\r")
             if puzzles_in_file > 0:
-                print(f"  -> Found {puzzles_in_file} new puzzles in this file.")
+                print(f"  -> Found {puzzles_in_file} new puzzles in {pgn_file_path.name}.")
                 puzzles_found_total += puzzles_in_file
 
     finally:
