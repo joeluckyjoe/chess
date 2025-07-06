@@ -112,8 +112,10 @@ def generate_puzzles(args):
 
                             if 'score' not in info_after:
                                 continue
-
-                            eval_played_pov = info_after['score'].pov(board_after_move.turn).opponent()
+                            
+                            # --- THIS IS THE FIX ---
+                            # Get the score of the new position from the perspective of the player who made the move.
+                            eval_played_pov = info_after['score'].pov(board_before_move.turn)
                             
                             # 3. Compare evaluations and check for a blunder
                             eval_best_cp = eval_best_pov.score(mate_score=MATE_SCORE)
