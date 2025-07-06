@@ -29,19 +29,6 @@ def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
-
-def get_start_game_number(log_file_path):
-    """Reads the log file to determine the number of the last completed game."""
-    if not os.path.exists(log_file_path):
-        return 0
-    try:
-        df = pd.read_csv(log_file_path)
-        if df.empty:
-            return 0
-        return int(df.iloc[-1]['game'])
-    except (pd.errors.EmptyDataError, IndexError, KeyError):
-        return 0
-
 def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
     """
     Checks if a mentor game has occurred within the last N games,
@@ -97,11 +84,11 @@ def main():
 
     # --- Initialization ---
     trainer = Trainer(model_config=config_params, device=device)
-    # The network is loaded based on the latest checkpoint, not the log file.
-    chess_network, _ = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
-    # The starting game number is determined by the log file for continuity.
-    start_game = get_start_game_number(paths.loss_log_file)
-    print(f"Resuming training from game {start_game + 1}")
+    
+    # FIX: The game number from the loaded checkpoint is now the single source of truth.
+    chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
+    
+    print(f"Resuming training run from game {start_game + 1}")
 
     tactical_puzzles = load_tactical_puzzles(paths.tactical_puzzles_file)
 
