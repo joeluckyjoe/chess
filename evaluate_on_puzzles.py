@@ -1,5 +1,5 @@
 #
-# File: evaluate_on_puzzles.py (Corrected for Phase AO)
+# File: evaluate_on_puzzles.py (Refactored to use the Trainer)
 #
 import sys
 import os
@@ -10,44 +10,42 @@ from typing import List, Dict, Any
 
 import torch
 import chess
-from torch_geometric.data import Batch
 
 # --- Setup Python Path ---
-project_root = Path(__file__).resolve().parent
+# This allows the script to find the gnn_agent package
+project_root = Path(__file__).resolve().parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 # --- Project-specific Imports ---
-from config import get_paths
-from gnn_agent.neural_network.gnn_models import ChessNetwork
+from config import config_params
+# --- FIX: Import the Trainer to use its canonical model loading method ---
+from gnn_agent.rl_loop.trainer import Trainer
+from gnn_agent.neural_network.chess_network import ChessNetwork
 from gnn_agent.gamestate_converters import gnn_data_converter, action_space_converter
 
-def load_model_from_checkpoint(model_path: str, device: torch.device) -> ChessNetwork:
-    """
-    Loads a ChessNetwork model from a .pth checkpoint file, using the
-    correct, up-to-date network architecture.
-    """
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model checkpoint not found at: {model_path}")
 
-    # --- FIX: Instantiate the network with the correct, current architecture ---
-    # This matches the architecture used in the training script.
-    network = ChessNetwork(
-        embed_dim=256,
-        gnn_hidden_dim=128,
-        num_heads=4
-    ).to(device)
-    # --- END FIX ---
+def load_model_via_trainer(checkpoint_path: str, device: torch.device) -> ChessNetwork:
+    """
+    Loads a ChessNetwork from a checkpoint using the canonical Trainer class.
+    This ensures the model architecture is always consistent with the training script.
+    """
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Model checkpoint not found at: {checkpoint_path}")
 
-    checkpoint = torch.load(model_path, map_location=device)
+    # Instantiate a Trainer, which knows how to build the correct, modern network
+    trainer = Trainer(model_config=config_params, device=device)
     
-    # This handles checkpoints saved by different scripts
-    state_dict = checkpoint.get('model_state_dict', checkpoint)
+    # Use the trainer's method to load the network from the checkpoint
+    network, game_number = trainer.load_or_initialize_network(
+        directory=None, # Not needed as we provide a specific path
+        specific_checkpoint_path=Path(checkpoint_path)
+    )
     
-    network.load_state_dict(state_dict)
+    network.to(device)
     network.eval() # Set the model to evaluation mode
     
-    print(f"✅ Successfully loaded model for evaluation from {os.path.basename(str(model_path))}")
+    print(f"✅ Successfully loaded model from game {game_number} for evaluation.")
     return network
 
 
@@ -59,23 +57,33 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
     if not legal_moves:
         return ""
 
-    # --- FIX: Use the torch_geometric Batch object to correctly format a single item ---
-    # This ensures the data has the correct shape and attributes (like .batch and .piece_batch)
-    # that the network's forward pass expects.
-    single_data = gnn_data_converter.convert_to_gnn_input(board, device='cpu')
+    # --- FIX: Prepare input tensors exactly as the network expects ---
+    # This matches the format used in MCTS and the Trainer.
+    gnn_input = gnn_data_converter.convert_to_gnn_input(board, device)
+
+    # The network expects a batch, so we add a batch dimension of 0 to all tensors
+    square_batch = torch.zeros(gnn_input.square_features.size(0), dtype=torch.long, device=device)
+    piece_batch = torch.zeros(gnn_input.piece_features.size(0), dtype=torch.long, device=device)
     
-    # Manually create the piece_batch attribute for a single graph
-    num_pieces = single_data.piece_features.size(0)
-    single_data.piece_batch = torch.zeros(num_pieces, dtype=torch.long)
-    
-    # Use Batch.from_data_list to create a batch of size 1
-    batch = Batch.from_data_list([single_data]).to(device)
-    # --- END FIX ---
+    # Create the padding mask required for a batch size of 1
+    max_pieces = gnn_input.piece_features.size(0)
+    piece_padding_mask = torch.ones((1, max_pieces), dtype=torch.bool, device=device)
+    if max_pieces > 0:
+        piece_padding_mask[0, :max_pieces] = 0
 
     with torch.no_grad():
-        # --- FIX: Call the network with the single batch object ---
-        policy_logits, _ = network(batch)
-        # --- END FIX ---
+        # Call the network with the correct, separated tensor arguments
+        policy_logits, _ = network(
+            square_features=gnn_input.square_features,
+            square_edge_index=gnn_input.square_edge_index,
+            square_batch=square_batch,
+            piece_features=gnn_input.piece_features,
+            piece_edge_index=gnn_input.piece_edge_index,
+            piece_batch=piece_batch,
+            piece_to_square_map=gnn_input.piece_to_square_map,
+            piece_padding_mask=piece_padding_mask
+        )
+    # --- END FIX ---
 
     policy_probs = torch.softmax(policy_logits.flatten(), dim=0)
     
@@ -88,8 +96,6 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
             valid_legal_moves.append(m)
             legal_move_indices_list.append(idx)
         except ValueError:
-            # This can happen if a move is somehow not in our defined action space
-            # which is rare but possible.
             print(f"Warning: Skipping move with invalid index. Move: {m.uci()}")
 
     if not valid_legal_moves:
@@ -107,7 +113,8 @@ def get_agent_top_move(board: chess.Board, network: ChessNetwork, device: torch.
 
 def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device):
     """ Main loop to run evaluation against a puzzle file. """
-    network = load_model_from_checkpoint(model_path, device)
+    # --- FIX: Use the new robust loading function ---
+    network = load_model_via_trainer(model_path, device)
 
     if not os.path.exists(puzzle_file_path):
         raise FileNotFoundError(f"Puzzle file not found: {puzzle_file_path}")
@@ -125,7 +132,8 @@ def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device)
 
     for i, puzzle in enumerate(puzzles):
         fen = puzzle['fen']
-        solution_move_uci = puzzle['best_move']
+        # The puzzle solution in the JSONL is under 'best_move_uci'
+        solution_move_uci = puzzle['best_move_uci']
         board = chess.Board(fen)
         
         agent_move_uci = get_agent_top_move(board, network, device)
@@ -143,10 +151,10 @@ def run_evaluation(model_path: str, puzzle_file_path: str, device: torch.device)
     success_rate = (puzzles_solved / total_puzzles) * 100 if total_puzzles > 0 else 0
     
     print("\n-------------------------------------------")
-    print("         Puzzle Evaluation Complete")
+    print("           Puzzle Evaluation Complete")
     print("-------------------------------------------")
     print(f"Puzzles Solved: {puzzles_solved} / {total_puzzles}")
-    print(f"Success Rate:   {success_rate:.2f}%")
+    print(f"Success Rate:    {success_rate:.2f}%")
     print("-------------------------------------------")
 
 
