@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/gnn_data_converter.py (Updated for Phase AO)
+# File: gnn_agent/gamestate_converters/gnn_data_converter.py (Updated for Phase AV)
 #
 import torch
 import chess
@@ -9,9 +9,9 @@ from torch_geometric.data import Data
 from torch_geometric.utils import add_self_loops
 
 # --- Constants for Feature Engineering ---
-SQUARE_FEATURE_DIM = 19
-# --- PHASE AO MODIFICATION: Add material value feature ---
-PIECE_FEATURE_DIM = 13  # Was 12
+# --- PHASE AV MODIFICATION: Add 2 global features (Material Balance, Repetition Counter) ---
+SQUARE_FEATURE_DIM = 21  # Was 19
+PIECE_FEATURE_DIM = 15   # Was 13
 # --- END MODIFICATION ---
 
 PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
@@ -20,12 +20,10 @@ PIECE_TYPE_MAP: Dict[chess.PieceType, int] = {
 }
 NUM_PIECE_TYPES = len(PIECE_TYPE_MAP)
 
-# --- PHASE AO MODIFICATION: Add material value map ---
 PIECE_MATERIAL_VALUE: Dict[chess.PieceType, float] = {
     chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.0,
     chess.ROOK: 5.0, chess.QUEEN: 9.0, chess.KING: 0.0,  # King has no material value
 }
-# --- END MODIFICATION ---
 
 
 # --- Helper Functions ---
@@ -53,7 +51,7 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
     Converts a single python-chess board state into a PyTorch Geometric Data object.
     This version uses two distinct, dense feature sets for squares and pieces.
     """
-    # --- Global Game State Features (for Square GNN) ---
+    # --- Original Global Game State Features ---
     turn = 1.0 if board.turn == chess.WHITE else 0.0
     can_castle_wk = 1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0
     can_castle_wq = 1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0
@@ -64,10 +62,35 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
     en_passant_file = (chess.square_file(ep_square) / 7.0) if ep_square is not None else 0.0
     halfmove_clock = board.halfmove_clock / 100.0
     
-    global_state_features = np.array([
+    original_global_features = np.array([
         turn, can_castle_wk, can_castle_wq, can_castle_bk, can_castle_bq,
         en_passant_file, halfmove_clock
     ], dtype=np.float32)
+
+    # --- PHASE AV MODIFICATION: Calculate Material Balance and Repetition Count ---
+    white_material = 0.0
+    black_material = 0.0
+    for piece in board.piece_map().values():
+        value = PIECE_MATERIAL_VALUE[piece.piece_type]
+        if piece.color == chess.WHITE:
+            white_material += value
+        else:
+            black_material += value
+    
+    # Normalize by the total starting material (39 for each side)
+    # The value is from the current player's perspective
+    raw_balance = white_material - black_material
+    perspective_balance = raw_balance if board.turn == chess.WHITE else -raw_balance
+    normalized_balance = perspective_balance / 39.0
+
+    # Check if a draw by threefold repetition can be claimed
+    repetition_counter = 1.0 if board.can_claim_threefold_repetition() else 0.0
+    
+    new_global_features = np.array([normalized_balance, repetition_counter], dtype=np.float32)
+
+    # Combine all global features
+    all_global_features = np.concatenate([original_global_features, new_global_features])
+    # --- END MODIFICATION ---
 
     # 1. Square-based Graph Features (G_sq)
     square_features_list = []
@@ -85,7 +108,9 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
         control_status = [is_attacked_by_white, is_attacked_by_black]
         
         local_features = np.concatenate([pos_encoding, piece_type_one_hot, piece_color_one_hot, control_status])
-        square_features_list.append(np.concatenate([local_features, global_state_features]))
+        # --- PHASE AV MODIFICATION: Use the combined global features ---
+        square_features_list.append(np.concatenate([local_features, all_global_features]))
+        # --- END MODIFICATION ---
 
     square_features = torch.from_numpy(np.array(square_features_list, dtype=np.float32))
     square_edge_index = _SQUARE_ADJACENCY_EDGE_INDEX.clone()
@@ -126,18 +151,18 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Data:
             attack_count = len(board.attacks(from_sq) & board.occupied_co[not piece.color])
             defense_count = len(board.attackers(piece.color, from_sq))
             attack_defense = [float(attack_count), float(defense_count)]
-            
-            # --- PHASE AO MODIFICATION: Add material value feature ---
             material_value = [PIECE_MATERIAL_VALUE[piece.piece_type] / 9.0]  # Normalize by queen value
-            # --- END MODIFICATION ---
             
-            # --- PHASE AO MODIFICATION: Concatenate new feature ---
             local_features = np.concatenate([
                 piece_type_one_hot, piece_color, location, mobility,
                 attack_defense, material_value
             ])
+            
+            # --- PHASE AV MODIFICATION: Add global features to each piece node ---
+            # Per the plan, both graphs get the new features to provide full context.
+            full_piece_features = np.concatenate([local_features, new_global_features])
+            piece_features_list.append(full_piece_features)
             # --- END MODIFICATION ---
-            piece_features_list.append(local_features)
             
             for to_sq in board.attacks(from_sq):
                 if to_sq in piece_node_indices:
