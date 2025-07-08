@@ -4,13 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv, GCNConv, global_max_pool
-from torch_geometric.data import Data
 from typing import Optional, Tuple
 
 # --- Constants from gnn_data_converter ---
 from gnn_agent.gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
 
-# (SquareGNN, PieceGNN, and other classes remain unchanged)
+# --- GNN Modules ---
+
 class SquareGNN(nn.Module):
     """A 2-layer Graph Attention Network for processing the 64 squares."""
     def __init__(self, in_features: int, hidden_features: int, out_features: int, heads: int = 4):
@@ -35,7 +35,6 @@ class PieceGNN(nn.Module):
     def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor) -> torch.Tensor:
         if x_piece is None or x_piece.size(0) == 0:
             return torch.empty((0, self.conv3.out_channels), device=edge_index_piece.device)
-        
         x = self.conv1(x_piece, edge_index_piece)
         x = F.gelu(x)
         x = self.conv2(x, edge_index_piece)
@@ -44,7 +43,7 @@ class PieceGNN(nn.Module):
         return x
 
 class CrossAttentionModule(nn.Module):
-    """A symmetric cross-attention module."""
+    # This class is unchanged
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__()
         self.piece_to_square_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
@@ -56,8 +55,8 @@ class CrossAttentionModule(nn.Module):
         self.norm3 = nn.LayerNorm(embed_dim)
         self.norm4 = nn.LayerNorm(embed_dim)
 
-    def forward(self, square_features: torch.Tensor, piece_features: torch.Tensor,
-                piece_to_square_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, square_features: torch.Tensor, piece_features: torch.Tensor, piece_to_square_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # This forward pass logic is unchanged
         key_value = square_features[piece_to_square_map]
         query = piece_features
         query_r, key_value_r = query.unsqueeze(0), key_value.unsqueeze(0)
@@ -65,7 +64,6 @@ class CrossAttentionModule(nn.Module):
         attended_pieces = self.norm1(attended_pieces.squeeze(0) + piece_features)
         attended_pieces_ffn = self.ffn_piece(attended_pieces)
         attended_pieces = self.norm3(F.gelu(attended_pieces_ffn) + attended_pieces)
-
         global_piece_context = torch.max(piece_features, dim=0, keepdim=True)[0]
         global_piece_context_r = global_piece_context.unsqueeze(0)
         square_features_r = square_features.unsqueeze(0)
@@ -73,11 +71,10 @@ class CrossAttentionModule(nn.Module):
         attended_squares = self.norm2(attended_squares.squeeze(0) + square_features)
         attended_squares_ffn = self.ffn_square(attended_squares)
         attended_squares = self.norm4(F.gelu(attended_squares_ffn) + attended_squares)
-
         return attended_squares, attended_pieces
 
 class PolicyHead(nn.Module):
-    """Outputs a log-probability distribution over all possible moves."""
+    # This class is unchanged
     def __init__(self, embed_dim: int, action_space_size: int = 4672):
         super().__init__()
         self.fc1 = nn.Linear(embed_dim, 1024)
@@ -90,7 +87,7 @@ class PolicyHead(nn.Module):
         return F.log_softmax(x, dim=-1)
 
 class ValueHead(nn.Module):
-    """Outputs a single scalar value estimating the probability of winning."""
+    # This class is unchanged
     def __init__(self, embed_dim: int):
         super().__init__()
         self.fc1 = nn.Linear(embed_dim, 512)
@@ -102,17 +99,14 @@ class ValueHead(nn.Module):
         x = self.fc2(x)
         return torch.tanh(x)
 
-
 # --- Main Network ---
 
 class ChessNetwork(nn.Module):
     """The main network orchestrating GNNs, attention, and heads."""
     def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4):
         super().__init__()
-        # --- ADDED FOR VISUAL CUE ---
         self.square_feature_dim = SQUARE_FEATURE_DIM
         self.piece_feature_dim = PIECE_FEATURE_DIM
-        # --- END ADDITION ---
         
         self.square_gnn = SquareGNN(SQUARE_FEATURE_DIM, gnn_hidden_dim, embed_dim, heads=num_heads)
         self.piece_gnn = PieceGNN(PIECE_FEATURE_DIM, embed_dim, embed_dim)
@@ -120,29 +114,28 @@ class ChessNetwork(nn.Module):
         self.policy_head = PolicyHead(embed_dim)
         self.value_head = ValueHead(embed_dim)
 
-    def forward(self, data: Data) -> Tuple[torch.Tensor, torch.Tensor]:
-        """The main forward pass for the entire network."""
-        sq_feat, sq_ei = data.square_features, data.square_edge_index
-        pc_feat, pc_ei = data.piece_features, data.piece_edge_index
-        p_to_sq_map, batch = data.piece_to_square_map, data.batch
+    # CORRECTED: The forward signature now matches the keyword arguments passed by mcts.py
+    def forward(self, square_features, square_edge_index, square_batch,
+                piece_features, piece_edge_index, piece_batch,
+                piece_to_square_map, piece_padding_mask) -> Tuple[torch.Tensor, torch.Tensor]:
         
-        # Note: The 'batch' argument is implicitly handled by PyG layers if not passed.
-        # We only need it for the global_max_pool operation.
-        sq_embed = self.square_gnn(sq_feat, sq_ei)
-        pc_embed = self.piece_gnn(pc_feat, pc_ei)
+        # --- CORRECTED LINES ---
+        # The 'batch' argument is not passed to the GNNs directly.
+        sq_embed = self.square_gnn(square_features, square_edge_index)
+        pc_embed = self.piece_gnn(piece_features, piece_edge_index)
+        # --- END CORRECTION ---
 
         if pc_embed.size(0) > 0:
-            sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, p_to_sq_map)
+            sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, piece_to_square_map)
             
-            piece_batch = data.piece_batch
-            batch_size = data.num_graphs if 'num_graphs' in data else 1
+            batch_size = square_batch.max().item() + 1
             global_graph_embed = global_max_pool(
                 pc_embed_fused, 
                 piece_batch.to(pc_embed_fused.device),
                 size=batch_size
             )
-        else:
-            global_graph_embed = global_max_pool(sq_embed, batch)
+        else: # Handle boards with no pieces (rare, but possible)
+            global_graph_embed = global_max_pool(sq_embed, square_batch)
 
         policy_logits = self.policy_head(global_graph_embed)
         value_estimate = self.value_head(global_graph_embed)
