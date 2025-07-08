@@ -65,14 +65,14 @@ def _decide_agent_action(
 
     with torch.no_grad():
         agent.eval()
-        # --- CORRECTED LINE ---
-        # Get the device from one of the model's parameters.
         model_device = next(agent.parameters()).device
         gnn_data = convert_to_gnn_input(board_after_mentor_move, model_device)
-        # --- END CORRECTION ---
         
-        # The **kwargs automatically unpacks the dictionary from the Data object
-        _, agent_value = agent(**gnn_data.to_huggingface_dict())
+        # --- CORRECTED LINE ---
+        # Use .to_dict() to unpack the Data object into keyword arguments for the model
+        _, agent_value = agent(**gnn_data.to_dict())
+        # --- END CORRECTION ---
+
         agent_value = agent_value.squeeze()
 
     value_discrepancy = torch.abs(agent_value - mentor_value)
