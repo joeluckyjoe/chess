@@ -68,18 +68,12 @@ def _decide_agent_action(
         model_device = next(agent.parameters()).device
         gnn_data = convert_to_gnn_input(board_after_mentor_move, model_device)
         
-        # --- FINAL CORRECTION: Manually create the 'batch of one' tensors ---
         kwargs = gnn_data.to_dict()
-        num_square_nodes = gnn_data.square_features.size(0)
-        num_piece_nodes = gnn_data.piece_features.size(0)
-
-        kwargs['square_batch'] = torch.zeros(num_square_nodes, dtype=torch.long, device=model_device)
-        kwargs['piece_batch'] = torch.zeros(num_piece_nodes, dtype=torch.long, device=model_device)
-        kwargs['piece_padding_mask'] = torch.zeros((1, num_piece_nodes), dtype=torch.bool, device=model_device)
+        kwargs['square_batch'] = torch.zeros(gnn_data.square_features.size(0), dtype=torch.long, device=model_device)
+        kwargs['piece_batch'] = torch.zeros(gnn_data.piece_features.size(0), dtype=torch.long, device=model_device)
+        kwargs['piece_padding_mask'] = torch.zeros((1, gnn_data.piece_features.size(0)), dtype=torch.bool, device=model_device)
         
         _, agent_value = agent(**kwargs)
-        # --- END CORRECTION ---
-
         agent_value = agent_value.squeeze()
 
     value_discrepancy = torch.abs(agent_value - mentor_value)
@@ -115,7 +109,9 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
                 break
             if in_guided_mode and new_in_guided_mode: guided_moves_count += 1
             in_guided_mode = new_in_guided_mode
-            if policy is not None: transient_examples.append({'board': board.copy(), 'policy': policy})
+            if policy is not None:
+                # --- FINAL CORRECTION: Store the FEN string, not the board object ---
+                transient_examples.append({'fen': board.fen(), 'policy': policy})
         else:
             mentor_engine.set_fen_position(board.fen())
             move = chess.Move.from_uci(mentor_engine.get_best_move_time(50))
@@ -125,7 +121,13 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
 
     outcome_value = {'1-0': 1, '0-1': -1, '1/2-1/2': 0}.get(board.result(claim_draw=True), 0)
     final_outcome_value = -outcome_value if agent_color == chess.BLACK else outcome_value
-    final_examples = [(ex['board'], ex['policy'], final_outcome_value) for ex in transient_examples]
+    
+    # Unpack the FEN string from the dictionary
+    final_examples = [
+        (ex['fen'], ex['policy'], final_outcome_value)
+        for ex in transient_examples
+    ]
+
     game.headers["Result"] = board.result(claim_draw=True)
     logger.info(f"Guided session finished. Outcome: {game.headers['Result']}")
     return final_examples, str(game)
