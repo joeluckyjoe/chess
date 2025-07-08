@@ -6,9 +6,6 @@ import torch
 import logging
 from typing import Tuple, Optional, TYPE_CHECKING
 
-# Local project imports
-from gnn_agent.rl_loop.training_data_manager import TrainingDataBuffer
-
 # This block is only for type analysis, not for runtime
 if TYPE_CHECKING:
     from stockfish import Stockfish
@@ -103,7 +100,8 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
     in_guided_mode = True
     guided_moves_count = 0
     
-    training_data_buffer = TrainingDataBuffer()
+    # Use a simple list to store transient data, removing the need for TrainingDataBuffer
+    transient_examples = []
 
     while not board.is_game_over(claim_draw=True):
         move = None
@@ -121,7 +119,8 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
             in_guided_mode = new_in_guided_mode
             
             if policy is not None:
-                training_data_buffer.add_transient(board, policy)
+                # Append the state and policy; the outcome will be added later
+                transient_examples.append({'board': board.copy(), 'policy': policy})
         else: # Opponent's turn
             mentor_engine.set_fen_position(board.fen())
             opponent_move_uci = mentor_engine.get_best_move_time(50)
@@ -131,10 +130,22 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
             node = node.add_variation(move)
             board.push(move)
 
-    outcome = board.result(claim_draw=True)
-    game.headers["Result"] = outcome
-    final_examples = training_data_buffer.finalize_game(outcome, agent_color)
+    # Finalize training examples by adding the game outcome
+    outcome_value = {'1-0': 1, '0-1': -1, '1/2-1/2': 0}.get(board.result(claim_draw=True), 0)
+    
+    # If agent is black, the value should be inverted
+    if agent_color == chess.BLACK:
+        final_outcome_value = -outcome_value
+    else:
+        final_outcome_value = outcome_value
+        
+    final_examples = [
+        (ex['board'], ex['policy'], final_outcome_value)
+        for ex in transient_examples
+    ]
+
+    game.headers["Result"] = board.result(claim_draw=True)
     pgn_data = str(game)
     
-    logger.info(f"Guided session finished. Outcome: {outcome}")
+    logger.info(f"Guided session finished. Outcome: {game.headers['Result']}")
     return final_examples, pgn_data
