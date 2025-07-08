@@ -95,6 +95,19 @@ def main():
     chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
     print(f"Resuming training run from game {start_game + 1}")
 
+    # --- NEW: Visual Cue for Model Architecture ---
+    try:
+        sq_features = chess_network.square_gnn.conv1.lin_l.in_features
+        pc_features = chess_network.piece_gnn.conv1.lin.in_features
+        print("\n" + "-"*45)
+        print("--- Model Feature Dimensions Verification ---")
+        print(f"  - SquareGNN input features: {sq_features}")
+        print(f"  - PieceGNN input features:  {pc_features}")
+        print("-"*45 + "\n")
+    except Exception as e:
+        print(f"\n[WARNING] Could not verify model feature dimensions: {e}\n")
+    # --- END NEW ---
+
     all_puzzle_sources = [paths.tactical_puzzles_file, paths.generated_puzzles_file]
     all_puzzles = load_puzzles_from_sources(all_puzzle_sources)
 
@@ -103,7 +116,6 @@ def main():
         c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE']
     )
     
-    # --- CORRECTED SelfPlay Instantiation ---
     self_player = SelfPlay(
         mcts_white=mcts_player,
         mcts_black=mcts_player,
@@ -143,7 +155,6 @@ def main():
                 print("\n" + "="*70 + f"\nSTAGNATION DETECTED: Initiating GUIDED MENTOR SESSION for Game {game_num}.\n" + "="*70)
                 current_mode = "guided-mentor-session"
 
-                # --- Stage 1: Tactical Primer ---
                 print("\n--- Stage 1: Tactical Primer ---")
                 if all_puzzles:
                     num_puzzles_for_primer = config_params.get('TACTICAL_PRIMER_BATCHES', 1) * config_params['BATCH_SIZE']
@@ -160,7 +171,6 @@ def main():
                 else:
                     print("[WARNING] No tactical puzzles loaded. Cannot execute tactical primer.")
 
-                # --- Stage 2: Guided Mentor Session ---
                 print("\n--- Stage 2: Guided Mentor Session ---")
                 training_examples, pgn_data = run_guided_session(
                     agent=chess_network,
