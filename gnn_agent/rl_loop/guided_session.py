@@ -9,7 +9,7 @@ from typing import Tuple, Optional, TYPE_CHECKING, Dict
 # This block is only for type analysis, not for runtime
 if TYPE_CHECKING:
     from stockfish import Stockfish
-    from gnn_agent.search.mcts import MCTSManager
+    from gnn_agent.search.mcts import MCTS
     from gnn_agent.neural_network.chess_network import ChessNetwork
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ def _decide_agent_action(
     agent: 'ChessNetwork',
     mentor_engine: 'Stockfish',
     board: chess.Board,
-    search_manager: 'MCTSManager',
+    search_manager: 'MCTS',
     num_simulations: int,
     in_guided_mode: bool,
     value_threshold: float,
@@ -26,16 +26,10 @@ def _decide_agent_action(
 ) -> Tuple[chess.Move, bool, Optional[Dict[chess.Move, float]]]:
     """
     Determines the agent's action for a single turn, applying guided session logic.
-    Returns a tuple of (move_to_play, new_in_guided_mode, policy_for_buffer).
     """
-    # CORRECTED: run_search returns a policy dictionary, not a tensor.
     policy_dict = search_manager.run_search(board, num_simulations)
-
-    # CORRECTED: Use select_move to get the best move from the policy dictionary.
-    # A temperature of 0.0 ensures we deterministically pick the most-visited move.
     agent_move = search_manager.select_move(policy_dict, temperature=0.0)
     
-    # If MCTS returns no move, we can't proceed.
     if agent_move is None:
         return None, False, None
 
@@ -44,7 +38,7 @@ def _decide_agent_action(
     if not in_guided_mode:
         return agent_move, False, policy_for_buffer
 
-    # --- Guided Mode Logic (rest of the function is unchanged) ---
+    # --- Guided Mode Logic ---
     mentor_engine.set_fen_position(board.fen())
     mentor_move_uci = mentor_engine.get_best_move_time(100)
     mentor_move = chess.Move.from_uci(mentor_move_uci)
@@ -76,9 +70,11 @@ def _decide_agent_action(
     mentor_value = torch.tanh(torch.tensor(mentor_eval_cp / 1000.0))
 
     with torch.no_grad():
-        agent.network.eval()
+        # --- CORRECTED LINES ---
+        agent.eval()
         gnn_data, _ = agent.gnn_data_converter.convert(board_after_mentor_move)
-        _, agent_value = agent.network(gnn_data.to(agent.device))
+        _, agent_value = agent(gnn_data.to(agent.device))
+        # --- END CORRECTION ---
         agent_value = agent_value.squeeze()
 
     value_discrepancy = torch.abs(agent_value - mentor_value)
@@ -91,7 +87,7 @@ def _decide_agent_action(
     return move_to_play, new_in_guided_mode, policy_for_buffer
 
 
-def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search_manager: 'MCTSManager', num_simulations: int, value_threshold: float, agent_color_str: str, max_guided_moves=15):
+def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search_manager: 'MCTS', num_simulations: int, value_threshold: float, agent_color_str: str, max_guided_moves=15):
     """
     Runs a full guided mentor game and returns training examples and PGN data.
     """
@@ -121,7 +117,6 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
                 agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color
             )
             
-            # If MCTS search failed to produce a move.
             if move is None:
                 logger.error("MCTS search failed to return a move in guided session. Ending game.")
                 break
