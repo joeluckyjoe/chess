@@ -19,15 +19,16 @@ def _decide_agent_action(
     mentor_engine: 'Stockfish',
     board: chess.Board,
     search_manager: 'MCTSManager',
+    num_simulations: int, # <-- NEW ARGUMENT
     in_guided_mode: bool,
     value_threshold: float,
     agent_color: bool
 ) -> Tuple[chess.Move, bool, Optional[torch.Tensor]]:
     """
     Determines the agent's action for a single turn, applying guided session logic.
-    Returns a tuple of (move_to_play, new_in_guided_mode, policy_for_buffer).
     """
-    original_policy, _ = search_manager.run_search(board)
+    # CORRECTED: Pass num_simulations to the search
+    original_policy, _ = search_manager.run_search(board, num_simulations)
     agent_move_idx = torch.argmax(original_policy).item()
     agent_move = agent.action_to_move(agent_move_idx, board)
     policy_for_buffer = original_policy
@@ -35,7 +36,7 @@ def _decide_agent_action(
     if not in_guided_mode:
         return agent_move, False, policy_for_buffer
 
-    # --- Guided Mode Logic ---
+    # --- Guided Mode Logic (rest of the function is unchanged) ---
     mentor_engine.set_fen_position(board.fen())
     mentor_move_uci = mentor_engine.get_best_move_time(100)
     mentor_move = chess.Move.from_uci(mentor_move_uci)
@@ -44,10 +45,9 @@ def _decide_agent_action(
         logger.info("Agent and mentor agree. Ending guided mode.")
         return agent_move, False, policy_for_buffer
 
-    # --- Intervention Triggered ---
     logger.info(f"Intervention Triggered. Agent: {agent_move}, Mentor: {mentor_move}")
     move_to_play = mentor_move
-
+    
     board_after_mentor_move = board.copy()
     board_after_mentor_move.push(move_to_play)
 
@@ -83,7 +83,7 @@ def _decide_agent_action(
     return move_to_play, new_in_guided_mode, policy_for_buffer
 
 
-def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search_manager: 'MCTSManager', value_threshold: float, agent_color_str: str, max_guided_moves=15):
+def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search_manager: 'MCTSManager', num_simulations: int, value_threshold: float, agent_color_str: str, max_guided_moves=15):
     """
     Runs a full guided mentor game and returns training examples and PGN data.
     """
@@ -100,7 +100,6 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
     in_guided_mode = True
     guided_moves_count = 0
     
-    # Use a simple list to store transient data, removing the need for TrainingDataBuffer
     transient_examples = []
 
     while not board.is_game_over(claim_draw=True):
@@ -111,7 +110,7 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
                 in_guided_mode = False
 
             move, new_in_guided_mode, policy = _decide_agent_action(
-                agent, mentor_engine, board, search_manager, in_guided_mode, value_threshold, agent_color
+                agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color
             )
             
             if in_guided_mode and new_in_guided_mode:
@@ -119,7 +118,6 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
             in_guided_mode = new_in_guided_mode
             
             if policy is not None:
-                # Append the state and policy; the outcome will be added later
                 transient_examples.append({'board': board.copy(), 'policy': policy})
         else: # Opponent's turn
             mentor_engine.set_fen_position(board.fen())
@@ -130,10 +128,8 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
             node = node.add_variation(move)
             board.push(move)
 
-    # Finalize training examples by adding the game outcome
     outcome_value = {'1-0': 1, '0-1': -1, '1/2-1/2': 0}.get(board.result(claim_draw=True), 0)
     
-    # If agent is black, the value should be inverted
     if agent_color == chess.BLACK:
         final_outcome_value = -outcome_value
     else:

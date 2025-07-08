@@ -24,22 +24,17 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
+# (The functions write_loss_to_csv, is_in_grace_period, load_puzzles_from_sources remain unchanged)
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
-    """Appends a new row of loss data to a CSV file."""
     file_exists = os.path.isfile(filepath)
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
 def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
-    """
-    Checks if an intervention has occurred within the last N games.
-    """
-    if not log_file_path.exists():
-        return False
+    if not log_file_path.exists(): return False
     try:
         df = pd.read_csv(log_file_path)
-        if df.empty or 'game_type' not in df.columns:
-            return False
+        if df.empty or 'game_type' not in df.columns: return False
         recent_games = df.tail(grace_period_length)
         intervention_types = ['mentor-play', 'guided-mentor-session']
         return any(game_type in recent_games['game_type'].values for game_type in intervention_types)
@@ -48,9 +43,6 @@ def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
         return False
 
 def load_puzzles_from_sources(puzzle_paths: list[Path]):
-    """
-    Loads tactical puzzles from a list of .jsonl file paths.
-    """
     all_puzzles = []
     print("Loading tactical puzzles...")
     for path in puzzle_paths:
@@ -64,94 +56,62 @@ def load_puzzles_from_sources(puzzle_paths: list[Path]):
                 print(f"   - Successfully loaded {len(puzzles_from_file)} puzzles from {os.path.basename(str(path))}.")
         except Exception as e:
             print(f"   - ERROR: Failed to load puzzles from {path}: {e}")
-            
     if not all_puzzles:
         print("[WARNING] No tactical puzzles were loaded in total. Interventions may fail.")
     else:
         print(f"Total puzzles loaded: {len(all_puzzles)}")
-        
     return all_puzzles
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
-    parser.add_argument(
-        '--disable-puzzle-mixing',
-        action='store_true',
-        help="If set, disables the mixing of tactical puzzles during standard training."
-    )
+    parser.add_argument('--disable-puzzle-mixing', action='store_true', help="If set, disables the mixing of tactical puzzles during standard training.")
     args = parser.parse_args()
 
     if args.disable_puzzle_mixing:
         print("\n" + "#"*60 + "\n--- TACTICAL PUZZLE MIXING IS DISABLED FOR THIS RUN ---\n" + "#"*60 + "\n")
 
     paths = get_paths()
-    device_str = config_params['DEVICE']
-    device = torch.device("cuda" if torch.cuda.is_available() and device_str == "auto" else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() and config_params['DEVICE'] == "auto" else "cpu")
     print(f"Using device: {device}")
 
-    # --- Initialization ---
     trainer = Trainer(model_config=config_params, device=device)
     chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
     print(f"Resuming training run from game {start_game + 1}")
 
-    # --- NEW: Visual Cue for Model Architecture ---
     try:
         sq_features = chess_network.square_gnn.conv1.lin_l.in_features
         pc_features = chess_network.piece_gnn.conv1.lin.in_features
-        print("\n" + "-"*45)
-        print("--- Model Feature Dimensions Verification ---")
-        print(f"  - SquareGNN input features: {sq_features}")
-        print(f"  - PieceGNN input features:  {pc_features}")
-        print("-"*45 + "\n")
+        print("\n" + "-"*45 + "\n--- Model Feature Dimensions Verification ---\n" + f"  - SquareGNN input features: {sq_features}\n" + f"  - PieceGNN input features:  {pc_features}\n" + "-"*45 + "\n")
     except Exception as e:
         print(f"\n[WARNING] Could not verify model feature dimensions: {e}\n")
-    # --- END NEW ---
 
-    all_puzzle_sources = [paths.tactical_puzzles_file, paths.generated_puzzles_file]
-    all_puzzles = load_puzzles_from_sources(all_puzzle_sources)
+    all_puzzles = load_puzzles_from_sources([paths.tactical_puzzles_file, paths.generated_puzzles_file])
 
-    mcts_player = MCTS(
-        network=chess_network, device=device,
-        c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE']
-    )
+    mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
     
-    self_player = SelfPlay(
-        mcts_white=mcts_player,
-        mcts_black=mcts_player,
-        stockfish_path=config_params['STOCKFISH_PATH'],
-        num_simulations=config_params['MCTS_SIMULATIONS']
-    )
+    self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], num_simulations=config_params['MCTS_SIMULATIONS'])
 
     try:
         mentor_engine = Stockfish(path=config_params['STOCKFISH_PATH'], depth=15)
         mentor_engine.set_elo_rating(config_params['MENTOR_ELO'])
     except Exception as e:
-        print(f"[FATAL] Could not initialize the Stockfish engine: {e}")
-        print("Please ensure the STOCKFISH_PATH in config.py is correct and the binary is executable.")
+        print(f"[FATAL] Could not initialize the Stockfish engine: {e}\n" + "Please ensure the STOCKFISH_PATH in config.py is correct and the binary is executable.")
         sys.exit(1)
 
     training_data_manager = TrainingDataManager(data_directory=paths.training_data_dir)
     supervisor = BayesianSupervisor(config=config_params)
         
-    # --- Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         current_mode = "self-play"
         training_examples, pgn_data = [], None
 
-        grace_period_active = is_in_grace_period(
-            paths.loss_log_file,
-            config_params.get('SUPERVISOR_GRACE_PERIOD', 10)
-        )
-
-        if grace_period_active:
+        if is_in_grace_period(paths.loss_log_file, config_params.get('SUPERVISOR_GRACE_PERIOD', 10)):
             print(f"\nINFO: Post-intervention grace period active for Game {game_num}. Forcing self-play.")
         else:
             print("\nINFO: Consulting Bayesian Supervisor for stagnation check...")
-            needs_intervention = supervisor.check_for_stagnation(paths.loss_log_file)
-            
-            if needs_intervention:
+            if supervisor.check_for_stagnation(paths.loss_log_file):
                 print("\n" + "="*70 + f"\nSTAGNATION DETECTED: Initiating GUIDED MENTOR SESSION for Game {game_num}.\n" + "="*70)
                 current_mode = "guided-mentor-session"
 
@@ -161,10 +121,7 @@ def main():
                     if len(all_puzzles) >= num_puzzles_for_primer:
                         puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles.")
-                        primer_policy_loss, _ = trainer.train_on_batch(
-                            game_examples=[], puzzle_examples=puzzles_for_primer,
-                            batch_size=config_params['BATCH_SIZE'], puzzle_ratio=1.0
-                        )
+                        primer_policy_loss, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'], puzzle_ratio=1.0)
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
                         print(f"[WARNING] Not enough puzzles ({len(all_puzzles)}) for a full primer. Skipping.")
@@ -176,6 +133,7 @@ def main():
                     agent=chess_network,
                     mentor_engine=mentor_engine,
                     search_manager=mcts_player,
+                    num_simulations=config_params['MCTS_SIMULATIONS'], # <-- NEW ARGUMENT
                     value_threshold=config_params.get('GUIDED_SESSION_VALUE_THRESHOLD', 0.1),
                     agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
                 )
