@@ -4,7 +4,7 @@ import chess
 import chess.pgn
 import torch
 import logging
-from typing import Tuple, Optional, TYPE_CHECKING
+from typing import Tuple, Optional, TYPE_CHECKING, Dict
 
 # This block is only for type analysis, not for runtime
 if TYPE_CHECKING:
@@ -19,19 +19,27 @@ def _decide_agent_action(
     mentor_engine: 'Stockfish',
     board: chess.Board,
     search_manager: 'MCTSManager',
-    num_simulations: int, # <-- NEW ARGUMENT
+    num_simulations: int,
     in_guided_mode: bool,
     value_threshold: float,
     agent_color: bool
-) -> Tuple[chess.Move, bool, Optional[torch.Tensor]]:
+) -> Tuple[chess.Move, bool, Optional[Dict[chess.Move, float]]]:
     """
     Determines the agent's action for a single turn, applying guided session logic.
+    Returns a tuple of (move_to_play, new_in_guided_mode, policy_for_buffer).
     """
-    # CORRECTED: Pass num_simulations to the search
-    original_policy, _ = search_manager.run_search(board, num_simulations)
-    agent_move_idx = torch.argmax(original_policy).item()
-    agent_move = agent.action_to_move(agent_move_idx, board)
-    policy_for_buffer = original_policy
+    # CORRECTED: run_search returns a policy dictionary, not a tensor.
+    policy_dict = search_manager.run_search(board, num_simulations)
+
+    # CORRECTED: Use select_move to get the best move from the policy dictionary.
+    # A temperature of 0.0 ensures we deterministically pick the most-visited move.
+    agent_move = search_manager.select_move(policy_dict, temperature=0.0)
+    
+    # If MCTS returns no move, we can't proceed.
+    if agent_move is None:
+        return None, False, None
+
+    policy_for_buffer = policy_dict
 
     if not in_guided_mode:
         return agent_move, False, policy_for_buffer
@@ -113,6 +121,11 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
                 agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color
             )
             
+            # If MCTS search failed to produce a move.
+            if move is None:
+                logger.error("MCTS search failed to return a move in guided session. Ending game.")
+                break
+
             if in_guided_mode and new_in_guided_mode:
                 guided_moves_count += 1
             in_guided_mode = new_in_guided_mode
