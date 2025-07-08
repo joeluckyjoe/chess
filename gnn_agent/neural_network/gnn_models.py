@@ -10,14 +10,11 @@ from typing import Optional, Tuple
 from gnn_agent.gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
 
 # --- GNN Modules ---
-
 class SquareGNN(nn.Module):
-    """A 2-layer Graph Attention Network for processing the 64 squares."""
     def __init__(self, in_features: int, hidden_features: int, out_features: int, heads: int = 4):
         super(SquareGNN, self).__init__()
         self.conv1 = GATv2Conv(in_features, hidden_features, heads=heads, concat=True)
         self.conv2 = GATv2Conv(hidden_features * heads, out_features, heads=1, concat=True)
-
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         x = self.conv1(x, edge_index)
         x = F.gelu(x)
@@ -25,13 +22,11 @@ class SquareGNN(nn.Module):
         return x
 
 class PieceGNN(nn.Module):
-    """A 3-layer Graph Convolutional Network for processing piece relationships."""
     def __init__(self, in_channels: int, hidden_channels: int, out_channels: int):
         super(PieceGNN, self).__init__()
         self.conv1 = GCNConv(in_channels, hidden_channels)
         self.conv2 = GCNConv(hidden_channels, hidden_channels)
         self.conv3 = GCNConv(hidden_channels, out_channels)
-
     def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor) -> torch.Tensor:
         if x_piece is None or x_piece.size(0) == 0:
             return torch.empty((0, self.conv3.out_channels), device=edge_index_piece.device)
@@ -42,18 +37,15 @@ class PieceGNN(nn.Module):
         x = self.conv3(x, edge_index_piece)
         return x
 
+# Other classes (CrossAttentionModule, PolicyHead, ValueHead) are unchanged...
 class CrossAttentionModule(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__()
         self.piece_to_square_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
         self.square_to_piece_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm1, self.norm2, self.norm3, self.norm4 = [nn.LayerNorm(embed_dim) for _ in range(4)]
         self.ffn_piece = nn.Linear(embed_dim, embed_dim)
         self.ffn_square = nn.Linear(embed_dim, embed_dim)
-        self.norm3 = nn.LayerNorm(embed_dim)
-        self.norm4 = nn.LayerNorm(embed_dim)
-
     def forward(self, square_features: torch.Tensor, piece_features: torch.Tensor, piece_to_square_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         key_value = square_features[piece_to_square_map]
         query = piece_features
@@ -74,10 +66,8 @@ class CrossAttentionModule(nn.Module):
 class PolicyHead(nn.Module):
     def __init__(self, embed_dim: int, action_space_size: int = 4672):
         super().__init__()
-        self.fc1 = nn.Linear(embed_dim, 1024)
+        self.fc1, self.fc2 = nn.Linear(embed_dim, 1024), nn.Linear(1024, action_space_size)
         self.ln1 = nn.LayerNorm(1024)
-        self.fc2 = nn.Linear(1024, action_space_size)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.gelu(self.ln1(self.fc1(x)))
         x = self.fc2(x)
@@ -86,53 +76,29 @@ class PolicyHead(nn.Module):
 class ValueHead(nn.Module):
     def __init__(self, embed_dim: int):
         super().__init__()
-        self.fc1 = nn.Linear(embed_dim, 512)
+        self.fc1, self.fc2 = nn.Linear(embed_dim, 512), nn.Linear(512, 1)
         self.ln1 = nn.LayerNorm(512)
-        self.fc2 = nn.Linear(512, 1)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.gelu(self.ln1(self.fc1(x)))
         x = self.fc2(x)
         return torch.tanh(x)
 
-
 # --- Main Network ---
-
 class ChessNetwork(nn.Module):
-    """The main network orchestrating GNNs, attention, and heads."""
     def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4):
         super().__init__()
-        self.square_feature_dim = SQUARE_FEATURE_DIM
-        self.piece_feature_dim = PIECE_FEATURE_DIM
-        
+        self.square_feature_dim, self.piece_feature_dim = SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
         self.square_gnn = SquareGNN(SQUARE_FEATURE_DIM, gnn_hidden_dim, embed_dim, heads=num_heads)
         self.piece_gnn = PieceGNN(PIECE_FEATURE_DIM, embed_dim, embed_dim)
-        self.fusion = CrossAttentionModule(embed_dim, num_heads)
-        self.policy_head = PolicyHead(embed_dim)
-        self.value_head = ValueHead(embed_dim)
+        self.fusion, self.policy_head, self.value_head = [m(embed_dim, num_heads) if isinstance(m, CrossAttentionModule) else m(embed_dim) for m in [CrossAttentionModule, PolicyHead, ValueHead]]
 
-    # This forward signature now correctly matches the keyword arguments passed by mcts.py
-    def forward(self, square_features, square_edge_index, square_batch,
-                piece_features, piece_edge_index, piece_batch,
-                piece_to_square_map, piece_padding_mask) -> Tuple[torch.Tensor, torch.Tensor]:
-        
-        # The 'batch' argument is not passed to the GNNs directly.
+    def forward(self, square_features, square_edge_index, square_batch, piece_features, piece_edge_index, piece_batch, piece_to_square_map, piece_padding_mask) -> Tuple[torch.Tensor, torch.Tensor]:
         sq_embed = self.square_gnn(square_features, square_edge_index)
         pc_embed = self.piece_gnn(piece_features, piece_edge_index)
-
         if pc_embed.size(0) > 0:
             sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, piece_to_square_map)
-            
             batch_size = square_batch.max().item() + 1
-            global_graph_embed = global_max_pool(
-                pc_embed_fused, 
-                piece_batch.to(pc_embed_fused.device),
-                size=batch_size
-            )
-        else: # Handle boards with no pieces
+            global_graph_embed = global_max_pool(pc_embed_fused, piece_batch.to(pc_embed_fused.device), size=batch_size)
+        else:
             global_graph_embed = global_max_pool(sq_embed, square_batch)
-
-        policy_logits = self.policy_head(global_graph_embed)
-        value_estimate = self.value_head(global_graph_embed)
-
-        return policy_logits, value_estimate.squeeze(-1)
+        return self.policy_head(global_graph_embed), self.value_head(global_graph_embed).squeeze(-1)
