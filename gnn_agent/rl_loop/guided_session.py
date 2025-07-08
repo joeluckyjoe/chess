@@ -6,7 +6,6 @@ import torch
 import logging
 from typing import Tuple, Optional, TYPE_CHECKING, Dict
 
-# CORRECTED: Import the converter function directly
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 
 if TYPE_CHECKING:
@@ -66,8 +65,13 @@ def _decide_agent_action(
 
     with torch.no_grad():
         agent.eval()
-        # CORRECTED: Call the imported converter function directly
-        gnn_data = convert_to_gnn_input(board_after_mentor_move, agent.device)
+        # --- CORRECTED LINE ---
+        # Get the device from one of the model's parameters.
+        model_device = next(agent.parameters()).device
+        gnn_data = convert_to_gnn_input(board_after_mentor_move, model_device)
+        # --- END CORRECTION ---
+        
+        # The **kwargs automatically unpacks the dictionary from the Data object
         _, agent_value = agent(**gnn_data.to_huggingface_dict())
         agent_value = agent_value.squeeze()
 
