@@ -85,6 +85,6 @@ if __name__ == '__main__':
         print(f"Error: Could not find 'loss_log_v2.csv' in '{data_root}'")
         print("Please ensure 'run_training.py' has been run and has generated a loss log file.")
     else:
-        # Generate the plot in the local project root for easy access
-        output_path = paths.local_project_root / OUTPUT_FILENAME
+        # Generate the plot in the persistent drive project root for easy access
+        output_path = paths.drive_project_root / OUTPUT_FILENAME
         plot_training_progress(log_file_path, output_path)
