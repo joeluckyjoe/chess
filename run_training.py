@@ -24,7 +24,6 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
-# (The functions write_loss_to_csv, is_in_grace_period, load_puzzles_from_sources remain unchanged)
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     file_exists = os.path.isfile(filepath)
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
@@ -79,12 +78,20 @@ def main():
     chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
     print(f"Resuming training run from game {start_game + 1}")
 
+    # --- CORRECTED: Visual Cue for Model Architecture ---
     try:
-        sq_features = chess_network.square_gnn.conv1.lin_l.in_features
-        pc_features = chess_network.piece_gnn.conv1.lin.in_features
-        print("\n" + "-"*45 + "\n--- Model Feature Dimensions Verification ---\n" + f"  - SquareGNN input features: {sq_features}\n" + f"  - PieceGNN input features:  {pc_features}\n" + "-"*45 + "\n")
+        sq_features = chess_network.square_feature_dim
+        pc_features = chess_network.piece_feature_dim
+        print("\n" + "-"*45)
+        print("--- Model Feature Dimensions Verification ---")
+        print(f"  - SquareGNN input features: {sq_features}")
+        print(f"  - PieceGNN input features:  {pc_features}")
+        print("-"*45 + "\n")
+    except AttributeError:
+        print("\n[WARNING] Could not verify model feature dimensions. Attributes not found on model.\n")
     except Exception as e:
-        print(f"\n[WARNING] Could not verify model feature dimensions: {e}\n")
+        print(f"\n[WARNING] An unexpected error occurred during feature verification: {e}\n")
+    # --- END CORRECTION ---
 
     all_puzzles = load_puzzles_from_sources([paths.tactical_puzzles_file, paths.generated_puzzles_file])
 
@@ -133,7 +140,7 @@ def main():
                     agent=chess_network,
                     mentor_engine=mentor_engine,
                     search_manager=mcts_player,
-                    num_simulations=config_params['MCTS_SIMULATIONS'], # <-- NEW ARGUMENT
+                    num_simulations=config_params['MCTS_SIMULATIONS'],
                     value_threshold=config_params.get('GUIDED_SESSION_VALUE_THRESHOLD', 0.1),
                     agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
                 )

@@ -1,6 +1,5 @@
-#
-# File: gnn_agent/neural_network/gnn_models.py (Final Correction)
-#
+# gnn_agent/neural_network/gnn_models.py
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,8 +10,7 @@ from typing import Optional, Tuple
 # --- Constants from gnn_data_converter ---
 from gnn_agent.gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
 
-# --- GNN Modules ---
-
+# (SquareGNN, PieceGNN, and other classes remain unchanged)
 class SquareGNN(nn.Module):
     """A 2-layer Graph Attention Network for processing the 64 squares."""
     def __init__(self, in_features: int, hidden_features: int, out_features: int, heads: int = 4):
@@ -20,10 +18,7 @@ class SquareGNN(nn.Module):
         self.conv1 = GATv2Conv(in_features, hidden_features, heads=heads, concat=True)
         self.conv2 = GATv2Conv(hidden_features * heads, out_features, heads=1, concat=True)
 
-    # The 'batch' parameter is accepted but not used directly by the conv layers.
-    # PyTorch Geometric handles this implicitly.
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        # <-- FIX: Removed the incorrect 'batch=batch' argument ---
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         x = self.conv1(x, edge_index)
         x = F.gelu(x)
         x = self.conv2(x, edge_index)
@@ -37,12 +32,10 @@ class PieceGNN(nn.Module):
         self.conv2 = GCNConv(hidden_channels, hidden_channels)
         self.conv3 = GCNConv(hidden_channels, out_channels)
 
-    # The 'batch' parameter is accepted but not used directly by the conv layers.
-    def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+    def forward(self, x_piece: torch.Tensor, edge_index_piece: torch.Tensor) -> torch.Tensor:
         if x_piece is None or x_piece.size(0) == 0:
             return torch.empty((0, self.conv3.out_channels), device=edge_index_piece.device)
         
-        # <-- FIX: Removed the incorrect 'batch=batch' argument ---
         x = self.conv1(x_piece, edge_index_piece)
         x = F.gelu(x)
         x = self.conv2(x, edge_index_piece)
@@ -50,8 +43,6 @@ class PieceGNN(nn.Module):
         x = self.conv3(x, edge_index_piece)
         return x
 
-# --- Fusion and Head Modules ---
-# NOTE: The following classes are part of the original file but are not directly used by the Trainer.
 class CrossAttentionModule(nn.Module):
     """A symmetric cross-attention module."""
     def __init__(self, embed_dim: int, num_heads: int):
@@ -111,12 +102,18 @@ class ValueHead(nn.Module):
         x = self.fc2(x)
         return torch.tanh(x)
 
+
 # --- Main Network ---
 
 class ChessNetwork(nn.Module):
     """The main network orchestrating GNNs, attention, and heads."""
     def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4):
         super().__init__()
+        # --- ADDED FOR VISUAL CUE ---
+        self.square_feature_dim = SQUARE_FEATURE_DIM
+        self.piece_feature_dim = PIECE_FEATURE_DIM
+        # --- END ADDITION ---
+        
         self.square_gnn = SquareGNN(SQUARE_FEATURE_DIM, gnn_hidden_dim, embed_dim, heads=num_heads)
         self.piece_gnn = PieceGNN(PIECE_FEATURE_DIM, embed_dim, embed_dim)
         self.fusion = CrossAttentionModule(embed_dim, num_heads)
@@ -127,8 +124,10 @@ class ChessNetwork(nn.Module):
         """The main forward pass for the entire network."""
         sq_feat, sq_ei = data.square_features, data.square_edge_index
         pc_feat, pc_ei = data.piece_features, data.piece_edge_index
-        p_to_sq_map, square_batch = data.piece_to_square_map, data.batch
+        p_to_sq_map, batch = data.piece_to_square_map, data.batch
         
+        # Note: The 'batch' argument is implicitly handled by PyG layers if not passed.
+        # We only need it for the global_max_pool operation.
         sq_embed = self.square_gnn(sq_feat, sq_ei)
         pc_embed = self.piece_gnn(pc_feat, pc_ei)
 
@@ -136,14 +135,14 @@ class ChessNetwork(nn.Module):
             sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, p_to_sq_map)
             
             piece_batch = data.piece_batch
-            batch_size = data.num_graphs 
+            batch_size = data.num_graphs if 'num_graphs' in data else 1
             global_graph_embed = global_max_pool(
                 pc_embed_fused, 
                 piece_batch.to(pc_embed_fused.device),
                 size=batch_size
             )
         else:
-            global_graph_embed = global_max_pool(sq_embed, square_batch)
+            global_graph_embed = global_max_pool(sq_embed, batch)
 
         policy_logits = self.policy_head(global_graph_embed)
         value_estimate = self.value_head(global_graph_embed)
