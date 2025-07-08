@@ -43,7 +43,6 @@ class PieceGNN(nn.Module):
         return x
 
 class CrossAttentionModule(nn.Module):
-    # This class is unchanged
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__()
         self.piece_to_square_attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
@@ -56,7 +55,6 @@ class CrossAttentionModule(nn.Module):
         self.norm4 = nn.LayerNorm(embed_dim)
 
     def forward(self, square_features: torch.Tensor, piece_features: torch.Tensor, piece_to_square_map: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # This forward pass logic is unchanged
         key_value = square_features[piece_to_square_map]
         query = piece_features
         query_r, key_value_r = query.unsqueeze(0), key_value.unsqueeze(0)
@@ -74,7 +72,6 @@ class CrossAttentionModule(nn.Module):
         return attended_squares, attended_pieces
 
 class PolicyHead(nn.Module):
-    # This class is unchanged
     def __init__(self, embed_dim: int, action_space_size: int = 4672):
         super().__init__()
         self.fc1 = nn.Linear(embed_dim, 1024)
@@ -87,7 +84,6 @@ class PolicyHead(nn.Module):
         return F.log_softmax(x, dim=-1)
 
 class ValueHead(nn.Module):
-    # This class is unchanged
     def __init__(self, embed_dim: int):
         super().__init__()
         self.fc1 = nn.Linear(embed_dim, 512)
@@ -98,6 +94,7 @@ class ValueHead(nn.Module):
         x = F.gelu(self.ln1(self.fc1(x)))
         x = self.fc2(x)
         return torch.tanh(x)
+
 
 # --- Main Network ---
 
@@ -114,16 +111,14 @@ class ChessNetwork(nn.Module):
         self.policy_head = PolicyHead(embed_dim)
         self.value_head = ValueHead(embed_dim)
 
-    # CORRECTED: The forward signature now matches the keyword arguments passed by mcts.py
+    # This forward signature now correctly matches the keyword arguments passed by mcts.py
     def forward(self, square_features, square_edge_index, square_batch,
                 piece_features, piece_edge_index, piece_batch,
                 piece_to_square_map, piece_padding_mask) -> Tuple[torch.Tensor, torch.Tensor]:
         
-        # --- CORRECTED LINES ---
         # The 'batch' argument is not passed to the GNNs directly.
         sq_embed = self.square_gnn(square_features, square_edge_index)
         pc_embed = self.piece_gnn(piece_features, piece_edge_index)
-        # --- END CORRECTION ---
 
         if pc_embed.size(0) > 0:
             sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, piece_to_square_map)
@@ -134,7 +129,7 @@ class ChessNetwork(nn.Module):
                 piece_batch.to(pc_embed_fused.device),
                 size=batch_size
             )
-        else: # Handle boards with no pieces (rare, but possible)
+        else: # Handle boards with no pieces
             global_graph_embed = global_max_pool(sq_embed, square_batch)
 
         policy_logits = self.policy_head(global_graph_embed)
