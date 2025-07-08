@@ -6,7 +6,9 @@ import torch
 import logging
 from typing import Tuple, Optional, TYPE_CHECKING, Dict
 
-# This block is only for type analysis, not for runtime
+# CORRECTED: Import the converter function directly
+from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
+
 if TYPE_CHECKING:
     from stockfish import Stockfish
     from gnn_agent.search.mcts import MCTS
@@ -33,19 +35,15 @@ def _decide_agent_action(
     if agent_move is None:
         return None, False, None
 
-    policy_for_buffer = policy_dict
-
     if not in_guided_mode:
-        return agent_move, False, policy_for_buffer
+        return agent_move, False, policy_dict
 
-    # --- Guided Mode Logic ---
     mentor_engine.set_fen_position(board.fen())
-    mentor_move_uci = mentor_engine.get_best_move_time(100)
-    mentor_move = chess.Move.from_uci(mentor_move_uci)
+    mentor_move = chess.Move.from_uci(mentor_engine.get_best_move_time(100))
 
     if agent_move == mentor_move:
         logger.info("Agent and mentor agree. Ending guided mode.")
-        return agent_move, False, policy_for_buffer
+        return agent_move, False, policy_dict
 
     logger.info(f"Intervention Triggered. Agent: {agent_move}, Mentor: {mentor_move}")
     move_to_play = mentor_move
@@ -58,23 +56,19 @@ def _decide_agent_action(
     
     if eval_result['type'] == 'mate':
         mate_sign = 1 if eval_result['value'] > 0 else -1
-        if board_after_mentor_move.turn == chess.BLACK:
-            mate_sign *= -1
+        if board_after_mentor_move.turn == chess.BLACK: mate_sign *= -1
         mentor_eval_cp = mate_sign * 30000
     else:
         mentor_eval_cp = eval_result['value']
         
-    if agent_color == chess.BLACK:
-        mentor_eval_cp *= -1
-        
+    if agent_color == chess.BLACK: mentor_eval_cp *= -1
     mentor_value = torch.tanh(torch.tensor(mentor_eval_cp / 1000.0))
 
     with torch.no_grad():
-        # --- CORRECTED LINES ---
         agent.eval()
-        gnn_data, _ = agent.gnn_data_converter.convert(board_after_mentor_move)
-        _, agent_value = agent(gnn_data.to(agent.device))
-        # --- END CORRECTION ---
+        # CORRECTED: Call the imported converter function directly
+        gnn_data = convert_to_gnn_input(board_after_mentor_move, agent.device)
+        _, agent_value = agent(**gnn_data.to_huggingface_dict())
         agent_value = agent_value.squeeze()
 
     value_discrepancy = torch.abs(agent_value - mentor_value)
@@ -84,27 +78,18 @@ def _decide_agent_action(
     if not new_in_guided_mode:
         logger.info("Agent value aligned with mentor. Ending guided mode.")
 
-    return move_to_play, new_in_guided_mode, policy_for_buffer
+    return move_to_play, new_in_guided_mode, policy_dict
 
 
 def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search_manager: 'MCTS', num_simulations: int, value_threshold: float, agent_color_str: str, max_guided_moves=15):
-    """
-    Runs a full guided mentor game and returns training examples and PGN data.
-    """
     game = chess.pgn.Game()
     game.headers["Event"] = "Guided Mentor Session"
     node = game
-
     board = game.board()
     agent_color = chess.WHITE if agent_color_str.lower() == 'white' else chess.BLACK
-    
     game.headers["White"] = f"Agent (v{getattr(agent, 'version', 'N/A')})" if agent_color == chess.WHITE else "Mentor Engine"
     game.headers["Black"] = "Mentor Engine" if agent_color == chess.WHITE else f"Agent (v{getattr(agent, 'version', 'N/A')})"
-
-    in_guided_mode = True
-    guided_moves_count = 0
-    
-    transient_examples = []
+    in_guided_mode, guided_moves_count, transient_examples = True, 0, []
 
     while not board.is_game_over(claim_draw=True):
         move = None
@@ -113,43 +98,23 @@ def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search
                 logger.warning("Max guided moves reached. Exiting guided mode.")
                 in_guided_mode = False
 
-            move, new_in_guided_mode, policy = _decide_agent_action(
-                agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color
-            )
-            
+            move, new_in_guided_mode, policy = _decide_agent_action(agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color)
             if move is None:
                 logger.error("MCTS search failed to return a move in guided session. Ending game.")
                 break
-
-            if in_guided_mode and new_in_guided_mode:
-                guided_moves_count += 1
+            if in_guided_mode and new_in_guided_mode: guided_moves_count += 1
             in_guided_mode = new_in_guided_mode
-            
-            if policy is not None:
-                transient_examples.append({'board': board.copy(), 'policy': policy})
-        else: # Opponent's turn
+            if policy is not None: transient_examples.append({'board': board.copy(), 'policy': policy})
+        else:
             mentor_engine.set_fen_position(board.fen())
-            opponent_move_uci = mentor_engine.get_best_move_time(50)
-            move = chess.Move.from_uci(opponent_move_uci)
-
+            move = chess.Move.from_uci(mentor_engine.get_best_move_time(50))
         if move:
             node = node.add_variation(move)
             board.push(move)
 
     outcome_value = {'1-0': 1, '0-1': -1, '1/2-1/2': 0}.get(board.result(claim_draw=True), 0)
-    
-    if agent_color == chess.BLACK:
-        final_outcome_value = -outcome_value
-    else:
-        final_outcome_value = outcome_value
-        
-    final_examples = [
-        (ex['board'], ex['policy'], final_outcome_value)
-        for ex in transient_examples
-    ]
-
+    final_outcome_value = -outcome_value if agent_color == chess.BLACK else outcome_value
+    final_examples = [(ex['board'], ex['policy'], final_outcome_value) for ex in transient_examples]
     game.headers["Result"] = board.result(claim_draw=True)
-    pgn_data = str(game)
-    
     logger.info(f"Guided session finished. Outcome: {game.headers['Result']}")
-    return final_examples, pgn_data
+    return final_examples, str(game)

@@ -1,15 +1,15 @@
 # gnn_agent/neural_network/chess_network.py
-# This is now the single, definitive version of the network.
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, GCNConv, global_max_pool
-from typing import Optional, Tuple
+from typing import Tuple, Optional
 
-# --- Local imports for sub-modules ---
+# --- CORRECTED IMPORT ---
+from torch_geometric.nn import global_max_pool
+# --- END CORRECTION ---
+
 from .gnn_models import SquareGNN, PieceGNN, CrossAttentionModule, PolicyHead, ValueHead
-# --- Constants from gnn_data_converter ---
 from ..gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
 
 
@@ -28,7 +28,7 @@ class ChessNetwork(nn.Module):
 
     def forward(self, square_features, square_edge_index, square_batch,
                 piece_features, piece_edge_index, piece_batch,
-                piece_to_square_map, piece_padding_mask) -> Tuple[torch.Tensor, torch.Tensor]:
+                piece_to_square_map, piece_padding_mask, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         
         sq_embed = self.square_gnn(square_features, square_edge_index)
         pc_embed = self.piece_gnn(piece_features, piece_edge_index)
