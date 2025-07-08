@@ -68,9 +68,16 @@ def _decide_agent_action(
         model_device = next(agent.parameters()).device
         gnn_data = convert_to_gnn_input(board_after_mentor_move, model_device)
         
-        # --- CORRECTED LINE ---
-        # Use .to_dict() to unpack the Data object into keyword arguments for the model
-        _, agent_value = agent(**gnn_data.to_dict())
+        # --- FINAL CORRECTION: Manually create the 'batch of one' tensors ---
+        kwargs = gnn_data.to_dict()
+        num_square_nodes = gnn_data.square_features.size(0)
+        num_piece_nodes = gnn_data.piece_features.size(0)
+
+        kwargs['square_batch'] = torch.zeros(num_square_nodes, dtype=torch.long, device=model_device)
+        kwargs['piece_batch'] = torch.zeros(num_piece_nodes, dtype=torch.long, device=model_device)
+        kwargs['piece_padding_mask'] = torch.zeros((1, num_piece_nodes), dtype=torch.bool, device=model_device)
+        
+        _, agent_value = agent(**kwargs)
         # --- END CORRECTION ---
 
         agent_value = agent_value.squeeze()
