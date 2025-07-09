@@ -1,39 +1,32 @@
 #!/bin/bash
 
-# This script sets up the complete environment for the MCTS RL Chess Agent.
-# It installs system dependencies, Python packages, and the Stockfish chess engine.
-
-set -e # Exit immediately if a command exits with a non-zero status.
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
 echo "--- Starting Environment Setup ---"
 
-# --- 1. Install System-Level Dependencies ---
-echo "Updating package list and installing dependencies (imagemagick, wget, unzip)..."
+# --- 1. System Dependencies ---
+echo "Updating package list and installing system dependencies..."
 sudo apt-get update
-sudo apt-get install -y imagemagick wget unzip
+# Use DEBIAN_FRONTEND=noninteractive to prevent interactive prompts during installation
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick wget unzip stockfish
+
 echo "System dependencies installed."
 
+# --- 2. PyTorch and PyG Dependencies ---
+# Install PyTorch and its ecosystem libraries separately to ensure correct versions for the environment.
+# This avoids the "No matching distribution found" error for pre-compiled wheels.
+# The find-links flag points pip to the correct wheel repository for the current PyTorch/CUDA version.
+echo "Installing PyTorch, PyG, and related packages..."
+pip install torch torch-geometric torch-scatter -f https://data.pyg.org/whl/torch-$(python -c 'import torch; print(torch.__version__)').html
 
-# --- 2. Install Stockfish using the system package manager ---
-echo "Installing Stockfish via apt-get for maximum reliability..."
-sudo apt-get install -y stockfish
-echo "Stockfish setup complete."
+echo "PyTorch and PyG packages installed."
 
+# --- 3. Standard Python Packages ---
+# The requirements.txt file should NOT contain torch, torch-geometric, torch-scatter,
+# or any nvidia-* packages, as they are handled above.
+echo "Installing remaining Python packages from requirements.txt..."
+pip install -r requirements.txt
 
-# --- 3. Install Python Packages ---
-echo "Installing Python packages from requirements.txt..."
+echo "✅ Environment setup complete."
 
-# Get the absolute path of the directory where the script is located.
-# This makes the script runnable from any directory.
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-REQUIREMENTS_PATH="${SCRIPT_DIR}/requirements.txt"
-
-if [ -f "$REQUIREMENTS_PATH" ]; then
-    pip install -r "$REQUIREMENTS_PATH"
-else
-    echo "Warning: requirements.txt not found at ${REQUIREMENTS_PATH}."
-fi
-echo "Python package installation complete."
-
-
-echo "--- ✅ Environment Setup Finished ---"
