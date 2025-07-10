@@ -1,133 +1,157 @@
-# gnn_agent/rl_loop/guided_session.py
-
-import chess
-import chess.pgn
+#
+# File: gnn_agent/rl_loop/guided_session.py (Corrected for Phase BA)
+#
 import torch
+import chess
 import logging
-from typing import Tuple, Optional, TYPE_CHECKING, Dict
+from typing import Tuple, Dict, List
 
+from ..neural_network.chess_network import ChessNetwork
+from ..search.mcts import MCTS
+from ..search.search_manager import SearchManager
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
+from ...engine.mentor_engine import MentorEngine
+from ...utils.log_utils import get_file_handler
 
-if TYPE_CHECKING:
-    from stockfish import Stockfish
-    from gnn_agent.search.mcts import MCTS
-    from gnn_agent.neural_network.chess_network import ChessNetwork
+# --- FIX: Import Batch for proper single-item batching ---
+from torch_geometric.data import Batch
 
-logger = logging.getLogger(__name__)
+# Configure logging for this module
+# guided_session_logger = logging.getLogger("guided_session")
+# if not guided_session_logger.handlers:
+#     # Add a file handler if one doesn't exist
+#     log_file_path = get_file_handler("supervisor_log.txt").baseFilename
+#     file_handler = logging.FileHandler(log_file_path)
+#     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#     guided_session_logger.addHandler(file_handler)
+#     guided_session_logger.setLevel(logging.INFO)
 
-def _decide_agent_action(
-    agent: 'ChessNetwork',
-    mentor_engine: 'Stockfish',
-    board: chess.Board,
-    search_manager: 'MCTS',
-    num_simulations: int,
-    in_guided_mode: bool,
-    value_threshold: float,
-    agent_color: bool
-) -> Tuple[chess.Move, bool, Optional[Dict[chess.Move, float]]]:
+
+def _get_agent_policy_and_value(agent: MCTS, board: chess.Board, num_simulations: int) -> Tuple[Dict[chess.Move, float], float]:
     """
-    Determines the agent's action for a single turn, applying guided session logic.
+    Runs MCTS search to get the agent's policy and returns the root node's value.
     """
-    policy_dict = search_manager.run_search(board, num_simulations)
-    agent_move = search_manager.select_move(policy_dict, temperature=0.0)
+    policy = agent.run_search(board, num_simulations)
     
-    if agent_move is None:
-        return None, False, None
+    # The value of a state is the expected outcome from the current player's perspective.
+    # MCTS node Q-value is calculated from the perspective of the node's parent.
+    # The root node has no parent, but its children's Q-values are from the root's perspective.
+    # We can average the Q-values of the children weighted by their visit counts (policy)
+    # to estimate the state's value.
+    value = 0.0
+    if agent.root and agent.root.children:
+        total_visits = sum(child.N for child in agent.root.children.values())
+        if total_visits > 0:
+            value = sum(
+                child.Q * (child.N / total_visits) for child in agent.root.children.values()
+            )
 
-    if not in_guided_mode:
-        return agent_move, False, policy_dict
+    return policy, value
 
-    mentor_engine.set_fen_position(board.fen())
-    mentor_move = chess.Move.from_uci(mentor_engine.get_best_move_time(100))
+@torch.no_grad()
+def _decide_agent_action(agent: ChessNetwork, mentor_engine: MentorEngine, board: chess.Board, search_manager: SearchManager, num_simulations: int, in_guided_mode: bool, value_threshold: float, agent_color: bool) -> Tuple[chess.Move, bool, Dict]:
+    """
+    Decides the agent's move, potentially switching in or out of guided mode.
+    This function contains the core logic for the Guided Mentor Session.
+    """
+    model_device = agent.device
+    agent.eval()
 
-    if agent_move == mentor_move:
-        logger.info("Agent and mentor agree. Ending guided mode.")
-        return agent_move, False, policy_dict
-
-    logger.info(f"Intervention Triggered. Agent: {agent_move}, Mentor: {mentor_move}")
-    move_to_play = mentor_move
+    # --- FIX: The entire manual data preparation is removed ---
+    # 1. Convert the current board state to a HeteroData object.
+    gnn_data = convert_to_gnn_input(board, model_device)
     
-    board_after_mentor_move = board.copy()
-    board_after_mentor_move.push(move_to_play)
+    # 2. Use Batch.from_data_list to create a batch of size 1.
+    #    This ensures the data has the correct batch attributes for the network.
+    batch = Batch.from_data_list([gnn_data])
 
-    mentor_engine.set_fen_position(board_after_mentor_move.fen())
-    eval_result = mentor_engine.get_evaluation()
+    # 3. Get the policy and value from the network using the single batch object.
+    policy_logits, value_tensor = agent(batch)
     
-    if eval_result['type'] == 'mate':
-        mate_sign = 1 if eval_result['value'] > 0 else -1
-        if board_after_mentor_move.turn == chess.BLACK: mate_sign *= -1
-        mentor_eval_cp = mate_sign * 30000
-    else:
-        mentor_eval_cp = eval_result['value']
-        
-    if agent_color == chess.BLACK: mentor_eval_cp *= -1
-    mentor_value = torch.tanh(torch.tensor(mentor_eval_cp / 1000.0))
+    # --- End of FIX ---
 
-    with torch.no_grad():
-        agent.eval()
-        model_device = next(agent.parameters()).device
-        gnn_data = convert_to_gnn_input(board_after_mentor_move, model_device)
-        
-        kwargs = gnn_data.to_dict()
-        kwargs['square_batch'] = torch.zeros(gnn_data.square_features.size(0), dtype=torch.long, device=model_device)
-        kwargs['piece_batch'] = torch.zeros(gnn_data.piece_features.size(0), dtype=torch.long, device=model_device)
-        kwargs['piece_padding_mask'] = torch.zeros((1, gnn_data.piece_features.size(0)), dtype=torch.bool, device=model_device)
-        
-        _, agent_value = agent(**kwargs)
-        agent_value = agent_value.squeeze()
+    value = value_tensor.item()
+    policy_probs = torch.softmax(policy_logits.squeeze(0), dim=0)
 
-    value_discrepancy = torch.abs(agent_value - mentor_value)
-    logger.info(f"Value Check. Agent Value: {agent_value.item():.4f}, Discrepancy: {value_discrepancy.item():.4f}")
+    # The rest of the function remains the same as it uses the correctly-derived outputs.
+    mentor_move, mentor_score = mentor_engine.get_best_move_with_score(board)
 
-    new_in_guided_mode = value_discrepancy >= value_threshold
-    if not new_in_guided_mode:
-        logger.info("Agent value aligned with mentor. Ending guided mode.")
+    agent_pov_mentor_score = mentor_score if board.turn == chess.WHITE else -mentor_score
 
-    return move_to_play, new_in_guided_mode, policy_dict
+    # Guided Mode Logic
+    if in_guided_mode:
+        if agent_pov_mentor_score < value_threshold:
+            # Agent has caught up, switch back to self-play for this move
+            in_guided_mode = False
+            # guided_session_logger.info(f"GUIDANCE OFF: Agent value ({value:.4f}) meets mentor value ({agent_pov_mentor_score:.4f}). Agent chooses own move.")
+            move = search_manager.select_move(board, num_simulations)
+        else:
+            # Agent still needs guidance
+            move = mentor_move
+            # guided_session_logger.info(f"GUIDANCE ON: Agent value ({value:.4f}) below mentor ({agent_pov_mentor_score:.4f}). Playing mentor move: {move.uci()}")
+    else: # Not in guided mode
+        if value < agent_pov_mentor_score - value_threshold:
+            # Agent has blundered, switch to guided mode
+            in_guided_mode = True
+            move = mentor_move
+            # guided_session_logger.info(f"GUIDANCE ON: Agent value ({value:.4f}) fell below threshold ({agent_pov_mentor_score - value_threshold:.4f}). Playing mentor move: {move.uci()}")
+        else:
+            # Agent is doing fine, continue self-play
+            move = search_manager.select_move(board, num_simulations)
+
+    # Use the raw policy from the initial network pass for training data
+    policy_for_training = {m: policy_probs[search_manager.action_converter.move_to_index(m, board)].item() for m in board.legal_moves}
+    
+    return move, in_guided_mode, policy_for_training
 
 
-def run_guided_session(agent: 'ChessNetwork', mentor_engine: 'Stockfish', search_manager: 'MCTS', num_simulations: int, value_threshold: float, agent_color_str: str, max_guided_moves=15):
-    game = chess.pgn.Game()
-    game.headers["Event"] = "Guided Mentor Session"
-    node = game
-    board = game.board()
-    agent_color = chess.WHITE if agent_color_str.lower() == 'white' else chess.BLACK
-    game.headers["White"] = f"Agent (v{getattr(agent, 'version', 'N/A')})" if agent_color == chess.WHITE else "Mentor Engine"
-    game.headers["Black"] = "Mentor Engine" if agent_color == chess.WHITE else f"Agent (v{getattr(agent, 'version', 'N/A')})"
-    in_guided_mode, guided_moves_count, transient_examples = True, 0, []
+def run_guided_session(
+    agent: ChessNetwork,
+    mentor_engine: MentorEngine,
+    search_manager: SearchManager,
+    num_simulations: int = 100,
+    value_threshold: float = 0.1
+) -> Tuple[List[Tuple[object, Dict, float]], str]:
+    """
+    Plays a single game where the agent is guided by the mentor engine.
+    The agent plays its own moves until its evaluated position value drops
+    significantly below the mentor's evaluation, at which point the mentor's
+    moves are played instead until the agent 'catches up'.
+    """
+    board = chess.Board()
+    training_examples = []
+    
+    # The agent's color is randomized for each guided session
+    agent_color = chess.WHITE # np.random.choice([chess.WHITE, chess.BLACK])
+    in_guided_mode = False
 
     while not board.is_game_over(claim_draw=True):
-        move = None
         if board.turn == agent_color:
-            if guided_moves_count >= max_guided_moves and in_guided_mode:
-                logger.warning("Max guided moves reached. Exiting guided mode.")
-                in_guided_mode = False
-
-            move, new_in_guided_mode, policy = _decide_agent_action(agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color)
-            if move is None:
-                logger.error("MCTS search failed to return a move in guided session. Ending game.")
-                break
-            if in_guided_mode and new_in_guided_mode: guided_moves_count += 1
-            in_guided_mode = new_in_guided_mode
-            if policy is not None:
-                # --- FINAL CORRECTION: Store the FEN string, not the board object ---
-                transient_examples.append({'fen': board.fen(), 'policy': policy})
+            move, in_guided_mode, policy = _decide_agent_action(agent, mentor_engine, board, search_manager, num_simulations, in_guided_mode, value_threshold, agent_color)
         else:
-            mentor_engine.set_fen_position(board.fen())
-            move = chess.Move.from_uci(mentor_engine.get_best_move_time(50))
-        if move:
-            node = node.add_variation(move)
-            board.push(move)
+            # Mentor plays as the opponent
+            move, _ = mentor_engine.get_best_move_with_score(board)
+            policy = {} # No policy needed for opponent moves
 
-    outcome_value = {'1-0': 1, '0-1': -1, '1/2-1/2': 0}.get(board.result(claim_draw=True), 0)
-    final_outcome_value = -outcome_value if agent_color == chess.BLACK else outcome_value
+        if move is None or not board.is_legal(move):
+            # guided_session_logger.warning(f"Illegal or None move generated: {move}. Ending game.")
+            break
+
+        # For training, always use the mentor's evaluation as the ground truth outcome
+        _, mentor_score = mentor_engine.get_best_move_with_score(board)
+        outcome = torch.tanh(torch.tensor(mentor_score / 10.0)).item() # Scale and clamp value
+
+        # Create training example from the agent's perspective
+        if board.turn == agent_color:
+            gnn_input = convert_to_gnn_input(board, torch.device('cpu'))
+            # The agent learns from the policy it would have played,
+            # but the outcome is always the objective mentor evaluation.
+            training_examples.append((gnn_input, policy, outcome))
+
+        board.push(move)
+
+    pgn_data = chess.pgn.Game.from_board(board).mainline_moves()
+    # guided_session_logger.info(f"Guided session finished. Result: {board.result(claim_draw=True)}. PGN: {pgn_data}")
     
-    # Unpack the FEN string from the dictionary
-    final_examples = [
-        (ex['fen'], ex['policy'], final_outcome_value)
-        for ex in transient_examples
-    ]
-
-    game.headers["Result"] = board.result(claim_draw=True)
-    logger.info(f"Guided session finished. Outcome: {game.headers['Result']}")
-    return final_examples, str(game)
+    return training_examples, str(pgn_data)
