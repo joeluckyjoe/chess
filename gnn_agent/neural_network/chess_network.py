@@ -1,40 +1,71 @@
-# gnn_agent/neural_network/chess_network.py
+#
+# File: gnn_agent/neural_network/chess_network.py (Updated with separate trunks)
+#
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, GCNConv, global_max_pool
-from typing import Optional, Tuple
+from torch_geometric.data import HeteroData
+from typing import Tuple
 
-from .gnn_models import SquareGNN, PieceGNN, CrossAttentionModule, PolicyHead, ValueHead
-from ..gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
+from .unified_gnn import UnifiedGNN
+from .gnn_models import PolicyHead, ValueHead
 
 class ChessNetwork(nn.Module):
+    """
+    The main PyTorch module for the chess agent.
+    This version includes separate trunks for the policy and value heads to
+    decouple their learning objectives and improve convergence.
+    """
     def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4):
         super().__init__()
-        self.square_feature_dim, self.piece_feature_dim = SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
-        self.square_gnn = SquareGNN(SQUARE_FEATURE_DIM, gnn_hidden_dim, embed_dim, heads=num_heads)
-        self.piece_gnn = PieceGNN(PIECE_FEATURE_DIM, embed_dim, embed_dim)
-        self.fusion = CrossAttentionModule(embed_dim, num_heads)
-        self.policy_head = PolicyHead(embed_dim)
-        self.value_head = ValueHead(embed_dim)
 
-    def forward(self, square_features, square_edge_index, square_batch,
-                piece_features, piece_edge_index, piece_batch,
-                piece_to_square_map, piece_padding_mask, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+        metadata = (
+            ['square', 'piece'],
+            [
+                ('square', 'adjacent_to', 'square'),
+                ('piece', 'occupies', 'square'),
+                ('piece', 'attacks', 'piece'),
+                ('piece', 'defends', 'piece'),
+                ('square', 'rev_occupied_by', 'piece'),
+            ]
+        )
+
+        self.unified_gnn = UnifiedGNN(
+            hidden_dim=gnn_hidden_dim,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            metadata=metadata
+        )
         
-        sq_embed = self.square_gnn(square_features, square_edge_index)
-        pc_embed = self.piece_gnn(piece_features, piece_edge_index)
+        # --- MODIFICATION: Add separate trunks for each head ---
+        trunk_dim = embed_dim // 2 # Intermediate dimension for the trunks
+        
+        self.policy_trunk = nn.Sequential(
+            nn.Linear(embed_dim, trunk_dim),
+            nn.GELU(),
+        )
+        self.value_trunk = nn.Sequential(
+            nn.Linear(embed_dim, trunk_dim),
+            nn.GELU(),
+        )
+        # --- END MODIFICATION ---
 
-        if pc_embed.numel() > 0:
-            sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, piece_to_square_map)
-            batch_size = square_batch.max().item() + 1
-            global_graph_embed = global_max_pool(pc_embed_fused, piece_batch.to(pc_embed_fused.device), size=batch_size)
-        else:
-            global_graph_embed = global_max_pool(sq_embed, square_batch)
+        # The policy and value heads now take the trunk's output as input
+        self.policy_head = PolicyHead(trunk_dim)
+        self.value_head = ValueHead(trunk_dim)
 
-        policy_logits = self.policy_head(global_graph_embed)
-        value_estimate = self.value_head(global_graph_embed)
+    def forward(self, data: HeteroData) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        The forward pass now pipes the shared embedding through separate trunks.
+        """
+        # 1. Get the shared embedding from the main GNN
+        shared_embed = self.unified_gnn(data)
 
-        # --- CORRECTED LINE ---
-        # Remove the .squeeze(-1) to keep the shape as [batch_size, 1] for the loss function.
+        # 2. Specialize the embedding for each task using the trunks
+        policy_embed = self.policy_trunk(shared_embed)
+        value_embed = self.value_trunk(shared_embed)
+
+        # 3. Pass specialized embeddings to the final heads
+        policy_logits = self.policy_head(policy_embed)
+        value_estimate = self.value_head(value_embed)
+
         return policy_logits, value_estimate

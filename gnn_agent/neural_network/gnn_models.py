@@ -1,15 +1,15 @@
-# gnn_agent/neural_network/gnn_models.py
-
+#
+# File: gnn_agent/neural_network/gnn_models.py (Corrected PolicyHead)
+#
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GATv2Conv, GCNConv, global_max_pool
 from typing import Optional, Tuple
 
-# --- Constants from gnn_data_converter ---
 from gnn_agent.gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
 
-# --- GNN Modules ---
+# --- LEGACY GNN Modules (No longer used by the new ChessNetwork) ---
 class SquareGNN(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, out_features: int, heads: int = 4):
         super(SquareGNN, self).__init__()
@@ -37,7 +37,6 @@ class PieceGNN(nn.Module):
         x = self.conv3(x, edge_index_piece)
         return x
 
-# Other classes (CrossAttentionModule, PolicyHead, ValueHead) are unchanged...
 class CrossAttentionModule(nn.Module):
     def __init__(self, embed_dim: int, num_heads: int):
         super().__init__()
@@ -63,42 +62,31 @@ class CrossAttentionModule(nn.Module):
         attended_squares = self.norm4(F.gelu(attended_squares_ffn) + attended_squares)
         return attended_squares, attended_pieces
 
+# --- Current Head Modules ---
+
 class PolicyHead(nn.Module):
-    def __init__(self, embed_dim: int, action_space_size: int = 4672):
+    def __init__(self, trunk_dim: int, action_space_size: int = 4672):
         super().__init__()
-        self.fc1, self.fc2 = nn.Linear(embed_dim, 1024), nn.Linear(1024, action_space_size)
+        self.fc1 = nn.Linear(trunk_dim, 1024)
+        self.fc2 = nn.Linear(1024, action_space_size)
         self.ln1 = nn.LayerNorm(1024)
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.gelu(self.ln1(self.fc1(x)))
         x = self.fc2(x)
-        return F.log_softmax(x, dim=-1)
+        # --- BUG FIX: Removed F.log_softmax(x, dim=-1) ---
+        # F.cross_entropy in the trainer applies softmax internally.
+        # Applying it here was incorrect and created a flawed gradient signal.
+        return x
 
 class ValueHead(nn.Module):
-    def __init__(self, embed_dim: int):
+    def __init__(self, trunk_dim: int):
         super().__init__()
-        self.fc1, self.fc2 = nn.Linear(embed_dim, 512), nn.Linear(512, 1)
+        self.fc1 = nn.Linear(trunk_dim, 512)
+        self.fc2 = nn.Linear(512, 1)
         self.ln1 = nn.LayerNorm(512)
+        
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = F.gelu(self.ln1(self.fc1(x)))
         x = self.fc2(x)
         return torch.tanh(x)
-
-# --- Main Network ---
-class ChessNetwork(nn.Module):
-    def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4):
-        super().__init__()
-        self.square_feature_dim, self.piece_feature_dim = SQUARE_FEATURE_DIM, PIECE_FEATURE_DIM
-        self.square_gnn = SquareGNN(SQUARE_FEATURE_DIM, gnn_hidden_dim, embed_dim, heads=num_heads)
-        self.piece_gnn = PieceGNN(PIECE_FEATURE_DIM, embed_dim, embed_dim)
-        self.fusion, self.policy_head, self.value_head = [m(embed_dim, num_heads) if isinstance(m, CrossAttentionModule) else m(embed_dim) for m in [CrossAttentionModule, PolicyHead, ValueHead]]
-
-    def forward(self, square_features, square_edge_index, square_batch, piece_features, piece_edge_index, piece_batch, piece_to_square_map, piece_padding_mask) -> Tuple[torch.Tensor, torch.Tensor]:
-        sq_embed = self.square_gnn(square_features, square_edge_index)
-        pc_embed = self.piece_gnn(piece_features, piece_edge_index)
-        if pc_embed.size(0) > 0:
-            sq_embed_fused, pc_embed_fused = self.fusion(sq_embed, pc_embed, piece_to_square_map)
-            batch_size = square_batch.max().item() + 1
-            global_graph_embed = global_max_pool(pc_embed_fused, piece_batch.to(pc_embed_fused.device), size=batch_size)
-        else:
-            global_graph_embed = global_max_pool(sq_embed, square_batch)
-        return self.policy_head(global_graph_embed), self.value_head(global_graph_embed).squeeze(-1)

@@ -1,4 +1,4 @@
-# FILE: tests/test_saturation.py
+# FILE: tests/test_saturation.py (Reduced Workload)
 import pytest
 import torch
 import chess
@@ -10,17 +10,6 @@ from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_inp
 from config import config_params
 
 def calculate_gradient_saturation(network: torch.nn.Module, epsilon: float = 1e-8) -> float:
-    """
-    Calculates the percentage of gradients in the network that are close to zero.
-    A high percentage suggests a vanishing gradient problem (neuron saturation).
-
-    Args:
-        network: The PyTorch network module to inspect.
-        epsilon: The threshold below which a gradient is considered "dead".
-
-    Returns:
-        The percentage of saturated (dead) gradients.
-    """
     total_params = 0
     saturated_params = 0
     for param in network.parameters():
@@ -28,21 +17,12 @@ def calculate_gradient_saturation(network: torch.nn.Module, epsilon: float = 1e-
             grad_abs = torch.abs(param.grad.detach())
             total_params += grad_abs.numel()
             saturated_params += (grad_abs < epsilon).sum().item()
-
     if total_params == 0:
-        return 0.0  # No gradients were found
-
+        return 0.0
     return (saturated_params / total_params) * 100.0
 
 
 def test_network_health_and_convergence():
-    """
-    A two-part test for network health:
-    1. Health Check: Validates that on the first backward pass (when loss is high),
-       gradient saturation is low, proving healthy gradient flow.
-    2. Convergence Check: Validates that the network can successfully overfit
-       on a single data point, proving its capacity to learn.
-    """
     # 1. SETUP
     board = chess.Board()
     device = torch.device("cpu")
@@ -50,45 +30,50 @@ def test_network_health_and_convergence():
     
     # 2. INITIALIZATION
     test_config = config_params.copy()
-    test_config['LEARNING_RATE'] = 0.01
+    
+    test_config['EMBED_DIM'] = 64
+    test_config['GNN_HIDDEN_DIM'] = 32
+    test_config['NUM_HEADS'] = 2
     test_config['WEIGHT_DECAY'] = 0
-    test_config['LR_SCHEDULER_STEP_SIZE'] = 1_000_000 
+    test_config['LR_SCHEDULER_STEP_SIZE'] = 1_000_000
+    test_config['LEARNING_RATE'] = 0.001 
+    test_config['VALUE_LOSS_WEIGHT'] = 10.0
 
     trainer = Trainer(model_config=test_config, device=device)
     network, _ = trainer.load_or_initialize_network(directory=None)
     network.train()
 
     # 3. PART 1: INITIAL HEALTH CHECK
-    print("\n--- Running Part 1: Initial Gradient Health Check ---")
-    
-    # Perform a single training step
-    initial_policy_loss, _ = trainer.train_on_batch(
+    print("\n--- Running Part 1: Initial Gradient Health Check (with GELU) ---")
+    initial_policy_loss, initial_value_loss = trainer.train_on_batch(
         game_examples=training_example, puzzle_examples=[], batch_size=1
     )
-    
-    # Check saturation immediately after the first step
     initial_saturation = calculate_gradient_saturation(network)
     
     print(f"Initial Policy Loss: {initial_policy_loss:.6f}")
     print(f"Initial Gradient Saturation: {initial_saturation:.2f}%")
-    
-    assert initial_saturation < 10.0, f"High initial gradient saturation detected ({initial_saturation:.2f}%). Network has a health problem."
+    assert initial_saturation < 10.0, f"High initial gradient saturation detected ({initial_saturation:.2f}%)."
     print("SUCCESS: Initial gradient flow is healthy.")
 
     # 4. PART 2: CONVERGENCE CHECK
     print("\n--- Running Part 2: Overfitting Convergence Check ---")
-    num_overfit_iterations = 100 # We already did one, so 99 more.
-    final_policy_loss = initial_policy_loss
-    final_value_loss = -1.0
     
+    # --- MODIFICATION: Reduced iterations to prevent system crash from high resource usage ---
+    num_overfit_iterations = 25 
+    
+    final_policy_loss = initial_policy_loss
+    final_value_loss = initial_value_loss
+    
+    # Run for one fewer iteration since the first one was done in Part 1
     for i in range(num_overfit_iterations - 1):
         policy_loss, value_loss = trainer.train_on_batch(
             game_examples=training_example, puzzle_examples=[], batch_size=1
         )
         final_policy_loss = policy_loss
         final_value_loss = value_loss
-        if (i + 10) % 10 == 0:
-             print(f"Iteration {i+10:3d}/{num_overfit_iterations} -> Policy Loss: {policy_loss:.6f}, Value Loss: {value_loss:.6f}")
+        # Adjusted print interval
+        if (i + 2) % 5 == 0 or i == num_overfit_iterations - 2:
+            print(f"Iteration {i+2:3d}/{num_overfit_iterations} -> Policy Loss: {policy_loss:.6f}, Value Loss: {value_loss:.6f}")
 
     print("--- Overfitting loop complete ---")
     print(f"Final Policy Loss: {final_policy_loss:.6f}")

@@ -1,4 +1,4 @@
-# FILENAME: config.py
+# FILENAME: config.py (Updated with Value Loss Weight)
 import os
 from pathlib import Path
 from collections import namedtuple
@@ -9,28 +9,25 @@ from collections import namedtuple
 
 config_params = {
     # -- General & Path Settings --
-    "DEVICE": "auto",  # Use "auto" to detect CUDA, or force "cpu"
+    "DEVICE": "auto",
     "STOCKFISH_PATH": "/usr/games/stockfish",
 
     # -- Training Run Settings --
-    "TOTAL_GAMES": 2000,        # Total games to run in the training session
-    "CHECKPOINT_INTERVAL": 10,    # Save a checkpoint every N games
-    "TRAINING_EPOCHS": 1,         # Epochs per training session (after each game)
+    "TOTAL_GAMES": 2000,
+    "CHECKPOINT_INTERVAL": 10,
+    "TRAINING_EPOCHS": 1,
     "BATCH_SIZE": 64,
 
     # -- MCTS Settings --
-    # Phase AB: Increased from 400 to 800 to leverage parallel MCTS.
-    "MCTS_SIMULATIONS": 800,      # Number of MCTS simulations per move
-    "CPUCT": 1.25,                # Exploration constant in MCTS
+    "MCTS_SIMULATIONS": 800,
+    "CPUCT": 1.25,
     
     # -- Tactical Puzzle Settings --
     "TACTICAL_PUZZLE_FILENAME": "tactical_puzzles.jsonl",
-    # NEW: Added filename for dynamically generated puzzles
     "GENERATED_PUZZLE_FILENAME": "generated_puzzles.jsonl",
-    "PUZZLE_RATIO": 0.25, # Ratio of puzzles to mix into a standard training batch
+    "PUZZLE_RATIO": 0.25,
 
     # -- Phase AR: Tactical Primer Settings --
-    # FIX: Reduced to 1 to work with the available 115 puzzles. (1 * 64 < 115)
     "TACTICAL_PRIMER_BATCHES": 1, 
     
     # -- Supervisor Parameters --
@@ -40,18 +37,22 @@ config_params = {
     # -- Bayesian Supervisor Specific --
     'SUPERVISOR_BAYESIAN_PENALTY': 0.8,
     'SUPERVISOR_RECENCY_WINDOW': 50,
-    # FIX: Set a meaningful grace period to prevent re-triggering.
     'SUPERVISOR_GRACE_PERIOD': 10, 
 
     # -- Mentor & Opponent Settings --
     "MENTOR_ELO": 2000,
-    "MENTOR_GAME_AGENT_COLOR": "random", # Color our agent plays in mentor games ("white", "black", or "random")
-    "STOCKFISH_DEPTH_MENTOR": 10,       # Stockfish depth for mentor games
-    "STOCKFISH_DEPTH_EVAL": 10,         # Stockfish depth for formal evaluation
+    "MENTOR_GAME_AGENT_COLOR": "random",
+    "STOCKFISH_DEPTH_MENTOR": 10,
+    "STOCKFISH_DEPTH_EVAL": 10,
 
     # -- Neural Network & Training Settings --
+    "EMBED_DIM": 256,
+    "GNN_HIDDEN_DIM": 128,
+    "NUM_HEADS": 4,
     "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
+    # --- MODIFICATION: Added Value Loss Weight to balance the two loss components ---
+    "VALUE_LOSS_WEIGHT": 1.0,
 
     # -- LR Scheduler Settings (Phase AG) --
     'LR_SCHEDULER_STEP_SIZE': 100,
@@ -62,66 +63,54 @@ config_params = {
 # =================================================================
 # 2. Path Configuration (Colab-aware)
 # =================================================================
+# (The rest of this file is unchanged)
 
-# MODIFIED: Added generated_puzzles_file
 Paths = namedtuple('Paths', [
     'checkpoints_dir', 
     'training_data_dir', 
     'pgn_games_dir', 
     'analysis_output_dir',
     'tactical_puzzles_file',
-    'generated_puzzles_file', # <-- ADDED
+    'generated_puzzles_file',
     'drive_project_root',
     'loss_log_file',
     'supervisor_log_file'
 ])
 
 def get_paths():
-    """
-    Detects if running in Google Colab and returns a named tuple of appropriate
-    paths for data, checkpoints, PGN files, and analysis outputs.
-    """
     if 'COLAB_GPU' in os.environ:
         print("Colab environment detected. Using pre-mounted Google Drive paths.")
-        
         drive_root_path = Path('/content/drive/MyDrive/ChessMCTS_RL')
-        
         if not Path('/content/drive').is_dir():
-                raise IOError(
-                    "Google Drive is not mounted. Please mount it in a Colab cell "
-                    "before running the script using: from google.colab import drive; "
-                    "drive.mount('/content/drive')"
-                )
-            
+            raise IOError(
+                "Google Drive is not mounted. Please mount it in a Colab cell."
+            )
     else:
         print("Running in a local environment.")
-        # Assumes the script is run from the project root.
         drive_root_path = Path.cwd()
     
     checkpoints_path = drive_root_path / 'checkpoints'
     training_data_path = drive_root_path / 'training_data'
     pgn_games_path = drive_root_path / 'pgn_games'
-    analysis_output_path = drive_root_path / 'analysis_output' # Typically for local analysis artifacts
+    analysis_output_path = drive_root_path / 'analysis_output'
 
     checkpoints_path.mkdir(parents=True, exist_ok=True)
     training_data_path.mkdir(parents=True, exist_ok=True)
     pgn_games_path.mkdir(parents=True, exist_ok=True)
     analysis_output_path.mkdir(parents=True, exist_ok=True)
     
-    # MODIFIED: Define paths for both puzzle files
     tactical_puzzles_path = drive_root_path / config_params["TACTICAL_PUZZLE_FILENAME"]
-    generated_puzzles_path = drive_root_path / config_params["GENERATED_PUZZLE_FILENAME"] # <-- ADDED
+    generated_puzzles_path = drive_root_path / config_params["GENERATED_PUZZLE_FILENAME"]
     loss_log_filepath = drive_root_path / 'loss_log_v2.csv'
     supervisor_log_filepath = drive_root_path / 'supervisor_log.txt'
     
-    # MODIFIED: Return the new path in the named tuple
     return Paths(
         checkpoints_dir=checkpoints_path,
         training_data_dir=training_data_path,
         pgn_games_dir=pgn_games_path,
         analysis_output_dir=analysis_output_path,
         tactical_puzzles_file=tactical_puzzles_path,
-        generated_puzzles_file=generated_puzzles_path, # <-- ADDED
+        generated_puzzles_file=generated_puzzles_path,
         drive_project_root=drive_root_path,
         loss_log_file=loss_log_filepath,
         supervisor_log_file=supervisor_log_filepath
