@@ -4,7 +4,8 @@ import numpy as np
 from typing import Dict, Tuple, List, Deque
 import collections
 
-from torch_geometric.data import Batch
+# --- FIX: Import Batch and HeteroData for proper batching and type hinting ---
+from torch_geometric.data import Batch, HeteroData
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from ..neural_network.chess_network import ChessNetwork
@@ -47,57 +48,20 @@ class MCTS:
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        # Data is created on CPU first for efficiency.
-        data_list = [convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process]
+        # --- FIX: The entire manual batching process is replaced. ---
 
-        # 1. Manually collate Square Graph tensors
-        square_x_list = [d.square_features for d in data_list]
-        square_edge_list = [d.square_edge_index for d in data_list]
-        
-        csum_sq = torch.cumsum(torch.tensor([s.size(0) for s in square_x_list]), 0)
-        csum_sq = torch.cat([torch.tensor([0]), csum_sq[:-1]])
-        
-        # --- FIX: All input tensors must be moved to self.device ---
-        square_features = torch.cat(square_x_list, dim=0).to(self.device)
-        square_edge_index = torch.cat([e + c for e, c in zip(square_edge_list, csum_sq)], dim=1).to(self.device)
-        square_batch = torch.tensor([i for i, s in enumerate(square_x_list) for _ in range(s.size(0))], dtype=torch.long).to(self.device)
+        # 1. Convert all boards to HeteroData objects on the CPU.
+        data_list: List[HeteroData] = [convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process]
 
-        # 2. Manually collate Piece Graph tensors
-        piece_x_list = [d.piece_features for d in data_list]
-        piece_edge_list = [d.piece_edge_index for d in data_list]
-        piece_map_list = [d.piece_to_square_map for d in data_list]
+        # 2. Use Batch.from_data_list for correct, unified batching.
+        #    This automatically handles all node types, edge types, and attributes.
+        #    The batch is then moved to the GPU in a single operation.
+        batch = Batch.from_data_list(data_list).to(self.device)
 
-        csum_pc = torch.cumsum(torch.tensor([p.size(0) for p in piece_x_list]), 0)
-        csum_pc = torch.cat([torch.tensor([0]), csum_pc[:-1]])
+        # 3. Perform the forward pass with the single, correctly batched object.
+        policy_logits_batch, value_batch = self.network(batch)
 
-        # --- FIX: All input tensors must be moved to self.device ---
-        piece_features = torch.cat(piece_x_list, dim=0).to(self.device)
-        piece_edge_index = torch.cat([e + c for e, c in zip(piece_edge_list, csum_pc)], dim=1).to(self.device)
-        piece_batch = torch.tensor([i for i, p in enumerate(piece_x_list) for _ in range(p.size(0))], dtype=torch.long).to(self.device)
-        piece_to_square_map = torch.cat([pm + c for pm, c in zip(piece_map_list, csum_sq)], dim=0).to(self.device)
-
-        # 3. Create the padding mask
-        max_pieces = max(p.size(0) for p in piece_x_list) if piece_x_list else 0
-        batch_size = len(boards_to_process)
-        # --- FIX: Ensure padding mask is created directly on the correct device ---
-        piece_padding_mask = torch.ones((batch_size, max_pieces), dtype=torch.bool, device=self.device)
-        if piece_x_list:
-            for i, p_features in enumerate(piece_x_list):
-                num_pieces = p_features.size(0)
-                if num_pieces > 0:
-                    piece_padding_mask[i, :num_pieces] = 0
-
-        # 4. Perform the forward pass with correctly batched & located data
-        policy_logits_batch, value_batch = self.network(
-            square_features=square_features,
-            square_edge_index=square_edge_index,
-            square_batch=square_batch,
-            piece_features=piece_features,
-            piece_edge_index=piece_edge_index,
-            piece_batch=piece_batch,
-            piece_to_square_map=piece_to_square_map,
-            piece_padding_mask=piece_padding_mask
-        )
+        # --- End of FIX ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
