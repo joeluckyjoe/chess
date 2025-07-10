@@ -1,12 +1,11 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Final Verified Version for Phase BA)
+# File: gnn_agent/rl_loop/guided_session.py (Final Corrected Version for Phase BA)
 #
 import torch
 import chess
 import chess.pgn
 from typing import Tuple, Dict, List
 
-# --- FIX: Import the actual Stockfish class and MCTS ---
 from stockfish import Stockfish
 from ..neural_network.chess_network import ChessNetwork
 from ..search.mcts import MCTS
@@ -19,24 +18,25 @@ def _get_mentor_move_and_score(mentor_engine: Stockfish, board: chess.Board) -> 
     Gets the best move and centipawn score from the Stockfish engine for a given board state.
     """
     mentor_engine.set_fen_position(board.fen())
-    best_move_uci = mentor_engine.get_best_move_time(100) # Use a small time limit
+    best_move_uci = mentor_engine.get_best_move_time(100)
+    if not best_move_uci:
+        return None, 0.0
     move = chess.Move.from_uci(best_move_uci)
 
     eval_result = mentor_engine.get_evaluation()
     if eval_result['type'] == 'mate':
-        # Assign a large centipawn value for mate
         score = 30000 if eval_result['value'] > 0 else -30000
     else:
         score = eval_result['value']
 
-    return move, score / 100.0 # Return score in pawns
+    return move, score / 100.0
 
 @torch.no_grad()
 def _decide_agent_action(
     agent: ChessNetwork,
     mentor_engine: Stockfish,
     board: chess.Board,
-    mcts_instance: MCTS,
+    search_manager: MCTS, # FIX: Argument name changed back to search_manager
     num_simulations: int,
     in_guided_mode: bool,
     value_threshold: float,
@@ -56,15 +56,17 @@ def _decide_agent_action(
     policy_probs = torch.softmax(policy_logits.squeeze(0), dim=0)
 
     mentor_move, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
+    if mentor_move is None:
+        return None, in_guided_mode, {}
+
     mentor_value = torch.tanh(torch.tensor(mentor_score_cp / 10.0)).item()
-    
     agent_pov_mentor_value = mentor_value if board.turn == chess.WHITE else -mentor_value
 
     if in_guided_mode:
         if agent_pov_mentor_value < value_threshold:
             in_guided_mode = False
-            policy_dict = mcts_instance.run_search(board, num_simulations)
-            move = mcts_instance.select_move(policy_dict, temperature=1.0)
+            policy_dict = search_manager.run_search(board, num_simulations)
+            move = search_manager.select_move(policy_dict, temperature=1.0)
         else:
             move = mentor_move
     else:
@@ -72,17 +74,23 @@ def _decide_agent_action(
             in_guided_mode = True
             move = mentor_move
         else:
-            policy_dict = mcts_instance.run_search(board, num_simulations)
-            move = mcts_instance.select_move(policy_dict, temperature=1.0)
+            policy_dict = search_manager.run_search(board, num_simulations)
+            move = search_manager.select_move(policy_dict, temperature=1.0)
+    
+    if not policy_dict:
+         policy_dict = search_manager.run_search(board, num_simulations)
 
-    policy_for_training = {m: policy_probs[move_to_index(m, board)].item() for m in board.legal_moves}
+
+    legal_moves = list(board.legal_moves)
+    policy_for_training = {m: policy_probs[move_to_index(m, board)].item() for m in legal_moves if m in policy_dict}
     
     return move, in_guided_mode, policy_for_training
+
 
 def run_guided_session(
     agent: ChessNetwork,
     mentor_engine: Stockfish,
-    mcts_instance: MCTS,
+    search_manager: MCTS, # FIX: Argument name changed back to search_manager
     num_simulations: int = 100,
     value_threshold: float = 0.1
 ) -> Tuple[List[Tuple[object, Dict, float]], str]:
@@ -96,9 +104,10 @@ def run_guided_session(
     in_guided_mode = False
 
     while not board.is_game_over(claim_draw=True):
+        current_turn_color = "White" if board.turn == chess.WHITE else "Black"
         if board.turn == agent_color:
             move, in_guided_mode, policy = _decide_agent_action(
-                agent, mentor_engine, board, mcts_instance, num_simulations, 
+                agent, mentor_engine, board, search_manager, num_simulations, 
                 in_guided_mode, value_threshold, agent_color
             )
         else:
