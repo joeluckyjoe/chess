@@ -1,10 +1,10 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Final Corrected Version for Phase BA)
+# File: gnn_agent/rl_loop/guided_session.py (Final Corrected Version)
 #
 import torch
 import chess
 import chess.pgn
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 
 from stockfish import Stockfish
 from ..neural_network.chess_network import ChessNetwork
@@ -13,7 +13,7 @@ from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from ..gamestate_converters.action_space_converter import move_to_index
 from torch_geometric.data import Batch
 
-def _get_mentor_move_and_score(mentor_engine: Stockfish, board: chess.Board) -> Tuple[chess.Move, float]:
+def _get_mentor_move_and_score(mentor_engine: Stockfish, board: chess.Board) -> Tuple[Optional[chess.Move], float]:
     """
     Gets the best move and centipawn score from the Stockfish engine for a given board state.
     """
@@ -36,12 +36,12 @@ def _decide_agent_action(
     agent: ChessNetwork,
     mentor_engine: Stockfish,
     board: chess.Board,
-    search_manager: MCTS, # FIX: Argument name changed back to search_manager
+    search_manager: MCTS,
     num_simulations: int,
     in_guided_mode: bool,
     value_threshold: float,
     agent_color: bool
-) -> Tuple[chess.Move, bool, Dict]:
+) -> Tuple[Optional[chess.Move], bool, Dict]:
     """
     Decides the agent's move, potentially switching in or out of guided mode.
     """
@@ -53,19 +53,19 @@ def _decide_agent_action(
     policy_logits, value_tensor = agent(batch)
     
     value = value_tensor.item()
-    policy_probs = torch.softmax(policy_logits.squeeze(0), dim=0)
-
+    
     mentor_move, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
     if mentor_move is None:
         return None, in_guided_mode, {}
-
+    
     mentor_value = torch.tanh(torch.tensor(mentor_score_cp / 10.0)).item()
     agent_pov_mentor_value = mentor_value if board.turn == chess.WHITE else -mentor_value
+    
+    policy_dict = search_manager.run_search(board, num_simulations)
 
     if in_guided_mode:
         if agent_pov_mentor_value < value_threshold:
             in_guided_mode = False
-            policy_dict = search_manager.run_search(board, num_simulations)
             move = search_manager.select_move(policy_dict, temperature=1.0)
         else:
             move = mentor_move
@@ -74,15 +74,15 @@ def _decide_agent_action(
             in_guided_mode = True
             move = mentor_move
         else:
-            policy_dict = search_manager.run_search(board, num_simulations)
             move = search_manager.select_move(policy_dict, temperature=1.0)
     
-    if not policy_dict:
-         policy_dict = search_manager.run_search(board, num_simulations)
+    # Ensure a move is selected if one wasn't (e.g., if policy_dict was empty)
+    if move is None and list(board.legal_moves):
+        move = search_manager.select_move(policy_dict, temperature=1.0)
+        if move is None: # Fallback if search fails completely
+             move = list(board.legal_moves)[0]
 
-
-    legal_moves = list(board.legal_moves)
-    policy_for_training = {m: policy_probs[move_to_index(m, board)].item() for m in legal_moves if m in policy_dict}
+    policy_for_training = {m: torch.softmax(policy_logits.squeeze(0), dim=0)[move_to_index(m, board)].item() for m in board.legal_moves}
     
     return move, in_guided_mode, policy_for_training
 
@@ -90,7 +90,8 @@ def _decide_agent_action(
 def run_guided_session(
     agent: ChessNetwork,
     mentor_engine: Stockfish,
-    search_manager: MCTS, # FIX: Argument name changed back to search_manager
+    search_manager: MCTS,
+    agent_color_str: str, # FIX: Added missing agent_color_str parameter
     num_simulations: int = 100,
     value_threshold: float = 0.1
 ) -> Tuple[List[Tuple[object, Dict, float]], str]:
@@ -100,11 +101,11 @@ def run_guided_session(
     board = chess.Board()
     training_examples = []
     
-    agent_color = chess.WHITE
-    in_guided_mode = False
+    # FIX: Use the agent_color_str argument to set the agent's color
+    agent_color = chess.WHITE if agent_color_str.lower() == 'white' else chess.BLACK
+    in_guided_mode = True # Start in guided mode for the first move
 
     while not board.is_game_over(claim_draw=True):
-        current_turn_color = "White" if board.turn == chess.WHITE else "Black"
         if board.turn == agent_color:
             move, in_guided_mode, policy = _decide_agent_action(
                 agent, mentor_engine, board, search_manager, num_simulations, 
@@ -118,7 +119,9 @@ def run_guided_session(
             break
 
         _, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
-        outcome = torch.tanh(torch.tensor(mentor_score_cp / 10.0)).item()
+        # Ensure the perspective is correct for the value target
+        outcome_perspective = mentor_score_cp if board.turn == chess.WHITE else -mentor_score_cp
+        outcome = torch.tanh(torch.tensor(outcome_perspective / 10.0)).item()
 
         if board.turn == agent_color:
             gnn_input = convert_to_gnn_input(board, torch.device('cpu'))
