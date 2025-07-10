@@ -45,7 +45,8 @@ def _decide_agent_action(
     """
     Decides the agent's move, potentially switching in or out of guided mode.
     """
-    model_device = agent.device
+    # FIX: Get device directly from model parameters
+    model_device = next(agent.parameters()).device
     agent.eval()
 
     gnn_data = convert_to_gnn_input(board, model_device)
@@ -76,10 +77,11 @@ def _decide_agent_action(
         else:
             move = search_manager.select_move(policy_dict, temperature=1.0)
     
-    # Ensure a move is selected if one wasn't (e.g., if policy_dict was empty)
     if move is None and list(board.legal_moves):
+        if not policy_dict:
+             policy_dict = search_manager.run_search(board, num_simulations)
         move = search_manager.select_move(policy_dict, temperature=1.0)
-        if move is None: # Fallback if search fails completely
+        if move is None:
              move = list(board.legal_moves)[0]
 
     policy_for_training = {m: torch.softmax(policy_logits.squeeze(0), dim=0)[move_to_index(m, board)].item() for m in board.legal_moves}
@@ -91,7 +93,7 @@ def run_guided_session(
     agent: ChessNetwork,
     mentor_engine: Stockfish,
     search_manager: MCTS,
-    agent_color_str: str, # FIX: Added missing agent_color_str parameter
+    agent_color_str: str,
     num_simulations: int = 100,
     value_threshold: float = 0.1
 ) -> Tuple[List[Tuple[object, Dict, float]], str]:
@@ -101,9 +103,8 @@ def run_guided_session(
     board = chess.Board()
     training_examples = []
     
-    # FIX: Use the agent_color_str argument to set the agent's color
     agent_color = chess.WHITE if agent_color_str.lower() == 'white' else chess.BLACK
-    in_guided_mode = True # Start in guided mode for the first move
+    in_guided_mode = True
 
     while not board.is_game_over(claim_draw=True):
         if board.turn == agent_color:
@@ -119,7 +120,6 @@ def run_guided_session(
             break
 
         _, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
-        # Ensure the perspective is correct for the value target
         outcome_perspective = mentor_score_cp if board.turn == chess.WHITE else -mentor_score_cp
         outcome = torch.tanh(torch.tensor(outcome_perspective / 10.0)).item()
 
