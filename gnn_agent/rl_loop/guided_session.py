@@ -1,24 +1,42 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Final, Verified Version for Phase BA)
+# File: gnn_agent/rl_loop/guided_session.py (Final Verified Version for Phase BA)
 #
 import torch
 import chess
 import chess.pgn
 from typing import Tuple, Dict, List
 
-# --- FIX: Corrected all imports based on the actual file tree ---
+# --- FIX: Import the actual Stockfish class and MCTS ---
+from stockfish import Stockfish
 from ..neural_network.chess_network import ChessNetwork
-from ..search.mcts import MCTS  # Use the existing MCTS class
+from ..search.mcts import MCTS
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-from ..gamestate_converters.stockfish_communicator import MentorEngine
+from ..gamestate_converters.action_space_converter import move_to_index
 from torch_geometric.data import Batch
+
+def _get_mentor_move_and_score(mentor_engine: Stockfish, board: chess.Board) -> Tuple[chess.Move, float]:
+    """
+    Gets the best move and centipawn score from the Stockfish engine for a given board state.
+    """
+    mentor_engine.set_fen_position(board.fen())
+    best_move_uci = mentor_engine.get_best_move_time(100) # Use a small time limit
+    move = chess.Move.from_uci(best_move_uci)
+
+    eval_result = mentor_engine.get_evaluation()
+    if eval_result['type'] == 'mate':
+        # Assign a large centipawn value for mate
+        score = 30000 if eval_result['value'] > 0 else -30000
+    else:
+        score = eval_result['value']
+
+    return move, score / 100.0 # Return score in pawns
 
 @torch.no_grad()
 def _decide_agent_action(
     agent: ChessNetwork,
-    mentor_engine: MentorEngine,
+    mentor_engine: Stockfish,
     board: chess.Board,
-    mcts_instance: MCTS,  # FIX: Type hint changed to MCTS
+    mcts_instance: MCTS,
     num_simulations: int,
     in_guided_mode: bool,
     value_threshold: float,
@@ -37,38 +55,34 @@ def _decide_agent_action(
     value = value_tensor.item()
     policy_probs = torch.softmax(policy_logits.squeeze(0), dim=0)
 
-    mentor_move, mentor_score = mentor_engine.get_best_move_with_score(board)
-    agent_pov_mentor_score = mentor_score if board.turn == chess.WHITE else -mentor_score
+    mentor_move, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
+    mentor_value = torch.tanh(torch.tensor(mentor_score_cp / 10.0)).item()
+    
+    agent_pov_mentor_value = mentor_value if board.turn == chess.WHITE else -mentor_value
 
-    # Guided Mode Logic
     if in_guided_mode:
-        if agent_pov_mentor_score < value_threshold:
+        if agent_pov_mentor_value < value_threshold:
             in_guided_mode = False
-            # FIX: Call select_move on the mcts_instance object
             policy_dict = mcts_instance.run_search(board, num_simulations)
             move = mcts_instance.select_move(policy_dict, temperature=1.0)
         else:
             move = mentor_move
-    else:  # Not in guided mode
-        if value < agent_pov_mentor_score - value_threshold:
+    else:
+        if value < agent_pov_mentor_value - value_threshold:
             in_guided_mode = True
             move = mentor_move
         else:
-            # FIX: Call select_move on the mcts_instance object
             policy_dict = mcts_instance.run_search(board, num_simulations)
             move = mcts_instance.select_move(policy_dict, temperature=1.0)
 
-    # Use the raw policy from the initial network pass for training data
-    action_converter = mcts_instance.action_converter # Assuming action_converter is an attribute of MCTS
-    policy_for_training = {m: policy_probs[action_converter.move_to_index(m, board)].item() for m in board.legal_moves}
+    policy_for_training = {m: policy_probs[move_to_index(m, board)].item() for m in board.legal_moves}
     
     return move, in_guided_mode, policy_for_training
 
-
 def run_guided_session(
     agent: ChessNetwork,
-    mentor_engine: MentorEngine,
-    mcts_instance: MCTS,  # FIX: Type hint changed to MCTS
+    mentor_engine: Stockfish,
+    mcts_instance: MCTS,
     num_simulations: int = 100,
     value_threshold: float = 0.1
 ) -> Tuple[List[Tuple[object, Dict, float]], str]:
@@ -88,14 +102,14 @@ def run_guided_session(
                 in_guided_mode, value_threshold, agent_color
             )
         else:
-            move, _ = mentor_engine.get_best_move_with_score(board)
+            move, _ = _get_mentor_move_and_score(mentor_engine, board)
             policy = {}
 
         if move is None or not board.is_legal(move):
             break
 
-        _, mentor_score = mentor_engine.get_best_move_with_score(board)
-        outcome = torch.tanh(torch.tensor(mentor_score / 10.0)).item()
+        _, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
+        outcome = torch.tanh(torch.tensor(mentor_score_cp / 10.0)).item()
 
         if board.turn == agent_color:
             gnn_input = convert_to_gnn_input(board, torch.device('cpu'))
