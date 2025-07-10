@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Final Corrected Version)
+# File: gnn_agent/rl_loop/guided_session.py (Definitive Final Version)
 #
 import torch
 import chess
@@ -45,7 +45,6 @@ def _decide_agent_action(
     """
     Decides the agent's move, potentially switching in or out of guided mode.
     """
-    # FIX: Get device directly from model parameters
     model_device = next(agent.parameters()).device
     agent.eval()
 
@@ -96,7 +95,7 @@ def run_guided_session(
     agent_color_str: str,
     num_simulations: int = 100,
     value_threshold: float = 0.1
-) -> Tuple[List[Tuple[object, Dict, float]], str]:
+) -> Tuple[List[Tuple[str, Dict, float]], str]:
     """
     Plays a single game where the agent is guided by the mentor engine.
     """
@@ -119,13 +118,15 @@ def run_guided_session(
         if move is None or not board.is_legal(move):
             break
 
+        # Get the objective evaluation of the position *before* the move
         _, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
         outcome_perspective = mentor_score_cp if board.turn == chess.WHITE else -mentor_score_cp
         outcome = torch.tanh(torch.tensor(outcome_perspective / 10.0)).item()
 
+        # Generate training example for the agent's turn
         if board.turn == agent_color:
-            gnn_input = convert_to_gnn_input(board, torch.device('cpu'))
-            training_examples.append((gnn_input, policy, outcome))
+            # FIX: Store the FEN string, not the GNN data object
+            training_examples.append((board.fen(), policy, outcome))
 
         board.push(move)
 
