@@ -20,7 +20,7 @@ config_params = {
 
     # -- MCTS Settings --
     "MCTS_SIMULATIONS": 800,
-    "CPUCT": 1.25,
+    "CPUCT": 2.5,
     
     # -- Tactical Puzzle Settings --
     "TACTICAL_PUZZLE_FILENAME": "tactical_puzzles.jsonl",
