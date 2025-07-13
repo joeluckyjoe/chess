@@ -1,9 +1,9 @@
 #
-# File: gnn_agent/neural_network/chess_network.py (Updated with Transformer & Batch Fix)
+# File: gnn_agent/neural_network/chess_network.py (Corrected for new UnifiedGNN)
 #
 import torch
 import torch.nn as nn
-from torch_geometric.data import HeteroData, Batch
+from torch_geometric.data import Batch
 from torch_geometric.utils import to_dense_batch
 from typing import Tuple
 
@@ -13,17 +13,13 @@ from .gnn_models import PolicyHead, ValueHead
 class ChessNetwork(nn.Module):
     """
     The main PyTorch module for the chess agent.
-    
-    Phase BE Modification: This version adds a TransformerEncoder layer after
-    the UnifiedGNN to provide a mechanism for global, all-to-all reasoning,
-    aiming to break the "plateau-intervene-improve" cycle.
-    
-    BUG FIX: Corrected the forward pass to handle PyTorch Geometric's
-    batching mechanism, allowing it to work with the MCTS batch size.
+    This version correctly integrates the GNN and Transformer, with proper
+    batch handling for the MCTS.
     """
     def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4, transformer_layers: int = 2):
         super().__init__()
 
+        # This metadata must match the metadata used in the UnifiedGNN
         metadata = (
             ['square', 'piece'],
             [
@@ -45,7 +41,7 @@ class ChessNetwork(nn.Module):
         transformer_encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, 
             nhead=num_heads, 
-            dim_feedforward=embed_dim * 2, # Adjusted for efficiency
+            dim_feedforward=embed_dim * 2,
             dropout=0.1,
             activation='gelu',
             batch_first=True
@@ -71,47 +67,36 @@ class ChessNetwork(nn.Module):
 
     def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        The forward pass now pipes the shared embedding through the Transformer
-        with corrected batch handling.
+        The forward pass with correct GNN -> Transformer data flow.
         """
-        # 1. Get shared embeddings from the GNN.
-        # This returns embeddings for all nodes in the batch concatenated together.
-        gnn_output = self.unified_gnn(data)
-        piece_embeds = gnn_output['piece'] # Shape: [total_num_pieces_in_batch, embed_dim]
+        # 1. Get the sequence of per-piece embeddings from the GNN.
+        # Shape: [total_num_pieces_in_batch, embed_dim]
+        piece_embeds = self.unified_gnn(data)
         
-        # --- BATCHING FIX ---
-        # 2. Convert sparse PyG batch to a dense tensor for the Transformer.
-        #    `to_dense_batch` creates a tensor of shape [batch_size, max_nodes, features]
-        #    and a boolean mask to identify valid (non-padded) nodes.
+        # 2. Convert the sparse PyG batch to a dense tensor for the Transformer.
+        # Shape: [batch_size, max_pieces, embed_dim], Mask: [batch_size, max_pieces]
         dense_piece_embeds, mask = to_dense_batch(piece_embeds, batch=data['piece'].batch)
         
-        # The mask from to_dense_batch is True for valid nodes. The transformer's
-        # padding mask expects True for positions to be *ignored*. So we invert it.
+        # The transformer's padding mask expects True for positions to be *ignored*.
         padding_mask = ~mask
 
         # 3. Pass the dense batch through the Transformer, using the padding mask.
         transformer_output = self.transformer_encoder(dense_piece_embeds, src_key_padding_mask=padding_mask)
 
-        # 4. Aggregate the Transformer's output. We perform a masked average pooling
-        #    to get a single embedding per graph, ignoring the padded elements.
-        #    We replace masked values with 0 so they don't contribute to the sum.
+        # 4. Aggregate the Transformer's output via masked average pooling.
+        # We replace padded values with 0 so they don't contribute to the sum.
         transformer_output = transformer_output.masked_fill(padding_mask.unsqueeze(-1), 0)
-        
-        # Summing over the sequence dimension (dim=1)
-        # The mask needs to be summed to get the actual number of pieces per graph
         num_pieces = mask.sum(dim=1, keepdim=True)
-        
-        # Avoid division by zero for graphs with no pieces (should not happen in chess)
-        num_pieces[num_pieces == 0] = 1
+        # Avoid division by zero for edge cases (e.g., a board with no pieces)
+        num_pieces = torch.clamp(num_pieces, min=1)
         
         aggregated_embed = transformer_output.sum(dim=1) / num_pieces
-        # --- END OF FIX ---
 
-        # 5. Specialize the aggregated embedding for each task using the trunks
+        # 5. Specialize the aggregated embedding for each task.
         policy_embed = self.policy_trunk(aggregated_embed)
         value_embed = self.value_trunk(aggregated_embed)
 
-        # 6. Pass specialized embeddings to the final heads
+        # 6. Pass specialized embeddings to the final heads.
         policy_logits = self.policy_head(policy_embed)
         value_estimate = self.value_head(value_embed)
 
