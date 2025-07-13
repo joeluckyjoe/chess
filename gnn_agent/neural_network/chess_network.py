@@ -1,9 +1,10 @@
 #
-# File: gnn_agent/neural_network/chess_network.py (Updated with Transformer)
+# File: gnn_agent/neural_network/chess_network.py (Updated with Transformer & Batch Fix)
 #
 import torch
 import torch.nn as nn
-from torch_geometric.data import HeteroData
+from torch_geometric.data import HeteroData, Batch
+from torch_geometric.utils import to_dense_batch
 from typing import Tuple
 
 from .unified_gnn import UnifiedGNN
@@ -16,6 +17,9 @@ class ChessNetwork(nn.Module):
     Phase BE Modification: This version adds a TransformerEncoder layer after
     the UnifiedGNN to provide a mechanism for global, all-to-all reasoning,
     aiming to break the "plateau-intervene-improve" cycle.
+    
+    BUG FIX: Corrected the forward pass to handle PyTorch Geometric's
+    batching mechanism, allowing it to work with the MCTS batch size.
     """
     def __init__(self, embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4, transformer_layers: int = 2):
         super().__init__()
@@ -38,26 +42,20 @@ class ChessNetwork(nn.Module):
             metadata=metadata
         )
         
-        # --- MODIFICATION: Add TransformerEncoder Layer ---
-        # The hypothesis is that the GNN's local message-passing is insufficient.
-        # A Transformer can weigh the importance of all piece embeddings against
-        # each other simultaneously, providing global context.
         transformer_encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, 
             nhead=num_heads, 
-            dim_feedforward=embed_dim * 4, # Standard practice
+            dim_feedforward=embed_dim * 2, # Adjusted for efficiency
             dropout=0.1,
-            activation='gelu', # Consistent with our other activations
-            batch_first=True # Important for our data shape
+            activation='gelu',
+            batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer=transformer_encoder_layer,
             num_layers=transformer_layers
         )
-        # --- END MODIFICATION ---
 
-        # Separate trunks for each head to decouple learning objectives.
-        trunk_dim = embed_dim // 2 # Intermediate dimension for the trunks
+        trunk_dim = embed_dim // 2
         
         self.policy_trunk = nn.Sequential(
             nn.Linear(embed_dim, trunk_dim),
@@ -68,37 +66,52 @@ class ChessNetwork(nn.Module):
             nn.GELU(),
         )
 
-        # The policy and value heads now take the trunk's output as input
         self.policy_head = PolicyHead(trunk_dim)
         self.value_head = ValueHead(trunk_dim)
 
-    def forward(self, data: HeteroData) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, data: Batch) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        The forward pass now pipes the shared embedding through the Transformer.
+        The forward pass now pipes the shared embedding through the Transformer
+        with corrected batch handling.
         """
-        # 1. Get the shared embedding from the main GNN
-        shared_embed = self.unified_gnn(data)
-
-        # --- MODIFICATION: Apply Transformer for global reasoning ---
-        # The GNN output is (batch_size, num_pieces, embed_dim).
-        # We need to add a batch dimension if it's not there for the transformer.
-        if shared_embed.dim() == 2:
-            shared_embed = shared_embed.unsqueeze(0) # (1, num_pieces, embed_dim)
-
-        # Pass through the transformer encoder
-        transformer_output = self.transformer_encoder(shared_embed)
+        # 1. Get shared embeddings from the GNN.
+        # This returns embeddings for all nodes in the batch concatenated together.
+        gnn_output = self.unified_gnn(data)
+        piece_embeds = gnn_output['piece'] # Shape: [total_num_pieces_in_batch, embed_dim]
         
-        # We need to aggregate the transformer's output back to a single vector
-        # per graph. A simple mean over the sequence dimension is a robust choice.
-        # (batch_size, num_pieces, embed_dim) -> (batch_size, embed_dim)
-        aggregated_embed = transformer_output.mean(dim=1)
-        # --- END MODIFICATION ---
+        # --- BATCHING FIX ---
+        # 2. Convert sparse PyG batch to a dense tensor for the Transformer.
+        #    `to_dense_batch` creates a tensor of shape [batch_size, max_nodes, features]
+        #    and a boolean mask to identify valid (non-padded) nodes.
+        dense_piece_embeds, mask = to_dense_batch(piece_embeds, batch=data['piece'].batch)
+        
+        # The mask from to_dense_batch is True for valid nodes. The transformer's
+        # padding mask expects True for positions to be *ignored*. So we invert it.
+        padding_mask = ~mask
 
-        # 2. Specialize the aggregated embedding for each task using the trunks
+        # 3. Pass the dense batch through the Transformer, using the padding mask.
+        transformer_output = self.transformer_encoder(dense_piece_embeds, src_key_padding_mask=padding_mask)
+
+        # 4. Aggregate the Transformer's output. We perform a masked average pooling
+        #    to get a single embedding per graph, ignoring the padded elements.
+        #    We replace masked values with 0 so they don't contribute to the sum.
+        transformer_output = transformer_output.masked_fill(padding_mask.unsqueeze(-1), 0)
+        
+        # Summing over the sequence dimension (dim=1)
+        # The mask needs to be summed to get the actual number of pieces per graph
+        num_pieces = mask.sum(dim=1, keepdim=True)
+        
+        # Avoid division by zero for graphs with no pieces (should not happen in chess)
+        num_pieces[num_pieces == 0] = 1
+        
+        aggregated_embed = transformer_output.sum(dim=1) / num_pieces
+        # --- END OF FIX ---
+
+        # 5. Specialize the aggregated embedding for each task using the trunks
         policy_embed = self.policy_trunk(aggregated_embed)
         value_embed = self.value_trunk(aggregated_embed)
 
-        # 3. Pass specialized embeddings to the final heads
+        # 6. Pass specialized embeddings to the final heads
         policy_logits = self.policy_head(policy_embed)
         value_estimate = self.value_head(value_embed)
 
