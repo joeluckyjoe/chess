@@ -121,15 +121,28 @@ class Trainer:
             fen_strings, mcts_policies, game_outcomes, data_types = zip(*batch_chunk)
             
             boards = [chess.Board(fen) for fen in fen_strings]
-            data_list = [convert_to_gnn_input(b, torch.device('cpu')) for b in boards]
-            loader = DataLoader(data_list, batch_size=len(data_list))
-            batched_graph = next(iter(loader))
-            batched_graph.to(self.device)
+            
+            # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
+            # convert_to_gnn_input now returns a tuple (gnn_data, cnn_data)
+            # We need to handle both inputs separately.
+            gnn_data_list, cnn_data_list = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards])
+
+            # Batch the GNN data using PyG's DataLoader
+            gnn_loader = DataLoader(list(gnn_data_list), batch_size=len(gnn_data_list))
+            batched_gnn_data = next(iter(gnn_loader))
+            batched_gnn_data.to(self.device)
+
+            # Stack the CNN data into a single tensor
+            batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
+            # --- END MODIFICATION ---
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)]).to(self.device)
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            pred_policy_logits, pred_value = self.network(batched_graph)
+            # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
+            # Pass both batched GNN and CNN data to the network's forward method
+            pred_policy_logits, pred_value = self.network(batched_gnn_data, batched_cnn_data)
+            # --- END MODIFICATION ---
 
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
             is_game_data_mask = torch.tensor([t == 'game' for t in data_types], dtype=torch.bool, device=self.device)
@@ -142,10 +155,8 @@ class Trainer:
 
             total_policy_loss += policy_loss.item() * len(batch_chunk)
             
-            # --- MODIFICATION: Apply weight to the value loss ---
             value_loss_weight = self.model_config.get('VALUE_LOSS_WEIGHT', 1.0)
             total_loss = policy_loss + (value_loss * value_loss_weight)
-            # --- END MODIFICATION ---
             
             if total_loss > 0:
                 total_loss.backward()

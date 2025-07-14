@@ -24,6 +24,13 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
+# --- PHASE BG NOTE ---
+# No changes are required in this file. The responsibility for handling the 
+# new dual-input data format (gnn_data, cnn_data) lies within the Trainer class,
+# which receives the 'training_examples' list and processes it internally.
+# This file correctly passes the collected examples to trainer.train_on_batch().
+# --- END NOTE ---
+
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     file_exists = os.path.isfile(filepath)
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
@@ -84,11 +91,18 @@ def main():
         pc_features = chess_network.piece_feature_dim
         print("\n" + "-"*45)
         print("--- Model Feature Dimensions Verification ---")
-        print(f"  - SquareGNN input features: {sq_features}")
-        print(f"  - PieceGNN input features:  {pc_features}")
+        print(f"   - SquareGNN input features: {sq_features}")
+        print(f"   - PieceGNN input features:  {pc_features}")
         print("-"*45 + "\n")
     except AttributeError:
-        print("\n[WARNING] Could not verify model feature dimensions. Attributes not found on model.\n")
+        # This will now be expected for the GNN+CNN Hybrid model, so we can make this message more informative.
+        print("\n" + "-"*45)
+        print("--- Model Architecture Verification ---")
+        if hasattr(chess_network, 'gnn') and hasattr(chess_network, 'cnn'):
+             print("   - GNN+CNN Hybrid Model Detected.")
+        else:
+             print("   - [WARNING] Could not verify model feature dimensions. Attributes not found on model.")
+        print("-"*45 + "\n")
     except Exception as e:
         print(f"\n[WARNING] An unexpected error occurred during feature verification: {e}\n")
     # --- END CORRECTION ---

@@ -1,142 +1,103 @@
 import pytest
-import chess
-import numpy as np
 import torch
+import chess
+from torch_geometric.data import HeteroData
 
-# Updated imports to include new batching function and match project structure
 from gnn_agent.gamestate_converters.gnn_data_converter import (
     convert_to_gnn_input,
-    convert_boards_to_gnn_batch,
-    PIECE_TYPE_MAP,
-    GNN_INPUT_FEATURE_DIM
+    CNN_INPUT_CHANNELS,
+    SQUARE_FEATURE_DIM,
+    PIECE_FEATURE_DIM
 )
 
-def test_conversion_on_starting_position():
-    """Tests the GNN data conversion on the standard chess starting position."""
-    board = chess.Board()
-    device = torch.device("cpu")
-    gnn_input = convert_to_gnn_input(board, device)
+@pytest.fixture
+def starting_board():
+    """Provides a standard chess board in its starting position."""
+    return chess.Board()
 
-    # --- 1. Validate Square Graph ---
-    sq_graph = gnn_input.square_graph
-    
-    # Check node feature shape: 64 squares, 12 features each
-    assert sq_graph.x.shape == (64, GNN_INPUT_FEATURE_DIM)
-    
-    # Check edge index shape (static adjacency)
-    assert sq_graph.edge_index.shape[0] == 2
-    assert sq_graph.edge_index.shape[1] > 0
+@pytest.fixture
+def empty_board():
+    """Provides an empty chess board."""
+    return chess.Board(fen=None)
 
-    # Verify features for a specific square, e.g., E2 (square 12)
-    e2_features = sq_graph.x[chess.E2]
-    assert np.allclose(e2_features[0:2].numpy(), [4/7.0, 1/7.0])
-    assert e2_features[2 + PIECE_TYPE_MAP[chess.PAWN]] == 1.0
-    assert torch.sum(e2_features[2:8]) == 1.0
-    assert e2_features[8] == 1.0 # White
-    
-    # Verify features for an empty square, e.g., E4 (square 28)
-    e4_features = sq_graph.x[chess.E4]
-    assert torch.sum(e4_features[2:8]) == 0.0
-    assert torch.sum(e4_features[8:10]) == 0.0
-    assert e4_features[10] == 0.0 # is_attacked_by_white
-    assert e4_features[11] == 0.0 # is_attacked_by_black
+@pytest.fixture
+def device():
+    """Provides a torch device (CPU for testing)."""
+    return torch.device("cpu")
 
-    # --- 2. Validate Piece Graph ---
-    pc_graph = gnn_input.piece_graph
-    assert pc_graph.x.shape[0] == 32 # 32 pieces
-    assert pc_graph.x.shape[1] == GNN_INPUT_FEATURE_DIM
-    assert pc_graph.edge_index.shape[1] > 0 # Should have defensive edges
 
-def test_conversion_on_mid_game_position():
-    """Tests the GNN data conversion on a more complex mid-game position."""
-    fen = "r1bqkbnr/1pp2ppp/p1np4/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 5"
-    board = chess.Board(fen)
-    device = torch.device("cpu")
-    gnn_input = convert_to_gnn_input(board, device)
-
-    pc_graph = gnn_input.piece_graph
-    num_pieces = len(board.piece_map())
-    assert pc_graph.x.shape[0] == num_pieces
-    assert pc_graph.edge_index.shape[1] > 0
-
-    # Verify mobility for a specific piece, e.g., the white knight on f3
-    knight_sq = chess.F3
-    
-    # Recreate node ordering from application logic to find correct index
-    sorted_squares = sorted(board.piece_map().keys())
-    piece_node_indices = {sq: i for i, sq in enumerate(sorted_squares)}
-    knight_node_idx = piece_node_indices[knight_sq]
-    
-    knight_features = pc_graph.x[knight_node_idx]
-    
-    # Mobility feature is at index 9: [type(6), color(1), loc(2), mobility(1), atk/def(2)]
-    mobility_feature = knight_features[9]
-    # Knight on f3 has 5 legal moves: Ng5, Nh4, Ng1, Ne1, Nd2
-    expected_mobility = 5 / 28.0
-    assert np.isclose(mobility_feature.item(), expected_mobility)
-
-# ===============================================================
-# == NEW TESTS FOR BATCHING FUNCTIONALITY
-# ===============================================================
-
-def test_batch_converter_shapes_and_types():
+def test_converter_return_type(starting_board, device):
     """
-    Tests if the batched converter produces tensors with the correct shapes and dtypes for a standard batch.
+    Tests that the converter returns a tuple of (HeteroData, torch.Tensor).
     """
-    board1 = chess.Board()
-    board2 = chess.Board("rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2") # After 1. e4 c5
-    boards = [board1, board2]
-    device = torch.device("cpu")
-    
-    batch = convert_boards_to_gnn_batch(boards, device)
+    result = convert_to_gnn_input(starting_board, device)
+    assert isinstance(result, tuple), "Output should be a tuple."
+    assert len(result) == 2, "Output tuple should have two elements."
+    assert isinstance(result[0], HeteroData), "First element should be a HeteroData object."
+    assert isinstance(result[1], torch.Tensor), "Second element should be a torch.Tensor."
 
-    batch_size = len(boards)
-    num_squares = 64
-    num_pieces_b1 = len(board1.piece_map())
-    num_pieces_b2 = len(board2.piece_map())
-    total_pieces = num_pieces_b1 + num_pieces_b2
-
-    # Check square features and batch vector
-    assert batch.square_features.shape == (batch_size * num_squares, GNN_INPUT_FEATURE_DIM)
-    assert batch.square_batch.shape == (batch_size * num_squares,)
-    assert torch.all(batch.square_batch[:num_squares] == 0).item()
-    assert torch.all(batch.square_batch[num_squares:] == 1).item()
-
-    # Check piece features and batch vector
-    assert batch.piece_features.shape == (total_pieces, GNN_INPUT_FEATURE_DIM)
-    assert batch.piece_batch.shape == (total_pieces,)
-    assert torch.all(batch.piece_batch[:num_pieces_b1] == 0).item()
-    assert torch.all(batch.piece_batch[num_pieces_b1:] == 1).item()
-
-    # Check padding mask
-    max_pieces = max(num_pieces_b1, num_pieces_b2)
-    assert batch.piece_padding_mask.shape == (batch_size, max_pieces)
-    assert batch.piece_padding_mask.dtype == torch.bool
-    assert not batch.piece_padding_mask[0, :num_pieces_b1].any() # Not masked
-    assert not batch.piece_padding_mask[1, :num_pieces_b2].any() # Not masked
-    
-    # Check that piece_to_square_map is correctly offset
-    assert batch.piece_to_square_map.max() < batch_size * num_squares
-
-def test_batch_converter_with_empty_board():
+def test_cnn_tensor_shape_and_type(starting_board, device):
     """
-    Tests if the batched converter handles edge cases like an empty board in the batch.
+    Tests that the CNN tensor has the correct shape, dtype, and device.
     """
-    board1 = chess.Board()
-    board2 = chess.Board(fen=None) # Empty board
-    boards = [board1, board2]
-    device = torch.device("cpu")
+    _, cnn_tensor = convert_to_gnn_input(starting_board, device)
+    expected_shape = (CNN_INPUT_CHANNELS, 8, 8)
+    assert cnn_tensor.shape == expected_shape, \
+        f"CNN tensor shape is incorrect. Expected {expected_shape}, got {cnn_tensor.shape}."
+    assert cnn_tensor.dtype == torch.float32, "CNN tensor dtype should be float32."
+    assert str(cnn_tensor.device) == str(device), "CNN tensor is on the wrong device."
 
-    batch = convert_boards_to_gnn_batch(boards, device)
+def test_gnn_data_structure(starting_board, device):
+    """
+    Tests the basic structure and feature dimensions of the HeteroData object.
+    """
+    gnn_data, _ = convert_to_gnn_input(starting_board, device)
     
-    batch_size = len(boards)
-    num_pieces_b1 = len(board1.piece_map())
+    # Check node features
+    assert 'square' in gnn_data.node_types
+    assert 'piece' in gnn_data.node_types
+    assert gnn_data['square'].x.shape == (64, SQUARE_FEATURE_DIM)
+    assert gnn_data['piece'].x.shape == (32, PIECE_FEATURE_DIM) # 32 pieces at start
+    assert gnn_data['square'].x.dtype == torch.float32
+    assert gnn_data['piece'].x.dtype == torch.float32
+
+    # Check edge types
+    assert ('piece', 'attacks', 'piece') in gnn_data.edge_types
+    assert ('piece', 'occupies', 'square') in gnn_data.edge_types
     
-    # The total number of pieces in the batch should only be from board1
-    assert batch.piece_features.shape[0] == num_pieces_b1
-    assert torch.all(batch.piece_batch == 0).item()
+    # Check device
+    assert str(gnn_data['square'].x.device) == str(device)
+    assert str(gnn_data['piece', 'attacks', 'piece'].edge_index.device) == str(device)
+
+def test_cnn_tensor_content_starting_board(starting_board, device):
+    """
+    Sanity-checks the content of the CNN tensor for the starting position.
+    """
+    _, cnn_tensor = convert_to_gnn_input(starting_board, device)
+
+    # White's turn, so channel 12 should be all 1s
+    assert torch.all(cnn_tensor[12, :, :] == 1.0), "Turn channel incorrect for White's move."
+
+    # halfmove_clock is 0 at start, so channel 13 should be all 0s
+    assert torch.all(cnn_tensor[13, :, :] == 0.0), "Half-move clock channel incorrect for start."
     
-    # Padding mask should correctly mask all pieces for the second item in the batch
-    max_pieces = num_pieces_b1
-    assert batch.piece_padding_mask.shape == (batch_size, max_pieces)
-    assert batch.piece_padding_mask[1, :].all() # All masked for the empty board
+    # Check for a white pawn on e2 (rank 1, file 4)
+    # Channel 0 corresponds to white pawns
+    assert cnn_tensor[0, 1, 4] == 1.0, "White pawn not found on e2 in CNN tensor."
+    
+    # Check for a black knight on g8 (rank 7, file 6)
+    # Channel 7 (1 + 6) corresponds to black knights
+    assert cnn_tensor[7, 7, 6] == 1.0, "Black knight not found on g8 in CNN tensor."
+
+def test_converter_on_empty_board(empty_board, device):
+    """
+    Tests that the converter runs without error on a board with no pieces.
+    """
+    try:
+        gnn_data, cnn_tensor = convert_to_gnn_input(empty_board, device)
+        assert gnn_data['piece'].x.shape[0] == 0
+        assert gnn_data['piece', 'attacks', 'piece'].edge_index.shape[1] == 0
+        # The first 12 channels (pieces) should be all zeros
+        assert torch.sum(cnn_tensor[:12, :, :]) == 0
+    except Exception as e:
+        pytest.fail(f"Converter failed on empty board: {e}")
