@@ -4,8 +4,7 @@ import numpy as np
 from typing import Dict, Tuple, List, Deque
 import collections
 
-# --- FIX: Import Batch and HeteroData for proper batching and type hinting ---
-from torch_geometric.data import Batch, HeteroData
+from torch_geometric.data import Batch
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from ..neural_network.chess_network import ChessNetwork
@@ -48,20 +47,19 @@ class MCTS:
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        # --- FIX: The entire manual batching process is replaced. ---
+        # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
+        # 1. Convert boards, separating GNN and CNN data streams.
+        gnn_data_list, cnn_data_list = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process])
 
-        # 1. Convert all boards to HeteroData objects on the CPU.
-        data_list: List[HeteroData] = [convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process]
+        # 2. Batch GNN data using PyG's DataLoader and move to device.
+        batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
 
-        # 2. Use Batch.from_data_list for correct, unified batching.
-        #    This automatically handles all node types, edge types, and attributes.
-        #    The batch is then moved to the GPU in a single operation.
-        batch = Batch.from_data_list(data_list).to(self.device)
+        # 3. Stack CNN data into a single tensor and move to device.
+        batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        # 3. Perform the forward pass with the single, correctly batched object.
-        policy_logits_batch, value_batch = self.network(batch)
-
-        # --- End of FIX ---
+        # 4. Perform forward pass with both batched inputs.
+        policy_logits_batch, value_batch = self.network(batched_gnn_data, batched_cnn_data)
+        # --- END MODIFICATION ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
@@ -76,7 +74,7 @@ class MCTS:
                 continue
 
             policy_priors = {move: policy_probs[move_to_index(move, board)].item() for move in legal_moves}
-            
+
             prior_sum = sum(policy_priors.values())
             if prior_sum > 1e-6:
                 for move in policy_priors:
@@ -103,7 +101,7 @@ class MCTS:
 
     def run_search(self, board: chess.Board, num_simulations: int) -> Dict[chess.Move, float]:
         self.root = MCTSNode(parent=None, prior_p=1.0, board_turn_at_node=board.turn)
-        
+
         sims_done = 0
         if not board.is_game_over():
             self._pending_evaluations.append((self.root, board.copy()))
@@ -121,7 +119,7 @@ class MCTS:
                     best_move = max(current_node.children, key=lambda move: current_node.children[move].uct_value(self.c_puct))
                     sim_board.push(best_move)
                     current_node = current_node.children[best_move]
-                
+
                 if not sim_board.is_game_over():
                     self._pending_evaluations.append((current_node, sim_board))
                 else:
@@ -133,10 +131,10 @@ class MCTS:
                     if current_node.board_turn_at_node != sim_board.turn and outcome and outcome.winner is not None:
                         value *= -1
                     self._backpropagate(current_node, value)
-            
+
             self._expand_and_evaluate_batch()
             sims_done += num_to_run
-            
+
         if not self.root.children: return {}
         total_visits = sum(child.N for child in self.root.children.values())
         return {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
