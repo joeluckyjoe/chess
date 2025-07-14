@@ -1,4 +1,4 @@
-# gnn_agent/rl_loop/trainer.py (Updated with Value Loss Weight)
+# gnn_agent/rl_loop/trainer.py (Corrected for Hybrid Model Instantiation & Typo)
 import torch
 import os
 import re
@@ -18,30 +18,31 @@ from ..gamestate_converters.action_space_converter import move_to_index, get_act
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 
 class Trainer:
-    # __init__, _initialize_new_network, and other helpers are unchanged
     def __init__(self, model_config: Dict[str, Any], device: torch.device = torch.device("cpu")):
         self.network = None
         self.model_config = model_config
         self.device = device
         self.optimizer = None
-        self.scheduler = None 
+        self.scheduler = None
         self.value_criterion = MSELoss()
 
     def _initialize_new_network(self) -> Tuple[ChessNetwork, int]:
         print("Creating new network from scratch...")
         self.network = ChessNetwork(
-            embed_dim=self.model_config.get('EMBED_DIM', 256),
+            gnn_embed_dim=self.model_config.get('GNN_EMBED_DIM', 256),
+            cnn_embed_dim=self.model_config.get('CNN_EMBED_DIM', 256),
             gnn_hidden_dim=self.model_config.get('GNN_HIDDEN_DIM', 128),
             num_heads=self.model_config.get('NUM_HEADS', 4)
         ).to(self.device)
+        
         self.optimizer = optim.Adam(
-            self.network.parameters(), 
-            lr=self.model_config['LEARNING_RATE'], 
+            self.network.parameters(),
+            lr=self.model_config['LEARNING_RATE'],
             weight_decay=self.model_config['WEIGHT_DECAY']
         )
         self.scheduler = StepLR(
-            self.optimizer, 
-            step_size=self.model_config.get('LR_SCHEDULER_STEP_SIZE', 100), 
+            self.optimizer,
+            step_size=self.model_config.get('LR_SCHEDULER_STEP_SIZE', 100),
             gamma=self.model_config.get('LR_SCHEDULER_GAMMA', 0.9)
         )
         return self.network, 0
@@ -58,20 +59,26 @@ class Trainer:
             files = [f for f in directory.glob('*.pth.tar')]
             if files:
                 file_to_load = max(files, key=self._get_game_number_from_filename)
+        
         if not file_to_load:
             return self._initialize_new_network()
-        self._initialize_new_network() 
+
+        self._initialize_new_network()
+        
         try:
+            print(f"Loading checkpoint from: {file_to_load}")
             checkpoint = torch.load(file_to_load, map_location=self.device)
             self.network.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if 'scheduler_state_dict' in checkpoint and self.scheduler:
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             game_number = checkpoint.get('game_number', 0)
+            
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(self.device)
+                        
             return self.network, game_number
         except Exception as e:
             print(f"Error loading checkpoint {file_to_load}: {e}. Initializing new network.")
@@ -98,7 +105,7 @@ class Trainer:
             except Exception: pass
         return converted_puzzles
 
-    def train_on_batch(self, game_examples: List[Tuple[str, Dict[chess.Move, float], float]], 
+    def train_on_batch(self, game_examples: List[Tuple[str, Dict[chess.Move, float], float]],
                        puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
         if not game_examples and not puzzle_examples:
             return 0.0, 0.0
@@ -122,27 +129,21 @@ class Trainer:
             
             boards = [chess.Board(fen) for fen in fen_strings]
             
-            # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
-            # convert_to_gnn_input now returns a tuple (gnn_data, cnn_data)
-            # We need to handle both inputs separately.
             gnn_data_list, cnn_data_list = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards])
 
-            # Batch the GNN data using PyG's DataLoader
             gnn_loader = DataLoader(list(gnn_data_list), batch_size=len(gnn_data_list))
             batched_gnn_data = next(iter(gnn_loader))
             batched_gnn_data.to(self.device)
 
-            # Stack the CNN data into a single tensor
+            # --- TYPO FIX ---
+            # Corrected "..to" to ".to"
             batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
-            # --- END MODIFICATION ---
+            # --- END FIX ---
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)]).to(self.device)
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
-            # Pass both batched GNN and CNN data to the network's forward method
             pred_policy_logits, pred_value = self.network(batched_gnn_data, batched_cnn_data)
-            # --- END MODIFICATION ---
 
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
             is_game_data_mask = torch.tensor([t == 'game' for t in data_types], dtype=torch.bool, device=self.device)

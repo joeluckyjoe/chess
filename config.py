@@ -1,4 +1,4 @@
-# FILENAME: config.py (Updated with Value Loss Weight)
+# FILENAME: config.py (Updated for GNN+CNN Hybrid Model)
 import os
 from pathlib import Path
 from collections import namedtuple
@@ -46,12 +46,14 @@ config_params = {
     "STOCKFISH_DEPTH_EVAL": 10,
 
     # -- Neural Network & Training Settings --
-    "EMBED_DIM": 256,
+    # --- MODIFICATION: Replaced EMBED_DIM for Hybrid Model ---
+    "GNN_EMBED_DIM": 256,
+    "CNN_EMBED_DIM": 256,
+    # --- END MODIFICATION ---
     "GNN_HIDDEN_DIM": 128,
     "NUM_HEADS": 4,
     "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
-    # --- MODIFICATION: Added Value Loss Weight to balance the two loss components ---
     "VALUE_LOSS_WEIGHT": 1.0,
 
     # -- LR Scheduler Settings (Phase AG) --
