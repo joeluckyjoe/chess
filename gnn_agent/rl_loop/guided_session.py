@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Definitive Final Version)
+# File: gnn_agent/rl_loop/guided_session.py (Corrected for GNN+CNN Hybrid)
 #
 import torch
 import chess
@@ -48,9 +48,19 @@ def _decide_agent_action(
     model_device = next(agent.parameters()).device
     agent.eval()
 
-    gnn_data = convert_to_gnn_input(board, model_device)
-    batch = Batch.from_data_list([gnn_data])
-    policy_logits, value_tensor = agent(batch)
+    # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
+    # 1. Unpack the GNN and CNN data from the converter.
+    gnn_data, cnn_data = convert_to_gnn_input(board, torch.device('cpu'))
+
+    # 2. Batch the single GNN graph and move to the device.
+    batched_gnn_data = Batch.from_data_list([gnn_data]).to(model_device)
+
+    # 3. Add a batch dimension to the CNN tensor and move to the device.
+    batched_cnn_data = cnn_data.unsqueeze(0).to(model_device)
+
+    # 4. Perform the forward pass with both inputs.
+    policy_logits, value_tensor = agent(batched_gnn_data, batched_cnn_data)
+    # --- END MODIFICATION ---
     
     value = value_tensor.item()
     
@@ -78,10 +88,10 @@ def _decide_agent_action(
     
     if move is None and list(board.legal_moves):
         if not policy_dict:
-             policy_dict = search_manager.run_search(board, num_simulations)
+            policy_dict = search_manager.run_search(board, num_simulations)
         move = search_manager.select_move(policy_dict, temperature=1.0)
         if move is None:
-             move = list(board.legal_moves)[0]
+            move = list(board.legal_moves)[0]
 
     policy_for_training = {m: torch.softmax(policy_logits.squeeze(0), dim=0)[move_to_index(m, board)].item() for m in board.legal_moves}
     
@@ -125,11 +135,11 @@ def run_guided_session(
 
         # Generate training example for the agent's turn
         if board.turn == agent_color:
-            # FIX: Store the FEN string, not the GNN data object
             training_examples.append((board.fen(), policy, outcome))
 
         board.push(move)
 
-    pgn_data = chess.pgn.Game.from_board(board).mainline_moves()
+    pgn = chess.pgn.Game.from_board(board)
+    pgn_string = str(pgn.mainline_moves())
     
-    return training_examples, str(pgn_data)
+    return training_examples, pgn_string
