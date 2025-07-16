@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Corrected for GNN+CNN Hybrid & Phase BH)
+# File: gnn_agent/rl_loop/guided_session.py (Updated for Phase BI)
 #
 import torch
 import chess
@@ -48,13 +48,18 @@ def _decide_agent_action(
     model_device = next(agent.parameters()).device
     agent.eval()
 
-    gnn_data, cnn_data = convert_to_gnn_input(board, torch.device('cpu'))
+    # --- MODIFICATION FOR PHASE BI ---
+    # Unpack and ignore the third output (material balance) from the converter.
+    gnn_data, cnn_data, _ = convert_to_gnn_input(board, torch.device('cpu'))
+    # --- END MODIFICATION ---
 
     batched_gnn_data = Batch.from_data_list([gnn_data]).to(model_device)
-
     batched_cnn_data = cnn_data.unsqueeze(0).to(model_device)
 
-    policy_logits, value_tensor = agent(batched_gnn_data, batched_cnn_data)
+    # --- MODIFICATION FOR PHASE BI ---
+    # Unpack and ignore the third output (material balance prediction) from the network.
+    policy_logits, value_tensor, _ = agent(batched_gnn_data, batched_cnn_data)
+    # --- END MODIFICATION ---
     
     value = value_tensor.item()
     

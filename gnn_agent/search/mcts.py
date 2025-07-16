@@ -1,3 +1,6 @@
+#
+# File: gnn_agent/search/mcts.py (Updated for Phase BI)
+#
 import torch
 import chess
 import numpy as np
@@ -47,9 +50,10 @@ class MCTS:
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
+        # --- MODIFICATION FOR PHASE BI ---
         # 1. Convert boards, separating GNN and CNN data streams.
-        gnn_data_list, cnn_data_list = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process])
+        #    The third output (material balance) is ignored with '_'
+        gnn_data_list, cnn_data_list, _ = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process])
 
         # 2. Batch GNN data using PyG's DataLoader and move to device.
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
@@ -57,8 +61,8 @@ class MCTS:
         # 3. Stack CNN data into a single tensor and move to device.
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        # 4. Perform forward pass with both batched inputs.
-        policy_logits_batch, value_batch = self.network(batched_gnn_data, batched_cnn_data)
+        # 4. Perform forward pass, ignoring the third output (material balance).
+        policy_logits_batch, value_batch, _ = self.network(batched_gnn_data, batched_cnn_data)
         # --- END MODIFICATION ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)

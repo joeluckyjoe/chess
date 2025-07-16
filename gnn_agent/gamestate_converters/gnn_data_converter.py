@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/gamestate_converters/gnn_data_converter.py (Updated for GNN+CNN Hybrid & Bugfix)
+# File: gnn_agent/gamestate_converters/gnn_data_converter.py (Updated for Phase BI)
 #
 import torch
 import chess
@@ -75,24 +75,25 @@ def _create_cnn_input_tensor(board: chess.Board) -> torch.Tensor:
 
 # --- Main Conversion Function ---
 
-def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Tuple[HeteroData, torch.Tensor]:
+def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Tuple[HeteroData, torch.Tensor, torch.Tensor]:
     """
     Converts a single python-chess board state into the required inputs for
-    the GNN+CNN hybrid model.
+    the GNN+CNN hybrid model, plus the ground-truth material balance.
 
-    NOTE: This function's output has changed. It now returns a tuple containing
-    (HeteroData_for_GNN, Tensor_for_CNN). The data loading pipeline must be
-    updated to handle this.
+    NOTE: This function's output has changed for Phase BI. It now returns a tuple
+    containing (HeteroData_for_GNN, Tensor_for_CNN, Tensor_for_Material_Balance).
+    The data loading pipeline must be updated to handle this.
 
     Returns:
-        Tuple[HeteroData, torch.Tensor]: A tuple containing:
+        Tuple[HeteroData, torch.Tensor, torch.Tensor]: A tuple containing:
             - The HeteroData object for the GNN.
             - The (14, 8, 8) tensor for the CNN.
+            - A (1,) tensor for the ground-truth material balance.
     """
     # --- 1. Create CNN Input Tensor ---
     cnn_tensor = _create_cnn_input_tensor(board)
 
-    # --- 2. Global Game State Features (for GNN) ---
+    # --- 2. Global Game State Features (for GNN) & Material Balance ---
     turn = 1.0 if board.turn == chess.WHITE else 0.0
     can_castle_wk = 1.0 if board.has_kingside_castling_rights(chess.WHITE) else 0.0
     can_castle_wq = 1.0 if board.has_queenside_castling_rights(chess.WHITE) else 0.0
@@ -107,8 +108,12 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Tuple[Hete
     black_material = sum(PIECE_MATERIAL_VALUE[p.piece_type] for p in board.piece_map().values() if p.color == chess.BLACK)
     raw_balance = white_material - black_material
     perspective_balance = raw_balance if board.turn == chess.WHITE else -raw_balance
-    normalized_balance = perspective_balance / 39.0
+    
+    # Create the separate material balance tensor for the auxiliary loss
+    material_balance_tensor = torch.tensor([perspective_balance], dtype=torch.float32)
 
+    # Continue with GNN features
+    normalized_balance = perspective_balance / 39.0
     repetition_counter = 1.0 if board.can_claim_threefold_repetition() else 0.0
 
     global_features = np.array([
@@ -185,7 +190,7 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Tuple[Hete
                 target_piece = board.piece_at(to_sq)
                 if target_piece and to_sq in piece_node_indices:
                     to_idx = piece_node_indices[to_sq]
-                    if target_piece.color == piece.color: # <-- CORRECTED HERE
+                    if target_piece.color == piece.color:
                         defends_piece_edges.append([from_idx, to_idx])
                     else:
                         attacks_piece_edges.append([from_idx, to_idx])
@@ -197,4 +202,4 @@ def convert_to_gnn_input(board: chess.Board, device: torch.device) -> Tuple[Hete
     data['piece', 'defends', 'piece'].edge_index = torch.tensor(defends_piece_edges, dtype=torch.long).t().contiguous() if defends_piece_edges else torch.empty((2, 0), dtype=torch.long)
 
     # --- 6. Finalize and move to device ---
-    return data.to(device), cnn_tensor.to(device)
+    return data.to(device), cnn_tensor.to(device), material_balance_tensor.to(device)

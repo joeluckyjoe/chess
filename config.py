@@ -1,4 +1,4 @@
-# FILENAME: config.py (Updated for Phase BH)
+# FILENAME: config.py (Updated for Phase BI)
 import os
 from pathlib import Path
 from collections import namedtuple
@@ -60,6 +60,9 @@ config_params = {
 
     # --- PHASE BH: Added Contempt Factor to discourage draws ---
     "CONTEMPT_FACTOR": -0.1,
+    
+    # --- PHASE BI: Added Material Balance Loss Weight ---
+    "MATERIAL_BALANCE_LOSS_WEIGHT": 0.5,
 }
 
 

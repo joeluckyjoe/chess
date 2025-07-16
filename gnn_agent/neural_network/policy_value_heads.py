@@ -1,5 +1,5 @@
 #
-# File: policy_value_heads.py
+# File: gnn_agent/neural_network/policy_value_heads.py (Updated for Phase BI)
 #
 """
 This file defines the Policy and Value Head modules for the MCTS RL Chess Agent.
@@ -10,7 +10,7 @@ outcome) respectively.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Optional, Tuple
 
 class PolicyHead(nn.Module):
     """
@@ -61,9 +61,7 @@ class PolicyHead(nn.Module):
         x_grid = x.view(batch_size, 64, embedding_dim)
         x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
         
-        # --- FIX: Replaced F.relu with F.gelu ---
         x = F.gelu(self.conv1(x_grid))
-        # --- END FIX ---
         
         # Flatten the feature maps. Use .reshape() instead of .view() to handle
         # potentially non-contiguous tensors after the convolution.
@@ -75,10 +73,11 @@ class PolicyHead(nn.Module):
 
 class ValueHead(nn.Module):
     """
-    The Value Head of the neural network.
+    The Value Head of the neural network. (Updated for Phase BI)
 
-    Takes the processed square embeddings and outputs a single scalar value
-    estimating the game's outcome from the current player's perspective.
+    Takes the processed square embeddings and outputs two separate scalar values:
+    1.  The estimated game's outcome from the current player's perspective.
+    2.  The estimated material balance from the current player's perspective.
     """
     def __init__(self, embedding_dim: int):
         """
@@ -93,9 +92,14 @@ class ValueHead(nn.Module):
         
         # The output of the conv layer will be (B, 1, 8, 8), which flattens to B, 64
         self.fc1 = nn.Linear(1 * 8 * 8, 256)
-        self.fc2 = nn.Linear(256, 1)
 
-    def forward(self, x: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # --- MODIFICATION FOR PHASE BI ---
+        # Create two separate final layers for the two outputs
+        self.value_fc = nn.Linear(256, 1)
+        self.material_fc = nn.Linear(256, 1)
+        # --- END MODIFICATION ---
+
+    def forward(self, x: torch.Tensor, batch: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Forward pass for the Value Head.
 
@@ -106,8 +110,9 @@ class ValueHead(nn.Module):
                                   Shape: (total_squares_in_batch,)
 
         Returns:
-            torch.Tensor: The estimated value of the position, between -1 and 1.
-                          Shape: (batch_size, 1)
+            Tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+                - value (torch.Tensor): Estimated game outcome, in [-1, 1]. Shape: (batch_size, 1)
+                - material_balance (torch.Tensor): Estimated material balance. Shape: (batch_size, 1)
         """
         if batch is None:
             batch_size = 1
@@ -120,19 +125,21 @@ class ValueHead(nn.Module):
         x_grid = x.view(batch_size, 64, embedding_dim)
         x_grid = x_grid.permute(0, 2, 1).view(batch_size, embedding_dim, 8, 8)
         
-        # --- FIX: Replaced F.relu with F.gelu ---
         x = F.gelu(self.conv1(x_grid))
-        # --- END FIX ---
         
         # Flatten. Use .reshape() instead of .view() to handle
         # potentially non-contiguous tensors after the convolution.
         x = x.reshape(batch_size, -1)
         
-        # --- FIX: Replaced F.relu with F.gelu ---
         x = F.gelu(self.fc1(x))
-        # --- END FIX ---
         
-        # Output is a single value, squashed by tanh to be in [-1, 1]
-        value = torch.tanh(self.fc2(x))
+        # --- MODIFICATION FOR PHASE BI ---
+        # Calculate the two separate outputs
+        # 1. Game outcome value, squashed by tanh to be in [-1, 1]
+        value = torch.tanh(self.value_fc(x))
         
-        return value
+        # 2. Material balance, returned as a raw logit for regression
+        material_balance = self.material_fc(x)
+        # --- END MODIFICATION ---
+        
+        return value, material_balance

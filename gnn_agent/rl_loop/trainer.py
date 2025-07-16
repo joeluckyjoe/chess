@@ -1,4 +1,6 @@
-# gnn_agent/rl_loop/trainer.py (Corrected for Hybrid Model Instantiation & Typo)
+#
+# gnn_agent/rl_loop/trainer.py (Updated for Phase BI: Auxiliary Material Balance Loss)
+#
 import torch
 import os
 import re
@@ -24,7 +26,10 @@ class Trainer:
         self.device = device
         self.optimizer = None
         self.scheduler = None
-        self.value_criterion = MSELoss()
+        self.loss_criterion = MSELoss() # Renamed from value_criterion for more general use
+        
+        # --- PHASE BI: Added weight for the new loss term ---
+        self.material_balance_loss_weight = self.model_config.get('MATERIAL_BALANCE_LOSS_WEIGHT', 0.5)
 
     def _initialize_new_network(self) -> Tuple[ChessNetwork, int]:
         print("Creating new network from scratch...")
@@ -106,9 +111,9 @@ class Trainer:
         return converted_puzzles
 
     def train_on_batch(self, game_examples: List[Tuple[str, Dict[chess.Move, float], float]],
-                       puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25):
+                       puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float = 0.25) -> Tuple[float, float, float]:
         if not game_examples and not puzzle_examples:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         converted_puzzles = self._convert_puzzles_to_training_format(puzzle_examples)
         tagged_game_examples = [(fen, policy, outcome, 'game') for fen, policy, outcome in game_examples]
@@ -118,7 +123,7 @@ class Trainer:
         random.shuffle(all_data)
 
         self.network.train()
-        total_policy_loss, total_value_loss, game_data_count = 0.0, 0.0, 0
+        total_policy_loss, total_value_loss, total_material_loss, game_data_count = 0.0, 0.0, 0.0, 0
         
         for i in range(0, len(all_data), batch_size):
             self.optimizer.zero_grad()
@@ -129,35 +134,45 @@ class Trainer:
             
             boards = [chess.Board(fen) for fen in fen_strings]
             
-            gnn_data_list, cnn_data_list = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards])
+            # --- PHASE BI: Unpack the new third output from the converter ---
+            gnn_data_list, cnn_data_list, material_balance_targets_list = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards])
 
             gnn_loader = DataLoader(list(gnn_data_list), batch_size=len(gnn_data_list))
             batched_gnn_data = next(iter(gnn_loader))
             batched_gnn_data.to(self.device)
 
-            # --- TYPO FIX ---
-            # Corrected "..to" to ".to"
             batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
-            # --- END FIX ---
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)]).to(self.device)
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             
-            pred_policy_logits, pred_value = self.network(batched_gnn_data, batched_cnn_data)
+            # --- PHASE BI: Stack the material balance targets ---
+            material_balance_targets = torch.stack(material_balance_targets_list, 0).to(self.device)
+            
+            # --- PHASE BI: Unpack the new third output from the network ---
+            pred_policy_logits, pred_value, pred_material_balance = self.network(batched_gnn_data, batched_cnn_data)
 
+            # 1. Policy Loss (always calculated)
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
+            
             is_game_data_mask = torch.tensor([t == 'game' for t in data_types], dtype=torch.bool, device=self.device)
             
+            # 2. Value Loss (only for game data)
             value_loss = torch.tensor(0.0, device=self.device)
             if is_game_data_mask.any():
-                value_loss = self.value_criterion(pred_value[is_game_data_mask], value_targets[is_game_data_mask])
+                value_loss = self.loss_criterion(pred_value[is_game_data_mask], value_targets[is_game_data_mask])
                 total_value_loss += value_loss.item() * is_game_data_mask.sum().item()
                 game_data_count += is_game_data_mask.sum().item()
 
+            # --- PHASE BI: 3. Material Balance Loss (calculated for all data) ---
+            material_loss = self.loss_criterion(pred_material_balance, material_balance_targets)
+            total_material_loss += material_loss.item() * len(batch_chunk)
+            
             total_policy_loss += policy_loss.item() * len(batch_chunk)
             
+            # --- PHASE BI: 4. Combine all losses ---
             value_loss_weight = self.model_config.get('VALUE_LOSS_WEIGHT', 1.0)
-            total_loss = policy_loss + (value_loss * value_loss_weight)
+            total_loss = policy_loss + (value_loss * value_loss_weight) + (material_loss * self.material_balance_loss_weight)
             
             if total_loss > 0:
                 total_loss.backward()
@@ -169,8 +184,9 @@ class Trainer:
         num_samples = len(all_data)
         avg_policy_loss = total_policy_loss / num_samples if num_samples > 0 else 0
         avg_value_loss = total_value_loss / game_data_count if game_data_count > 0 else 0
+        avg_material_loss = total_material_loss / num_samples if num_samples > 0 else 0
         
-        return avg_policy_loss, avg_value_loss
+        return avg_policy_loss, avg_value_loss, avg_material_loss
     
     def save_checkpoint(self, directory: Path, game_number: int, filename_override: Optional[str] = None):
         if not directory.is_dir():
