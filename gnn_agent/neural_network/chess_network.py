@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/chess_network.py (Updated for Phase BI)
+# File: gnn_agent/neural_network/chess_network.py (Corrected for Phase BI)
 #
 import torch
 import torch.nn as nn
@@ -9,12 +9,11 @@ from typing import Tuple
 
 from .unified_gnn import UnifiedGNN
 from .cnn_model import CNNModel
-# Corrected import to use the classes from policy_value_heads.py
 from .policy_value_heads import PolicyHead, ValueHead
 
 class ChessNetwork(nn.Module):
     """
-    The main PyTorch module for the chess agent. (Updated for Phase BI)
+    The main PyTorch module for the chess agent. (Corrected for Phase BI)
     
     This version implements the GNN+CNN hybrid architecture. It processes board
     state through two parallel paths—a GNN for relational reasoning and a CNN
@@ -50,26 +49,22 @@ class ChessNetwork(nn.Module):
         # --- Fusion and Head Architecture ---
         fused_dim = gnn_embed_dim + cnn_embed_dim
         
-        # The policy and value trunks can now have different output dimensions
-        # if desired, but we'll keep them the same for now.
-        policy_trunk_dim = fused_dim // 2
-        value_trunk_dim = fused_dim // 2
-        
+        # The policy and value trunks operate on the fused per-square embeddings
         self.policy_trunk = nn.Sequential(
-            nn.Linear(fused_dim, policy_trunk_dim),
+            nn.Linear(fused_dim, fused_dim // 2),
             nn.GELU(),
         )
         self.value_trunk = nn.Sequential(
-            nn.Linear(fused_dim, value_trunk_dim),
+            nn.Linear(fused_dim, fused_dim // 2),
             nn.GELU(),
         )
 
-        self.policy_head = PolicyHead(policy_trunk_dim)
-        self.value_head = ValueHead(value_trunk_dim)
+        self.policy_head = PolicyHead(fused_dim // 2)
+        self.value_head = ValueHead(fused_dim // 2)
 
     def forward(self, gnn_data: Batch, cnn_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        The forward pass for the GNN+CNN hybrid model. (Updated for Phase BI)
+        The forward pass for the GNN+CNN hybrid model. (Corrected for Phase BI)
 
         Args:
             gnn_data (Batch): A PyG Batch object containing graph data for the batch.
@@ -82,33 +77,41 @@ class ChessNetwork(nn.Module):
                 - value_estimate (torch.Tensor)
                 - material_balance (torch.Tensor)
         """
-        # 1. Process data through the GNN path
-        # piece_embeds shape: [total_num_pieces_in_batch, gnn_embed_dim]
-        piece_embeds = self.unified_gnn(gnn_data)
+        # --- ARCHITECTURE FIX ---
+        # The previous version aggregated embeddings too early. The policy/value heads
+        # expect per-square embeddings to work with their convolutional layers.
+        # The corrected flow processes embeddings on a per-square basis until the final head.
+
+        # 1. Process data through the GNN path to get per-square embeddings.
+        #    The UnifiedGNN is assumed to return a dictionary of node-type embeddings.
+        #    square_embeds_gnn shape: [total_squares_in_batch, gnn_embed_dim]
+        gnn_output_dict = self.unified_gnn(gnn_data)
+        square_embeds_gnn = gnn_output_dict['square']
+
+        # 2. Process data through the CNN path.
+        #    The CNN model should output per-square features, not a single vector.
+        #    cnn_feature_map shape: [batch_size, cnn_embed_dim, 8, 8]
+        cnn_feature_map = self.cnn_model(cnn_data)
         
-        # Aggregate GNN embeddings to get one vector per graph
-        # gnn_embedding shape: [batch_size, gnn_embed_dim]
-        gnn_embedding = global_mean_pool(piece_embeds, gnn_data['piece'].batch)
+        # Reshape CNN output to match the GNN's per-square format.
+        # [B, D, 8, 8] -> [B, 8, 8, D] -> [B*64, D]
+        batch_size, cnn_embed_dim, _, _ = cnn_feature_map.shape
+        square_embeds_cnn = cnn_feature_map.permute(0, 2, 3, 1).reshape(batch_size * 64, cnn_embed_dim)
 
-        # 2. Process data through the CNN path
-        # cnn_embedding shape: [batch_size, cnn_embed_dim]
-        cnn_embedding = self.cnn_model(cnn_data)
+        # 3. Fuse the per-square embeddings from both paths.
+        # fused_square_embeddings shape: [total_squares_in_batch, gnn_embed_dim + cnn_embed_dim]
+        fused_square_embeddings = torch.cat([square_embeds_gnn, square_embeds_cnn], dim=1)
 
-        # 3. Fuse the embeddings from both paths
-        # fused_embedding shape: [batch_size, gnn_embed_dim + cnn_embed_dim]
-        fused_embedding = torch.cat([gnn_embedding, cnn_embedding], dim=1)
+        # 4. Specialize the fused per-square embeddings for each task.
+        policy_embeds = self.policy_trunk(fused_square_embeddings)
+        value_embeds = self.value_trunk(fused_square_embeddings)
 
-        # 4. Specialize the fused embedding for each task
-        policy_embed = self.policy_trunk(fused_embedding)
-        value_embed = self.value_trunk(fused_embedding)
+        # 5. Pass specialized per-square embeddings to the final heads.
+        #    Crucially, we must also pass the batch tensor so the heads know how
+        #    to group the squares for the final aggregation.
+        square_batch_idx = gnn_data['square'].batch
+        policy_logits = self.policy_head(policy_embeds, batch=square_batch_idx)
+        value_estimate, material_balance = self.value_head(value_embeds, batch=square_batch_idx)
 
-        # 5. Pass specialized embeddings to the final heads
-        policy_logits = self.policy_head(policy_embed)
-        
-        # --- MODIFICATION FOR PHASE BI ---
-        # Unpack the two outputs from the updated ValueHead
-        value_estimate, material_balance = self.value_head(value_embed)
-
-        # Return all three outputs
         return policy_logits, value_estimate, material_balance
-        # --- END MODIFICATION ---
+        # --- END ARCHITECTURE FIX ---
