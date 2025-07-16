@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/chess_network.py (Updated for GNN+CNN Hybrid)
+# File: gnn_agent/neural_network/chess_network.py (Updated for Phase BI)
 #
 import torch
 import torch.nn as nn
@@ -8,15 +8,20 @@ from torch_geometric.nn import global_mean_pool
 from typing import Tuple
 
 from .unified_gnn import UnifiedGNN
-from .cnn_model import CNNModel  # Import the new CNN model
-from .gnn_models import PolicyHead, ValueHead
+from .cnn_model import CNNModel
+# Corrected import to use the classes from policy_value_heads.py
+from .policy_value_heads import PolicyHead, ValueHead
 
 class ChessNetwork(nn.Module):
     """
-    The main PyTorch module for the chess agent.
+    The main PyTorch module for the chess agent. (Updated for Phase BI)
+    
     This version implements the GNN+CNN hybrid architecture. It processes board
     state through two parallel paths—a GNN for relational reasoning and a CNN
     for spatial pattern recognition—and fuses their outputs.
+    
+    The network now produces three outputs: policy logits, a game outcome value,
+    and a material balance value.
     """
     def __init__(self, gnn_embed_dim: int = 256, cnn_embed_dim: int = 256, gnn_hidden_dim: int = 128, num_heads: int = 4):
         super().__init__()
@@ -40,28 +45,31 @@ class ChessNetwork(nn.Module):
         )
 
         # --- CNN Path ---
-        # Assuming 14 input channels for the 2D board representation
         self.cnn_model = CNNModel(in_channels=14, embedding_dim=cnn_embed_dim)
 
         # --- Fusion and Head Architecture ---
         fused_dim = gnn_embed_dim + cnn_embed_dim
-        trunk_dim = fused_dim // 2
+        
+        # The policy and value trunks can now have different output dimensions
+        # if desired, but we'll keep them the same for now.
+        policy_trunk_dim = fused_dim // 2
+        value_trunk_dim = fused_dim // 2
         
         self.policy_trunk = nn.Sequential(
-            nn.Linear(fused_dim, trunk_dim),
+            nn.Linear(fused_dim, policy_trunk_dim),
             nn.GELU(),
         )
         self.value_trunk = nn.Sequential(
-            nn.Linear(fused_dim, trunk_dim),
+            nn.Linear(fused_dim, value_trunk_dim),
             nn.GELU(),
         )
 
-        self.policy_head = PolicyHead(trunk_dim)
-        self.value_head = ValueHead(trunk_dim)
+        self.policy_head = PolicyHead(policy_trunk_dim)
+        self.value_head = ValueHead(value_trunk_dim)
 
-    def forward(self, gnn_data: Batch, cnn_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, gnn_data: Batch, cnn_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        The forward pass for the GNN+CNN hybrid model.
+        The forward pass for the GNN+CNN hybrid model. (Updated for Phase BI)
 
         Args:
             gnn_data (Batch): A PyG Batch object containing graph data for the batch.
@@ -69,7 +77,10 @@ class ChessNetwork(nn.Module):
                                      (batch_size, channels, 8, 8).
 
         Returns:
-            A tuple containing policy logits and the value estimate.
+            A tuple containing:
+                - policy_logits (torch.Tensor)
+                - value_estimate (torch.Tensor)
+                - material_balance (torch.Tensor)
         """
         # 1. Process data through the GNN path
         # piece_embeds shape: [total_num_pieces_in_batch, gnn_embed_dim]
@@ -93,6 +104,11 @@ class ChessNetwork(nn.Module):
 
         # 5. Pass specialized embeddings to the final heads
         policy_logits = self.policy_head(policy_embed)
-        value_estimate = self.value_head(value_embed)
+        
+        # --- MODIFICATION FOR PHASE BI ---
+        # Unpack the two outputs from the updated ValueHead
+        value_estimate, material_balance = self.value_head(value_embed)
 
-        return policy_logits, value_estimate
+        # Return all three outputs
+        return policy_logits, value_estimate, material_balance
+        # --- END MODIFICATION ---
