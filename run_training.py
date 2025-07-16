@@ -1,5 +1,6 @@
-# run_training.py
-
+#
+# File: run_training.py (Corrected for Phase BI)
+#
 import os
 import torch
 import pandas as pd
@@ -24,10 +25,17 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
-def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
+def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, material_loss, game_type):
+    """
+    Writes the training losses for a game to a CSV file.
+    (Updated for Phase BI to include material_loss)
+    """
     file_exists = os.path.isfile(filepath)
-    df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
+    # --- MODIFICATION FOR PHASE BI ---
+    df = pd.DataFrame([[game_num, policy_loss, value_loss, material_loss, game_type]], 
+                      columns=['game', 'policy_loss', 'value_loss', 'material_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
+    # --- END MODIFICATION ---
 
 def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
     if not log_file_path.exists(): return False
@@ -93,7 +101,6 @@ def main():
 
     mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
     
-    # --- PHASE BH MODIFICATION: Pass contempt factor to SelfPlay ---
     self_player = SelfPlay(
         mcts_white=mcts_player, 
         mcts_black=mcts_player, 
@@ -101,7 +108,6 @@ def main():
         num_simulations=config_params['MCTS_SIMULATIONS'],
         contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
     )
-    # --- END MODIFICATION ---
 
     try:
         mentor_engine = Stockfish(path=config_params['STOCKFISH_PATH'], depth=15)
@@ -132,7 +138,10 @@ def main():
                     if len(all_puzzles) >= num_puzzles_for_primer:
                         puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles.")
-                        primer_policy_loss, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'], puzzle_ratio=1.0)
+                        # --- MODIFICATION FOR PHASE BI ---
+                        # Unpack all three return values, ignoring the ones we don't need for the primer.
+                        primer_policy_loss, _, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'], puzzle_ratio=1.0)
+                        # --- END MODIFICATION ---
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
                         print(f"[WARNING] Not enough puzzles ({len(all_puzzles)}) for a full primer. Skipping.")
@@ -140,7 +149,6 @@ def main():
                     print("[WARNING] No tactical puzzles loaded. Cannot execute tactical primer.")
 
                 print("\n--- Stage 2: Guided Mentor Session ---")
-                # --- PHASE BH MODIFICATION: Pass contempt factor to guided session ---
                 training_examples, pgn_data = run_guided_session(
                     agent=chess_network,
                     mentor_engine=mentor_engine,
@@ -150,7 +158,6 @@ def main():
                     agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'],
                     contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
                 )
-                # --- END MODIFICATION ---
         
         if current_mode == "self-play":
              print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
@@ -176,14 +183,18 @@ def main():
         puzzles_for_training = [] if args.disable_puzzle_mixing else all_puzzles
         
         print(f"Training on {len(training_examples)} new examples...")
-        policy_loss, value_loss = trainer.train_on_batch(
+        # --- MODIFICATION FOR PHASE BI ---
+        # Unpack all three loss values from the trainer.
+        policy_loss, value_loss, material_loss = trainer.train_on_batch(
             game_examples=training_examples, puzzle_examples=puzzles_for_training,
             batch_size=config_params['BATCH_SIZE'],
             puzzle_ratio=config_params.get('PUZZLE_RATIO', 0.25)
         )
-        print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
+        # Log all three loss values.
+        print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, Material Loss: {material_loss:.4f}")
         
-        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, current_mode)
+        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, material_loss, current_mode)
+        # --- END MODIFICATION ---
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
