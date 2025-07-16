@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/chess_network.py (Corrected for Phase BI - Final)
+# File: gnn_agent/neural_network/chess_network.py (Corrected for Hybrid Fusion - Final)
 #
 import torch
 import torch.nn as nn
@@ -76,15 +76,13 @@ class ChessNetwork(nn.Module):
                 - value_estimate (torch.Tensor)
                 - material_balance (torch.Tensor)
         """
-        # --- FINAL ARCHITECTURE FIX ---
-        # The UnifiedGNN returns a single tensor of node embeddings, not a dictionary.
-        # This fix treats the output correctly as a tensor.
-        
         # 1. Process data through the GNN path to get per-square embeddings.
+        #    The corrected UnifiedGNN now returns per-square embeddings.
         #    square_embeds_gnn shape: [total_squares_in_batch, gnn_embed_dim]
         square_embeds_gnn = self.unified_gnn(gnn_data)
 
-        # 2. Process data through the CNN path.
+        # 2. Process data through the CNN path. The corrected CNNModel returns
+        #    a per-square feature map.
         #    cnn_feature_map shape: [batch_size, cnn_embed_dim, 8, 8]
         cnn_feature_map = self.cnn_model(cnn_data)
         
@@ -94,7 +92,8 @@ class ChessNetwork(nn.Module):
         square_embeds_cnn = cnn_feature_map.permute(0, 2, 3, 1).reshape(batch_size * 64, cnn_embed_dim)
 
         # 3. Fuse the per-square embeddings from both paths.
-        # fused_square_embeddings shape: [total_squares_in_batch, gnn_embed_dim + cnn_embed_dim]
+        #    This concatenation will now succeed as both tensors have the same
+        #    first dimension (total_squares_in_batch).
         fused_square_embeddings = torch.cat([square_embeds_gnn, square_embeds_cnn], dim=1)
 
         # 4. Specialize the fused per-square embeddings for each task.
@@ -107,4 +106,3 @@ class ChessNetwork(nn.Module):
         value_estimate, material_balance = self.value_head(value_embeds, batch=square_batch_idx)
 
         return policy_logits, value_estimate, material_balance
-        # --- END FINAL ARCHITECTURE FIX ---

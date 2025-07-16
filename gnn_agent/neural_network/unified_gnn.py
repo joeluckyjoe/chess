@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/unified_gnn.py (Modified for Phase BE)
+# File: gnn_agent/neural_network/unified_gnn.py (Corrected for Hybrid Fusion)
 #
 import torch
 import torch.nn as nn
@@ -11,8 +11,9 @@ from ..gamestate_converters.gnn_data_converter import SQUARE_FEATURE_DIM, PIECE_
 class UnifiedGNN(nn.Module):
     """
     A Unified Heterogeneous Graph Neural Network for processing a chess board state.
-    MODIFIED for Phase BE: This version returns the per-piece embeddings WITHOUT
-    global pooling, to serve as sequence input for a Transformer layer.
+    
+    MODIFICATION: This version now correctly returns the per-SQUARE embeddings
+    to ensure its output is compatible with the per-square CNN feature map.
     """
     def __init__(self, hidden_dim: int, embed_dim: int, num_heads: int, metadata: tuple):
         super().__init__()
@@ -48,6 +49,6 @@ class UnifiedGNN(nn.Module):
 
         x_dict = self.conv2(x_dict, data.edge_index_dict)
 
-        # --- MODIFICATION: Return the sequence, not the pooled output ---
-        # The original global_max_pool is removed.
-        return x_dict["piece"]
+        # --- FINAL CORRECTION: Return the per-square embeddings ---
+        # This ensures the output tensor always corresponds to the 64 squares.
+        return x_dict["square"]
