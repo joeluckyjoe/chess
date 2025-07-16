@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/neural_network/chess_network.py (Corrected for Phase BI)
+# File: gnn_agent/neural_network/chess_network.py (Corrected for Phase BI - Final)
 #
 import torch
 import torch.nn as nn
@@ -49,7 +49,6 @@ class ChessNetwork(nn.Module):
         # --- Fusion and Head Architecture ---
         fused_dim = gnn_embed_dim + cnn_embed_dim
         
-        # The policy and value trunks operate on the fused per-square embeddings
         self.policy_trunk = nn.Sequential(
             nn.Linear(fused_dim, fused_dim // 2),
             nn.GELU(),
@@ -77,19 +76,15 @@ class ChessNetwork(nn.Module):
                 - value_estimate (torch.Tensor)
                 - material_balance (torch.Tensor)
         """
-        # --- ARCHITECTURE FIX ---
-        # The previous version aggregated embeddings too early. The policy/value heads
-        # expect per-square embeddings to work with their convolutional layers.
-        # The corrected flow processes embeddings on a per-square basis until the final head.
-
+        # --- FINAL ARCHITECTURE FIX ---
+        # The UnifiedGNN returns a single tensor of node embeddings, not a dictionary.
+        # This fix treats the output correctly as a tensor.
+        
         # 1. Process data through the GNN path to get per-square embeddings.
-        #    The UnifiedGNN is assumed to return a dictionary of node-type embeddings.
         #    square_embeds_gnn shape: [total_squares_in_batch, gnn_embed_dim]
-        gnn_output_dict = self.unified_gnn(gnn_data)
-        square_embeds_gnn = gnn_output_dict['square']
+        square_embeds_gnn = self.unified_gnn(gnn_data)
 
         # 2. Process data through the CNN path.
-        #    The CNN model should output per-square features, not a single vector.
         #    cnn_feature_map shape: [batch_size, cnn_embed_dim, 8, 8]
         cnn_feature_map = self.cnn_model(cnn_data)
         
@@ -107,11 +102,9 @@ class ChessNetwork(nn.Module):
         value_embeds = self.value_trunk(fused_square_embeddings)
 
         # 5. Pass specialized per-square embeddings to the final heads.
-        #    Crucially, we must also pass the batch tensor so the heads know how
-        #    to group the squares for the final aggregation.
         square_batch_idx = gnn_data['square'].batch
         policy_logits = self.policy_head(policy_embeds, batch=square_batch_idx)
         value_estimate, material_balance = self.value_head(value_embeds, batch=square_batch_idx)
 
         return policy_logits, value_estimate, material_balance
-        # --- END ARCHITECTURE FIX ---
+        # --- END FINAL ARCHITECTURE FIX ---
