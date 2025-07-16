@@ -1,5 +1,5 @@
 #
-# File: gnn_agent/rl_loop/guided_session.py (Corrected for GNN+CNN Hybrid)
+# File: gnn_agent/rl_loop/guided_session.py (Corrected for GNN+CNN Hybrid & Phase BH)
 #
 import torch
 import chess
@@ -48,19 +48,13 @@ def _decide_agent_action(
     model_device = next(agent.parameters()).device
     agent.eval()
 
-    # --- MODIFICATION FOR GNN+CNN HYBRID MODEL ---
-    # 1. Unpack the GNN and CNN data from the converter.
     gnn_data, cnn_data = convert_to_gnn_input(board, torch.device('cpu'))
 
-    # 2. Batch the single GNN graph and move to the device.
     batched_gnn_data = Batch.from_data_list([gnn_data]).to(model_device)
 
-    # 3. Add a batch dimension to the CNN tensor and move to the device.
     batched_cnn_data = cnn_data.unsqueeze(0).to(model_device)
 
-    # 4. Perform the forward pass with both inputs.
     policy_logits, value_tensor = agent(batched_gnn_data, batched_cnn_data)
-    # --- END MODIFICATION ---
     
     value = value_tensor.item()
     
@@ -104,7 +98,8 @@ def run_guided_session(
     search_manager: MCTS,
     agent_color_str: str,
     num_simulations: int = 100,
-    value_threshold: float = 0.1
+    value_threshold: float = 0.1,
+    contempt_factor: float = 0.0
 ) -> Tuple[List[Tuple[str, Dict, float]], str]:
     """
     Plays a single game where the agent is guided by the mentor engine.
@@ -132,6 +127,12 @@ def run_guided_session(
         _, mentor_score_cp = _get_mentor_move_and_score(mentor_engine, board)
         outcome_perspective = mentor_score_cp if board.turn == chess.WHITE else -mentor_score_cp
         outcome = torch.tanh(torch.tensor(outcome_perspective / 10.0)).item()
+
+        # --- PHASE BH MODIFICATION: Apply Contempt Factor ---
+        # If the mentor evaluation is dead even (a draw), apply the contempt factor.
+        if abs(outcome) < 1e-6: # Use a small epsilon for float comparison
+            outcome = contempt_factor
+        # --- END MODIFICATION ---
 
         # Generate training example for the agent's turn
         if board.turn == agent_color:

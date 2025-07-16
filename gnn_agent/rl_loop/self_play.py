@@ -15,7 +15,7 @@ class SelfPlay:
     Orchestrates a single game of self-play between two MCTS agents,
     generating training data and a PGN of the game.
     """
-    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str, num_simulations: int, temperature: float = 1.0, temp_decay_moves: int = 30, print_move_timers: bool = False):
+    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str, num_simulations: int, temperature: float = 1.0, temp_decay_moves: int = 30, print_move_timers: bool = False, contempt_factor: float = 0.0):
         """
         Initializes a self-play game.
         """
@@ -27,6 +27,9 @@ class SelfPlay:
         self.temperature = temperature
         self.temp_decay_moves = temp_decay_moves
         self.print_move_timers = print_move_timers
+        # --- PHASE BH MODIFICATION ---
+        self.contempt_factor = contempt_factor
+        # --- END MODIFICATION ---
 
     def play_game(self) -> Tuple[List[Tuple[str, Dict[chess.Move, float], float]], chess.pgn.Game]:
         """
@@ -53,7 +56,6 @@ class SelfPlay:
             if self.print_move_timers:
                 mcts_start_time = time.time()
             
-            # MCTS runs and returns the policy for the current board state
             policy = current_player_mcts.run_search(
                 current_board,
                 self.num_simulations
@@ -62,13 +64,9 @@ class SelfPlay:
             if self.print_move_timers:
                 mcts_duration = time.time() - mcts_start_time
             
-            # --- REFACTOR: All move selection logic is now in the MCTS class ---
-            # Determine the temperature for the current move
             current_temp = self.temperature if move_count <= self.temp_decay_moves else 0.0
             
-            # Select the move using the MCTS's own method
             move_to_play = current_player_mcts.select_move(policy, current_temp)
-            # --- END REFACTOR ---
 
             if move_to_play is None:
                 print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
@@ -83,13 +81,19 @@ class SelfPlay:
 
         # --- Game is Over ---
         raw_outcome = self.game.get_game_outcome()
-        print(f"\nGame over. Raw outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
+        
+        # --- PHASE BH MODIFICATION: Apply Contempt Factor ---
+        # If the game is a draw (outcome is 0.0), apply the contempt factor.
+        if raw_outcome == 0.0:
+            raw_outcome = self.contempt_factor
+        # --- END MODIFICATION ---
+        
+        print(f"\nGame over. Final outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
         
         # Assign outcomes to each state in the history
         for fen_hist, policy_hist, turn_at_state in game_history:
             value_for_state = 0.0
             if raw_outcome is not None:
-                # The value is from the perspective of the player whose turn it was
                 if turn_at_state == chess.WHITE:
                     value_for_state = raw_outcome
                 else:

@@ -24,13 +24,6 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
-# --- PHASE BG NOTE ---
-# No changes are required in this file. The responsibility for handling the 
-# new dual-input data format (gnn_data, cnn_data) lies within the Trainer class,
-# which receives the 'training_examples' list and processes it internally.
-# This file correctly passes the collected examples to trainer.train_on_batch().
-# --- END NOTE ---
-
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, game_type):
     file_exists = os.path.isfile(filepath)
     df = pd.DataFrame([[game_num, policy_loss, value_loss, game_type]], columns=['game', 'policy_loss', 'value_loss', 'game_type'])
@@ -85,33 +78,30 @@ def main():
     chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
     print(f"Resuming training run from game {start_game + 1}")
 
-    # --- CORRECTED: Visual Cue for Model Architecture ---
     try:
-        sq_features = chess_network.square_feature_dim
-        pc_features = chess_network.piece_feature_dim
-        print("\n" + "-"*45)
-        print("--- Model Feature Dimensions Verification ---")
-        print(f"   - SquareGNN input features: {sq_features}")
-        print(f"   - PieceGNN input features:  {pc_features}")
-        print("-"*45 + "\n")
-    except AttributeError:
-        # This will now be expected for the GNN+CNN Hybrid model, so we can make this message more informative.
         print("\n" + "-"*45)
         print("--- Model Architecture Verification ---")
-        if hasattr(chess_network, 'gnn') and hasattr(chess_network, 'cnn'):
+        if hasattr(chess_network, 'unified_gnn') and hasattr(chess_network, 'cnn_model'):
              print("   - GNN+CNN Hybrid Model Detected.")
         else:
-             print("   - [WARNING] Could not verify model feature dimensions. Attributes not found on model.")
+             print("   - [WARNING] Could not verify GNN+CNN hybrid structure.")
         print("-"*45 + "\n")
     except Exception as e:
         print(f"\n[WARNING] An unexpected error occurred during feature verification: {e}\n")
-    # --- END CORRECTION ---
 
     all_puzzles = load_puzzles_from_sources([paths.tactical_puzzles_file, paths.generated_puzzles_file])
 
     mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
     
-    self_player = SelfPlay(mcts_white=mcts_player, mcts_black=mcts_player, stockfish_path=config_params['STOCKFISH_PATH'], num_simulations=config_params['MCTS_SIMULATIONS'])
+    # --- PHASE BH MODIFICATION: Pass contempt factor to SelfPlay ---
+    self_player = SelfPlay(
+        mcts_white=mcts_player, 
+        mcts_black=mcts_player, 
+        stockfish_path=config_params['STOCKFISH_PATH'], 
+        num_simulations=config_params['MCTS_SIMULATIONS'],
+        contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
+    )
+    # --- END MODIFICATION ---
 
     try:
         mentor_engine = Stockfish(path=config_params['STOCKFISH_PATH'], depth=15)
@@ -150,14 +140,17 @@ def main():
                     print("[WARNING] No tactical puzzles loaded. Cannot execute tactical primer.")
 
                 print("\n--- Stage 2: Guided Mentor Session ---")
+                # --- PHASE BH MODIFICATION: Pass contempt factor to guided session ---
                 training_examples, pgn_data = run_guided_session(
                     agent=chess_network,
                     mentor_engine=mentor_engine,
                     search_manager=mcts_player,
                     num_simulations=config_params['MCTS_SIMULATIONS'],
                     value_threshold=config_params.get('GUIDED_SESSION_VALUE_THRESHOLD', 0.1),
-                    agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR']
+                    agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'],
+                    contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
                 )
+                # --- END MODIFICATION ---
         
         if current_mode == "self-play":
              print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
