@@ -180,7 +180,7 @@ def main():
         
         print(f"Training on {len(training_examples)} new examples...")
         policy_loss, value_loss, material_loss = trainer.train_on_batch(
-            game_examples=training_examples, puzzle_examples=puzzles_for_training,
+            game_examples=[training_examples], puzzle_examples=puzzles_for_training,
             batch_size=config_params['BATCH_SIZE'],
             puzzle_ratio=config_params.get('PUZZLE_RATIO', 0.25)
         )
