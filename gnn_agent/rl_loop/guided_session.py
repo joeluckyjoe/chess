@@ -4,18 +4,13 @@ import chess.pgn
 from typing import Tuple, Dict, List, Optional
 
 from stockfish import Stockfish
-# --- PHASE BJ MODIFICATION: Import the new HybridRNNModel ---
 from ..neural_network.hybrid_rnn_model import HybridRNNModel
-# --- END MODIFICATION ---
 from ..search.mcts import MCTS
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from ..gamestate_converters.action_space_converter import move_to_index
 from torch_geometric.data import Batch
 
 def _get_mentor_move_and_score(mentor_engine: Stockfish, board: chess.Board) -> Tuple[Optional[chess.Move], float]:
-    """
-    Gets the best move and centipawn score from the Stockfish engine for a given board state.
-    """
     mentor_engine.set_fen_position(board.fen())
     best_move_uci = mentor_engine.get_best_move_time(100)
     if not best_move_uci:
@@ -40,25 +35,20 @@ def _decide_agent_action(
     in_guided_mode: bool,
     value_threshold: float,
     agent_color: bool,
-    hidden_state: torch.Tensor  # <-- MODIFIED FOR PHASE BJ
-) -> Tuple[Optional[chess.Move], bool, Dict, torch.Tensor]: # <-- MODIFIED FOR PHASE BJ
-    """
-    Decides the agent's move, now managing the RNN hidden state.
-    """
+    hidden_state: torch.Tensor
+) -> Tuple[Optional[chess.Move], bool, Dict, torch.Tensor]:
     model_device = next(agent.parameters()).device
     agent.eval()
 
-    # This direct evaluation is used to get the agent's value prediction
-    # to decide whether to switch in or out of guided mode.
     gnn_data, cnn_data, _ = convert_to_gnn_input(board, model_device)
     gnn_batch = Batch.from_data_list([gnn_data])
     cnn_batch = cnn_data.unsqueeze(0)
     
-    # --- PHASE BJ MODIFICATION: Pass hidden state to direct evaluation ---
     hidden_state_batch = hidden_state.expand(-1, 1, -1).contiguous()
-    policy_logits, value_tensor, _ = agent(gnn_batch, cnn_batch, hidden_state_batch)
-    # We discard the returned hidden state here, as the one from the MCTS search is the one we'll use.
-    # --- END MODIFICATION ---
+    
+    # --- THIS IS THE CORRECTED LINE ---
+    policy_logits, value_tensor, _, _ = agent(gnn_batch, cnn_batch, hidden_state_batch)
+    # --- END CORRECTION ---
     
     value = value_tensor.item()
     
@@ -69,9 +59,7 @@ def _decide_agent_action(
     mentor_value = torch.tanh(torch.tensor(mentor_score_cp / 10.0)).item()
     agent_pov_mentor_value = mentor_value if board.turn == chess.WHITE else -mentor_value
     
-    # --- PHASE BJ MODIFICATION: Pass hidden state to MCTS search ---
     policy_dict, new_hidden_state = search_manager.run_search(board, num_simulations, hidden_state)
-    # --- END MODIFICATION ---
 
     if in_guided_mode:
         if agent_pov_mentor_value < value_threshold:
@@ -87,7 +75,6 @@ def _decide_agent_action(
             move = search_manager.select_move(policy_dict, temperature=1.0)
     
     if move is None and list(board.legal_moves):
-        # Fallback if move selection fails
         if not policy_dict:
             policy_dict, new_hidden_state = search_manager.run_search(board, num_simulations, hidden_state)
         move = search_manager.select_move(policy_dict, temperature=1.0)
@@ -96,9 +83,7 @@ def _decide_agent_action(
 
     policy_for_training = {m: torch.softmax(policy_logits.squeeze(0), dim=0)[move_to_index(m, board)].item() for m in board.legal_moves}
     
-    # --- PHASE BJ MODIFICATION: Return the new hidden state ---
     return move, in_guided_mode, policy_for_training, new_hidden_state
-    # --- END MODIFICATION ---
 
 def run_guided_session(
     agent: HybridRNNModel,
@@ -109,31 +94,24 @@ def run_guided_session(
     value_threshold: float = 0.1,
     contempt_factor: float = 0.0
 ) -> Tuple[List[Tuple[str, Dict, float]], str]:
-    """
-    Plays a single game where the agent is guided by the mentor, managing RNN state.
-    """
     board = chess.Board()
     training_examples = []
     
     agent_color = chess.WHITE if agent_color_str.lower() == 'white' else chess.BLACK
     in_guided_mode = True
     
-    # --- PHASE BJ MODIFICATION: Initialize Hidden State ---
     model_device = next(agent.parameters()).device
     num_layers = agent.num_rnn_layers
     hidden_dim = agent.rnn_hidden_dim
     hidden_state = torch.zeros((num_layers, 1, hidden_dim), device=model_device)
-    # --- END MODIFICATION ---
 
     while not board.is_game_over(claim_draw=True):
         if board.turn == agent_color:
-            # --- PHASE BJ MODIFICATION: Pass and update hidden state ---
             move, in_guided_mode, policy, new_hidden_state = _decide_agent_action(
                 agent, mentor_engine, board, search_manager, num_simulations, 
                 in_guided_mode, value_threshold, agent_color, hidden_state
             )
             hidden_state = new_hidden_state
-            # --- END MODIFICATION ---
         else:
             move, _ = _get_mentor_move_and_score(mentor_engine, board)
             policy = {}
