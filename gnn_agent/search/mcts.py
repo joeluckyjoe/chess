@@ -55,9 +55,11 @@ class MCTS:
 
         hidden_state_batch = hidden_state.expand(-1, batch_size, -1).contiguous()
 
-        policy_logits_batch, value_batch, _ = self.network(
+        # --- FIX: Unpack all 4 values from the network ---
+        policy_logits_batch, value_batch, _, _ = self.network(
             batched_gnn_data, batched_cnn_data, hidden_state_batch
         )
+        # --- END FIX ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
@@ -100,7 +102,9 @@ class MCTS:
             gnn_batch = Batch.from_data_list([gnn_data])
             cnn_batch = cnn_data.unsqueeze(0)
             
-            policy_logits, value, new_hidden_state_for_next_move = self.network(gnn_batch, cnn_batch, hidden_state)
+            # --- FIX: Unpack all 4 values from the network ---
+            policy_logits, value, _, new_hidden_state_for_next_move = self.network(gnn_batch, cnn_batch, hidden_state)
+            # --- END FIX ---
             
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
             value = value.item()
