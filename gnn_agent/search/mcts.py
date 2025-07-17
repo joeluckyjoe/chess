@@ -1,25 +1,23 @@
-#
-# File: gnn_agent/search/mcts.py (Updated for Phase BI)
-#
 import torch
 import chess
 import numpy as np
-from typing import Dict, Tuple, List, Deque
+from typing import Dict, Tuple, Deque
 import collections
 
 from torch_geometric.data import Batch
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-from ..neural_network.chess_network import ChessNetwork
+from ..neural_network.hybrid_rnn_model import HybridRNNModel
 from .mcts_node import MCTSNode
 
 
 class MCTS:
     """
-    A high-performance Monte Carlo Tree Search implementation using batched tree parallelization.
-    This class is designed to maximize GPU throughput by evaluating leaf nodes in large batches.
+    MCTS implementation updated for a recurrent network (Phase BJ).
+    This version PRESERVES the batched evaluation loop for performance
+    and correctly manages the RNN hidden state.
     """
-    def __init__(self, network: ChessNetwork, device: torch.device,
+    def __init__(self, network: HybridRNNModel, device: torch.device,
                  batch_size: int, c_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3, dirichlet_epsilon: float = 0.25):
         self.network = network
@@ -43,27 +41,23 @@ class MCTS:
             current_node = current_node.parent
 
     @torch.no_grad()
-    def _expand_and_evaluate_batch(self):
+    def _expand_and_evaluate_batch(self, hidden_state: torch.Tensor):
         if not self._pending_evaluations:
             return
 
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        # --- MODIFICATION FOR PHASE BI ---
-        # 1. Convert boards, separating GNN and CNN data streams.
-        #    The third output (material balance) is ignored with '_'
+        batch_size = len(nodes_to_process)
         gnn_data_list, cnn_data_list, _ = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process])
-
-        # 2. Batch GNN data using PyG's DataLoader and move to device.
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
-
-        # 3. Stack CNN data into a single tensor and move to device.
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        # 4. Perform forward pass, ignoring the third output (material balance).
-        policy_logits_batch, value_batch, _ = self.network(batched_gnn_data, batched_cnn_data)
-        # --- END MODIFICATION ---
+        hidden_state_batch = hidden_state.expand(-1, batch_size, -1).contiguous()
+
+        policy_logits_batch, value_batch, _ = self.network(
+            batched_gnn_data, batched_cnn_data, hidden_state_batch
+        )
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
@@ -78,20 +72,13 @@ class MCTS:
                 continue
 
             policy_priors = {move: policy_probs[move_to_index(move, board)].item() for move in legal_moves}
-
             prior_sum = sum(policy_priors.values())
             if prior_sum > 1e-6:
                 for move in policy_priors:
                     policy_priors[move] /= prior_sum
-            else:
-                uniform_prob = 1.0 / len(legal_moves)
-                for move in legal_moves:
-                    policy_priors[move] = uniform_prob
-
-            child_turn = not board.turn
-            node.expand(legal_moves, policy_priors, child_turn)
+            
+            node.expand(legal_moves, policy_priors, not board.turn)
             self._backpropagate(node, value)
-
 
     def _add_dirichlet_noise(self, node: MCTSNode):
         if not node.children: return
@@ -103,19 +90,35 @@ class MCTS:
         for i, child in enumerate(children_nodes):
             child.P = noisy_priors[i]
 
-    def run_search(self, board: chess.Board, num_simulations: int) -> Dict[chess.Move, float]:
+    @torch.no_grad()
+    def run_search(self, board: chess.Board, num_simulations: int, hidden_state: torch.Tensor) -> Tuple[Dict[chess.Move, float], torch.Tensor]:
         self.root = MCTSNode(parent=None, prior_p=1.0, board_turn_at_node=board.turn)
+        new_hidden_state_for_next_move = hidden_state
 
-        sims_done = 0
         if not board.is_game_over():
-            self._pending_evaluations.append((self.root, board.copy()))
-            self._expand_and_evaluate_batch()
-            self._add_dirichlet_noise(self.root)
-            sims_done = 1
+            gnn_data, cnn_data, _ = convert_to_gnn_input(board, self.device)
+            gnn_batch = Batch.from_data_list([gnn_data])
+            cnn_batch = cnn_data.unsqueeze(0)
+            
+            policy_logits, value, new_hidden_state_for_next_move = self.network(gnn_batch, cnn_batch, hidden_state)
+            
+            policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
+            value = value.item()
 
+            legal_moves = list(board.legal_moves)
+            policy_priors = {move: policy_probs[move_to_index(move, board)].item() for move in legal_moves}
+            prior_sum = sum(policy_priors.values())
+            if prior_sum > 1e-6:
+                for move in policy_priors: policy_priors[move] /= prior_sum
+            
+            self.root.expand(legal_moves, policy_priors, not board.turn)
+            self._backpropagate(self.root, value)
+            self._add_dirichlet_noise(self.root)
+
+        sims_done = 1
         while sims_done < num_simulations:
-            num_to_run = min(self.batch_size, num_simulations - sims_done)
-            for _ in range(num_to_run):
+            num_to_run_now = min(self.batch_size, num_simulations - sims_done)
+            for _ in range(num_to_run_now):
                 sim_board = board.copy()
                 current_node = self.root
                 while not current_node.is_leaf():
@@ -123,25 +126,23 @@ class MCTS:
                     best_move = max(current_node.children, key=lambda move: current_node.children[move].uct_value(self.c_puct))
                     sim_board.push(best_move)
                     current_node = current_node.children[best_move]
-
+                
                 if not sim_board.is_game_over():
                     self._pending_evaluations.append((current_node, sim_board))
                 else:
                     outcome = sim_board.outcome()
-                    value = 0.0
-                    if outcome:
-                        if outcome.winner == chess.WHITE: value = 1.0
-                        elif outcome.winner == chess.BLACK: value = -1.0
-                    if current_node.board_turn_at_node != sim_board.turn and outcome and outcome.winner is not None:
-                        value *= -1
-                    self._backpropagate(current_node, value)
+                    term_value = 0.0
+                    if outcome and outcome.winner is not None:
+                        term_value = 1.0 if outcome.winner == board.turn else -1.0
+                    self._backpropagate(current_node, term_value)
 
-            self._expand_and_evaluate_batch()
-            sims_done += num_to_run
+            self._expand_and_evaluate_batch(hidden_state)
+            sims_done += num_to_run_now
 
-        if not self.root.children: return {}
+        if not self.root.children: return {}, new_hidden_state_for_next_move
         total_visits = sum(child.N for child in self.root.children.values())
-        return {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
+        policy = {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
+        return policy, new_hidden_state_for_next_move
 
     def select_move(self, policy: Dict[chess.Move, float], temperature: float) -> chess.Move:
         if not policy: return None

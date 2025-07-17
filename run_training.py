@@ -1,6 +1,3 @@
-#
-# File: run_training.py (Corrected for Phase BI)
-#
 import os
 import torch
 import pandas as pd
@@ -16,8 +13,10 @@ from stockfish import Stockfish
 # --- Import from config ---
 from config import get_paths, config_params
 
-# Core components from the gnn_agent package
-from gnn_agent.neural_network.chess_network import ChessNetwork
+# --- PHASE BJ MODIFICATION: Import the new HybridRNNModel ---
+from gnn_agent.neural_network.hybrid_rnn_model import HybridRNNModel
+# --- END MODIFICATION ---
+
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
 from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
@@ -26,16 +25,10 @@ from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, material_loss, game_type):
-    """
-    Writes the training losses for a game to a CSV file.
-    (Updated for Phase BI to include material_loss)
-    """
     file_exists = os.path.isfile(filepath)
-    # --- MODIFICATION FOR PHASE BI ---
     df = pd.DataFrame([[game_num, policy_loss, value_loss, material_loss, game_type]], 
                       columns=['game', 'policy_loss', 'value_loss', 'material_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
-    # --- END MODIFICATION ---
 
 def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
     if not log_file_path.exists(): return False
@@ -89,10 +82,12 @@ def main():
     try:
         print("\n" + "-"*45)
         print("--- Model Architecture Verification ---")
-        if hasattr(chess_network, 'unified_gnn') and hasattr(chess_network, 'cnn_model'):
+        if isinstance(chess_network, HybridRNNModel):
+             print("   - GNN+CNN+RNN Hybrid Model Detected.")
+        elif hasattr(chess_network, 'unified_gnn') and hasattr(chess_network, 'cnn_model'):
              print("   - GNN+CNN Hybrid Model Detected.")
         else:
-             print("   - [WARNING] Could not verify GNN+CNN hybrid structure.")
+             print("   - [WARNING] Could not verify hybrid structure.")
         print("-"*45 + "\n")
     except Exception as e:
         print(f"\n[WARNING] An unexpected error occurred during feature verification: {e}\n")
@@ -101,13 +96,17 @@ def main():
 
     mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
     
+    # --- PHASE BJ MODIFICATION: Update SelfPlay instantiation ---
     self_player = SelfPlay(
+        network=chess_network,
+        device=device,
         mcts_white=mcts_player, 
         mcts_black=mcts_player, 
         stockfish_path=config_params['STOCKFISH_PATH'], 
         num_simulations=config_params['MCTS_SIMULATIONS'],
         contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
     )
+    # --- END MODIFICATION ---
 
     try:
         mentor_engine = Stockfish(path=config_params['STOCKFISH_PATH'], depth=15)
@@ -138,10 +137,7 @@ def main():
                     if len(all_puzzles) >= num_puzzles_for_primer:
                         puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles.")
-                        # --- MODIFICATION FOR PHASE BI ---
-                        # Unpack all three return values, ignoring the ones we don't need for the primer.
                         primer_policy_loss, _, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'], puzzle_ratio=1.0)
-                        # --- END MODIFICATION ---
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
                         print(f"[WARNING] Not enough puzzles ({len(all_puzzles)}) for a full primer. Skipping.")
@@ -160,8 +156,8 @@ def main():
                 )
         
         if current_mode == "self-play":
-             print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
-             training_examples, pgn_data = self_player.play_game()
+            print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
+            training_examples, pgn_data = self_player.play_game()
 
         if not training_examples:
             print(f"Game type '{current_mode}' resulted in no examples. Skipping training and saving for this cycle.")
@@ -183,18 +179,14 @@ def main():
         puzzles_for_training = [] if args.disable_puzzle_mixing else all_puzzles
         
         print(f"Training on {len(training_examples)} new examples...")
-        # --- MODIFICATION FOR PHASE BI ---
-        # Unpack all three loss values from the trainer.
         policy_loss, value_loss, material_loss = trainer.train_on_batch(
             game_examples=training_examples, puzzle_examples=puzzles_for_training,
             batch_size=config_params['BATCH_SIZE'],
             puzzle_ratio=config_params.get('PUZZLE_RATIO', 0.25)
         )
-        # Log all three loss values.
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, Material Loss: {material_loss:.4f}")
         
         write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, material_loss, current_mode)
-        # --- END MODIFICATION ---
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")

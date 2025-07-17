@@ -1,4 +1,3 @@
-# FILENAME: gnn_agent/rl_loop/self_play.py
 import chess
 import torch
 from typing import List, Tuple, Dict, Any
@@ -7,18 +6,25 @@ import chess.pgn
 from datetime import datetime
 import random
 
+# Import the correct network and MCTS classes
+from gnn_agent.neural_network.hybrid_rnn_model import HybridRNNModel
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
 
 class SelfPlay:
     """
-    Orchestrates a single game of self-play between two MCTS agents,
-    generating training data and a PGN of the game.
+    Orchestrates a single game of self-play, updated for a stateful RNN model.
     """
-    def __init__(self, mcts_white: MCTS, mcts_black: MCTS, stockfish_path: str, num_simulations: int, temperature: float = 1.0, temp_decay_moves: int = 30, print_move_timers: bool = False, contempt_factor: float = 0.0):
+    def __init__(self, network: HybridRNNModel, device: torch.device, 
+                 mcts_white: MCTS, mcts_black: MCTS, 
+                 stockfish_path: str, num_simulations: int, 
+                 temperature: float = 1.0, temp_decay_moves: int = 30, 
+                 print_move_timers: bool = False, contempt_factor: float = 0.0):
         """
-        Initializes a self-play game.
+        MODIFIED FOR PHASE BJ: Added `network` and `device` to manage the RNN state.
         """
+        self.network = network
+        self.device = device
         self.mcts_white = mcts_white
         self.mcts_black = mcts_black
         self.game = StockfishCommunicator(stockfish_path)
@@ -27,22 +33,25 @@ class SelfPlay:
         self.temperature = temperature
         self.temp_decay_moves = temp_decay_moves
         self.print_move_timers = print_move_timers
-        # --- PHASE BH MODIFICATION ---
         self.contempt_factor = contempt_factor
-        # --- END MODIFICATION ---
 
     def play_game(self) -> Tuple[List[Tuple[str, Dict[chess.Move, float], float]], chess.pgn.Game]:
         """
-        Plays a full game, returning the generated training data and the PGN object.
-        The training data format is a list of (FEN, policy_dict, outcome) tuples.
+        Plays a full game, managing the RNN hidden state across moves.
         """
         print("Starting a new self-play game...")
         self.game.reset_board()
 
         game_history: List[Tuple[str, Dict[chess.Move, float], bool]] = []
         training_data: List[Tuple[str, Dict[chess.Move, float], float]] = []
-
         move_count = 0
+
+        # --- PHASE BJ MODIFICATION: Initialize Hidden State ---
+        num_layers = self.network.num_rnn_layers
+        hidden_dim = self.network.rnn_hidden_dim
+        # The hidden state has a "batch size" of 1, as we play one game at a time.
+        hidden_state = torch.zeros((num_layers, 1, hidden_dim), device=self.device)
+        # --- END MODIFICATION ---
 
         while not self.game.is_game_over():
             move_count += 1
@@ -56,16 +65,20 @@ class SelfPlay:
             if self.print_move_timers:
                 mcts_start_time = time.time()
             
-            policy = current_player_mcts.run_search(
-                current_board,
-                self.num_simulations
+            # --- PHASE BJ MODIFICATION: Pass and receive the hidden state ---
+            policy, new_hidden_state = current_player_mcts.run_search(
+                board=current_board,
+                num_simulations=self.num_simulations,
+                hidden_state=hidden_state
             )
+            # Update the hidden state for the next turn
+            hidden_state = new_hidden_state
+            # --- END MODIFICATION ---
 
             if self.print_move_timers:
                 mcts_duration = time.time() - mcts_start_time
             
             current_temp = self.temperature if move_count <= self.temp_decay_moves else 0.0
-            
             move_to_play = current_player_mcts.select_move(policy, current_temp)
 
             if move_to_play is None:
@@ -79,18 +92,13 @@ class SelfPlay:
                 loop_duration = time.time() - loop_start_time
                 print(f"[TIMER] Move {move_count}: MCTS search took {mcts_duration:.4f}s. Full loop took {loop_duration:.4f}s.")
 
-        # --- Game is Over ---
+        # --- Game is Over --- (No changes below this line)
         raw_outcome = self.game.get_game_outcome()
-        
-        # --- PHASE BH MODIFICATION: Apply Contempt Factor ---
-        # If the game is a draw (outcome is 0.0), apply the contempt factor.
         if raw_outcome == 0.0:
             raw_outcome = self.contempt_factor
-        # --- END MODIFICATION ---
         
         print(f"\nGame over. Final outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
         
-        # Assign outcomes to each state in the history
         for fen_hist, policy_hist, turn_at_state in game_history:
             value_for_state = 0.0
             if raw_outcome is not None:
@@ -98,24 +106,16 @@ class SelfPlay:
                     value_for_state = raw_outcome
                 else:
                     value_for_state = -raw_outcome
-            
             training_data.append((fen_hist, policy_hist, value_for_state))
 
-        # --- Generate PGN ---
         pgn = None
         try:
-            pgn = chess.pgn.Game()
+            pgn = chess.pgn.Game.from_board(self.game.board)
             pgn.headers["Event"] = "Self-Play Training Game"
-            pgn.headers["Site"] = "Colab Environment"
+            pgn.headers["Site"] = "Herstal, Wallonia, Belgium"
             pgn.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
-            pgn.headers["White"] = "MCTS_Agent"
-            pgn.headers["Black"] = "MCTS_Agent"
-            pgn.headers["Result"] = self.game.board.result(claim_draw=True)
-
-            if self.game.board.move_stack:
-                node = pgn.add_main_variation(self.game.board.move_stack[0])
-                for i in range(1, len(self.game.board.move_stack)):
-                    node = node.add_main_variation(self.game.board.move_stack[i])
+            pgn.headers["White"] = "MCTS_Agent_v107"
+            pgn.headers["Black"] = "MCTS_Agent_v107"
         except Exception as e:
             print(f"[ERROR] Could not generate PGN for the game: {e}")
         
