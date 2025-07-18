@@ -1,4 +1,4 @@
-# FILENAME: config.py (Updated for Phase BI)
+# FILENAME: config.py (Updated for Phase BK)
 import os
 from pathlib import Path
 from collections import namedtuple
@@ -46,13 +46,18 @@ config_params = {
     "STOCKFISH_DEPTH_EVAL": 10,
 
     # -- Neural Network & Training Settings --
-    "GNN_EMBED_DIM": 256,
-    "CNN_EMBED_DIM": 256,
+    "EMBED_DIM": 256, # MODIFIED: Consolidated from GNN_EMBED_DIM and CNN_EMBED_DIM
     "GNN_HIDDEN_DIM": 128,
-    "NUM_HEADS": 4,
+    "GNN_NUM_HEADS": 4, # MODIFIED: Renamed from NUM_HEADS for clarity
     "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
     "VALUE_LOSS_WEIGHT": 1.0,
+    "CLIP_GRAD_NORM": 1.0, # ADDED: For trainer loop
+
+    # -- Transformer Settings (Phase BK) --
+    "TRANSFORMER_NHEAD": 8,
+    "TRANSFORMER_NLAYERS": 4,
+    "TRANSFORMER_DIM_FEEDFORWARD": 512,
 
     # -- LR Scheduler Settings (Phase AG) --
     'LR_SCHEDULER_STEP_SIZE': 100,
