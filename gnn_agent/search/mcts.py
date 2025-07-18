@@ -7,17 +7,16 @@ import collections
 from torch_geometric.data import Batch
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-from ..neural_network.hybrid_rnn_model import HybridRNNModel
+from ..neural_network.hybrid_transformer_model import HybridTransformerModel # MODIFIED
 from .mcts_node import MCTSNode
 
 
 class MCTS:
     """
-    MCTS implementation updated for a recurrent network (Phase BJ).
-    This version PRESERVES the batched evaluation loop for performance
-    and correctly manages the RNN hidden state.
+    MCTS implementation updated for a stateless, Transformer-based network (Phase BK).
+    It preserves the batched evaluation loop for performance.
     """
-    def __init__(self, network: HybridRNNModel, device: torch.device,
+    def __init__(self, network: HybridTransformerModel, device: torch.device, # MODIFIED
                  batch_size: int, c_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3, dirichlet_epsilon: float = 0.25):
         self.network = network
@@ -41,25 +40,23 @@ class MCTS:
             current_node = current_node.parent
 
     @torch.no_grad()
-    def _expand_and_evaluate_batch(self, hidden_state: torch.Tensor):
+    def _expand_and_evaluate_batch(self): # REMOVED: hidden_state parameter
         if not self._pending_evaluations:
             return
 
         nodes_to_process, boards_to_process = zip(*self._pending_evaluations)
         self._pending_evaluations.clear()
 
-        batch_size = len(nodes_to_process)
         gnn_data_list, cnn_data_list, _ = zip(*[convert_to_gnn_input(b, torch.device('cpu')) for b in boards_to_process])
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        hidden_state_batch = hidden_state.expand(-1, batch_size, -1).contiguous()
+        # REMOVED: hidden_state_batch logic
 
-        # --- FIX: Unpack all 4 values from the network ---
-        policy_logits_batch, value_batch, _, _ = self.network(
-            batched_gnn_data, batched_cnn_data, hidden_state_batch
+        # MODIFIED: Call network without hidden state, unpack 3 values
+        policy_logits_batch, value_batch, _ = self.network(
+            batched_gnn_data, batched_cnn_data
         )
-        # --- END FIX ---
 
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
@@ -93,18 +90,16 @@ class MCTS:
             child.P = noisy_priors[i]
 
     @torch.no_grad()
-    def run_search(self, board: chess.Board, num_simulations: int, hidden_state: torch.Tensor) -> Tuple[Dict[chess.Move, float], torch.Tensor]:
+    def run_search(self, board: chess.Board, num_simulations: int) -> Dict[chess.Move, float]: # MODIFIED: Signature changed
         self.root = MCTSNode(parent=None, prior_p=1.0, board_turn_at_node=board.turn)
-        new_hidden_state_for_next_move = hidden_state
 
         if not board.is_game_over():
             gnn_data, cnn_data, _ = convert_to_gnn_input(board, self.device)
             gnn_batch = Batch.from_data_list([gnn_data])
             cnn_batch = cnn_data.unsqueeze(0)
             
-            # --- FIX: Unpack all 4 values from the network ---
-            policy_logits, value, _, new_hidden_state_for_next_move = self.network(gnn_batch, cnn_batch, hidden_state)
-            # --- END FIX ---
+            # MODIFIED: Call network without hidden state, unpack 3 values
+            policy_logits, value, _ = self.network(gnn_batch, cnn_batch)
             
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
             value = value.item()
@@ -140,13 +135,13 @@ class MCTS:
                         term_value = 1.0 if outcome.winner == board.turn else -1.0
                     self._backpropagate(current_node, term_value)
 
-            self._expand_and_evaluate_batch(hidden_state)
+            self._expand_and_evaluate_batch() # REMOVED: hidden_state argument
             sims_done += num_to_run_now
 
-        if not self.root.children: return {}, new_hidden_state_for_next_move
+        if not self.root.children: return {} # MODIFIED: Return
         total_visits = sum(child.N for child in self.root.children.values())
         policy = {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
-        return policy, new_hidden_state_for_next_move
+        return policy # MODIFIED: Return
 
     def select_move(self, policy: Dict[chess.Move, float], temperature: float) -> chess.Move:
         if not policy: return None
