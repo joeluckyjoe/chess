@@ -6,7 +6,7 @@ import chess.pgn
 from datetime import datetime
 import random
 
-from gnn_agent.neural_network.hybrid_transformer_model import HybridTransformerModel # MODIFIED
+from gnn_agent.neural_network.hybrid_transformer_model import HybridTransformerModel
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
 
@@ -14,7 +14,7 @@ class SelfPlay:
     """
     Orchestrates a single game of self-play for a stateless Transformer model.
     """
-    def __init__(self, network: HybridTransformerModel, device: torch.device, # MODIFIED
+    def __init__(self, network: HybridTransformerModel, device: torch.device,
                  mcts_white: MCTS, mcts_black: MCTS, 
                  stockfish_path: str, num_simulations: int, 
                  temperature: float = 1.0, temp_decay_moves: int = 30, 
@@ -42,8 +42,7 @@ class SelfPlay:
         game_history: List[Tuple[str, Dict[chess.Move, float], bool]] = []
         move_count = 0
 
-        # REMOVED: The entire hidden state initialization block is gone.
-
+        # The loop is correct as is, because communicator's is_game_over already claims draws.
         while not self.game.is_game_over():
             move_count += 1
             if self.print_move_timers:
@@ -56,7 +55,6 @@ class SelfPlay:
             if self.print_move_timers:
                 mcts_start_time = time.time()
             
-            # MODIFIED: Call MCTS search without hidden state logic
             policy = current_player_mcts.run_search(
                 board=current_board,
                 num_simulations=self.num_simulations
@@ -98,6 +96,8 @@ class SelfPlay:
             pgn.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
             pgn.headers["White"] = "MCTS_Agent_v109"
             pgn.headers["Black"] = "MCTS_Agent_v109"
+            # MODIFIED: Explicitly set the Result header to fix the '*' issue.
+            pgn.headers["Result"] = self.game.board.result(claim_draw=True)
         except Exception as e:
             print(f"[ERROR] Could not generate PGN for the game: {e}")
         
