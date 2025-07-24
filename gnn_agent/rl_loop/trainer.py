@@ -99,11 +99,9 @@ class Trainer:
     def _convert_puzzle_to_tensors(self, puzzle_examples: List[Dict]) -> Tuple[Batch, torch.Tensor, torch.Tensor]:
         gnn_data_list, cnn_data_list, policy_targets_list = [], [], []
         for puzzle in puzzle_examples:
-            # --- FINAL BUG FIX: Add data validation ---
             if 'fen' not in puzzle or 'move' not in puzzle:
                 print(f"[WARNING] Skipping malformed puzzle: {puzzle}")
                 continue
-            # --- END BUG FIX ---
             
             board = chess.Board(puzzle['fen'])
             move = chess.Move.from_uci(puzzle['move'])
@@ -116,7 +114,7 @@ class Trainer:
             policy_target[move_to_index(move, board)] = 1.0
             policy_targets_list.append(policy_target)
             
-        if not gnn_data_list: # Handle case where all puzzles in batch were invalid
+        if not gnn_data_list:
              return None, None, None
 
         return Batch.from_data_list(gnn_data_list), torch.stack(cnn_data_list), torch.stack(policy_targets_list)
@@ -133,6 +131,10 @@ class Trainer:
         game_batches_processed, puzzle_batches_processed = 0, 0
         
         if puzzle_examples:
+            # --- ADDED FOR VISIBILITY ---
+            print(f"   -> Training on {len(puzzle_examples)} puzzle examples...")
+            # --- END ADDITION ---
+            
             num_puzzles = len(puzzle_examples)
             puzzle_indices = list(range(num_puzzles))
             random.shuffle(puzzle_indices)
@@ -144,7 +146,7 @@ class Trainer:
                 
                 gnn_batch, cnn_batch, policy_targets = self._convert_puzzle_to_tensors(batch_puzzles)
                 
-                if gnn_batch is None: # Skip if the batch of puzzles was invalid
+                if gnn_batch is None:
                     continue
 
                 pred_policy_logits, _, _ = self.network(gnn_batch, cnn_batch)
@@ -162,7 +164,11 @@ class Trainer:
 
         for game in game_examples:
             if not game: continue
-            
+
+            # --- ADDED FOR VISIBILITY ---
+            print(f"   -> Training on {len(game)} game examples...")
+            # --- END ADDITION ---
+
             self.optimizer.zero_grad()
             
             fen_strings, mcts_policies, game_outcomes = zip(*game)
