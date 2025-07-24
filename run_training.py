@@ -185,13 +185,6 @@ def main():
         print(f"Training on {len(training_examples)} new examples...")
         trainer.network = chess_network
 
-        # --- START DEBUG PRINTS ---
-        print("\n" + "="*20 + " DEBUG INFO " + "="*20)
-        print(f"Current Mode: {current_mode}")
-        print(f"Data going to trainer - Game Examples: {len(game_examples_for_trainer)} games")
-        print(f"Data going to trainer - Puzzle Examples: {len(puzzles_for_training)} puzzles")
-        # --- END DEBUG PRINTS ---
-
         policy_loss, value_loss, material_loss = trainer.train_on_batch(
             game_examples=game_examples_for_trainer,
             puzzle_examples=puzzles_for_training,
