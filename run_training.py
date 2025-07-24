@@ -159,13 +159,10 @@ def main():
             print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
             training_examples, pgn_data = self_player.play_game()
             game_examples_for_trainer.append(training_examples)
-            # THIS IS THE BUG FIX: Only populate puzzles if mixing is NOT disabled
             if not args.disable_puzzle_mixing:
                 puzzles_for_training = all_puzzles
-        else: # This handles the guided session case
+        else: 
             game_examples_for_trainer.append(training_examples)
-            # Puzzles are not mixed in during guided sessions
-            puzzles_for_training = []
 
 
         if not training_examples:
@@ -187,6 +184,13 @@ def main():
 
         print(f"Training on {len(training_examples)} new examples...")
         trainer.network = chess_network
+
+        # --- START DEBUG PRINTS ---
+        print("\n" + "="*20 + " DEBUG INFO " + "="*20)
+        print(f"Current Mode: {current_mode}")
+        print(f"Data going to trainer - Game Examples: {len(game_examples_for_trainer)} games")
+        print(f"Data going to trainer - Puzzle Examples: {len(puzzles_for_training)} puzzles")
+        # --- END DEBUG PRINTS ---
 
         policy_loss, value_loss, material_loss = trainer.train_on_batch(
             game_examples=game_examples_for_trainer,
