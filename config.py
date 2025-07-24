@@ -1,4 +1,4 @@
-# FILENAME: config.py (Updated for Phase BK)
+# FILENAME: config.py
 import os
 from pathlib import Path
 from collections import namedtuple
@@ -22,8 +22,8 @@ config_params = {
     "MCTS_SIMULATIONS": 800,
     "CPUCT": 2.5,
     
-    # -- Tactical Puzzle Settings --
-    "TACTICAL_PUZZLE_FILENAME": "tactical_puzzles.jsonl",
+    # MODIFIED: Point to the new, corrected puzzle file.
+    "TACTICAL_PUZZLE_FILENAME": "tactical_puzzles_corrected.jsonl",
     "GENERATED_PUZZLE_FILENAME": "generated_puzzles.jsonl",
     "PUZZLE_RATIO": 0.25,
 
@@ -46,13 +46,13 @@ config_params = {
     "STOCKFISH_DEPTH_EVAL": 10,
 
     # -- Neural Network & Training Settings --
-    "EMBED_DIM": 256, # MODIFIED: Consolidated from GNN_EMBED_DIM and CNN_EMBED_DIM
+    "EMBED_DIM": 256,
     "GNN_HIDDEN_DIM": 128,
-    "GNN_NUM_HEADS": 4, # MODIFIED: Renamed from NUM_HEADS for clarity
+    "GNN_NUM_HEADS": 4,
     "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
     "VALUE_LOSS_WEIGHT": 1.0,
-    "CLIP_GRAD_NORM": 1.0, # ADDED: For trainer loop
+    "CLIP_GRAD_NORM": 1.0,
 
     # -- Transformer Settings (Phase BK) --
     "TRANSFORMER_NHEAD": 8,
