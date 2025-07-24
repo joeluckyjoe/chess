@@ -119,7 +119,7 @@ def main():
         current_mode = "self-play"
         training_examples = []
         pgn_data = None
-        puzzles_for_training = [] # BUG FIX: Default to an empty list.
+        puzzles_for_training = [] 
 
         if is_in_grace_period(paths.loss_log_file, config_params.get('SUPERVISOR_GRACE_PERIOD', 10)):
             print(f"\nINFO: Post-intervention grace period active for Game {game_num}. Forcing self-play.")
@@ -129,7 +129,6 @@ def main():
                 print("\n" + "="*70 + f"\nSTAGNATION DETECTED: Initiating GUIDED MENTOR SESSION for Game {game_num}.\n" + "="*70)
                 current_mode = "guided-mentor-session"
 
-                # ... (rest of intervention logic is correct) ...
                 print("\n--- Stage 1: Tactical Primer ---")
                 if all_puzzles:
                     num_puzzles_for_primer = config_params.get('TACTICAL_PRIMER_BATCHES', 1) * config_params['BATCH_SIZE']
@@ -155,7 +154,6 @@ def main():
                     contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
                 )
 
-        # BUG FIX: This logic must be distinct for each mode.
         game_examples_for_trainer = []
         if current_mode == "self-play":
             print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
@@ -163,7 +161,7 @@ def main():
             game_examples_for_trainer.append(training_examples)
             if not args.disable_puzzle_mixing:
                 puzzles_for_training = all_puzzles
-        else: # This handles the guided session case
+        else: 
             game_examples_for_trainer.append(training_examples)
 
 
