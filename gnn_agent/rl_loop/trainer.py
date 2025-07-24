@@ -99,6 +99,12 @@ class Trainer:
     def _convert_puzzle_to_tensors(self, puzzle_examples: List[Dict]) -> Tuple[Batch, torch.Tensor, torch.Tensor]:
         gnn_data_list, cnn_data_list, policy_targets_list = [], [], []
         for puzzle in puzzle_examples:
+            # --- BUG FIX: Add data validation ---
+            if 'fen' not in puzzle or 'move' not in puzzle:
+                print(f"[WARNING] Skipping malformed puzzle: {puzzle}")
+                continue
+            # --- END BUG FIX ---
+            
             board = chess.Board(puzzle['fen'])
             move = chess.Move.from_uci(puzzle['move'])
             
@@ -110,6 +116,9 @@ class Trainer:
             policy_target[move_to_index(move, board)] = 1.0
             policy_targets_list.append(policy_target)
             
+        if not gnn_data_list: # Handle case where all puzzles in batch were invalid
+             return None, None, None
+
         return Batch.from_data_list(gnn_data_list), torch.stack(cnn_data_list), torch.stack(policy_targets_list)
 
 
@@ -123,9 +132,6 @@ class Trainer:
         total_policy_loss, total_value_loss, total_material_loss = 0.0, 0.0, 0.0
         game_batches_processed, puzzle_batches_processed = 0, 0
         
-        # --- MODIFIED: Separate loops for puzzles and game examples ---
-
-        # --- Handle Puzzles First (Supervised Learning) ---
         if puzzle_examples:
             num_puzzles = len(puzzle_examples)
             puzzle_indices = list(range(num_puzzles))
@@ -138,6 +144,9 @@ class Trainer:
                 
                 gnn_batch, cnn_batch, policy_targets = self._convert_puzzle_to_tensors(batch_puzzles)
                 
+                if gnn_batch is None: # Skip if the batch of puzzles was invalid
+                    continue
+
                 pred_policy_logits, _, _ = self.network(gnn_batch, cnn_batch)
                 
                 loss = F.cross_entropy(pred_policy_logits, policy_targets)
@@ -151,7 +160,6 @@ class Trainer:
                 total_policy_loss += loss.item()
                 puzzle_batches_processed += 1
 
-        # --- Handle Self-Play Games (Reinforcement Learning) ---
         for game in game_examples:
             if not game: continue
             
@@ -167,7 +175,7 @@ class Trainer:
             cnn_tensor_for_seq = torch.stack(list(cnn_data_list)).unsqueeze(0)
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)])
-            value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
+            value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-in_love_with_gemini, 1)
             material_targets = torch.stack(list(material_targets_list))
 
             pred_policy_logits, pred_values, pred_materials = self.network(gnn_batch_for_seq, cnn_tensor_for_seq)
