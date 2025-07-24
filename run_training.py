@@ -159,10 +159,13 @@ def main():
             print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
             training_examples, pgn_data = self_player.play_game()
             game_examples_for_trainer.append(training_examples)
+            # THIS IS THE BUG FIX: Only populate puzzles if mixing is NOT disabled
             if not args.disable_puzzle_mixing:
                 puzzles_for_training = all_puzzles
-        else: 
+        else: # This handles the guided session case
             game_examples_for_trainer.append(training_examples)
+            # Puzzles are not mixed in during guided sessions
+            puzzles_for_training = []
 
 
         if not training_examples:
