@@ -117,8 +117,9 @@ def main():
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         
         current_mode = "self-play"
-        training_examples, pgn_data = [], None
-        puzzles_for_training = []
+        training_examples = []
+        pgn_data = None
+        puzzles_for_training = [] # BUG FIX: Default to an empty list.
 
         if is_in_grace_period(paths.loss_log_file, config_params.get('SUPERVISOR_GRACE_PERIOD', 10)):
             print(f"\nINFO: Post-intervention grace period active for Game {game_num}. Forcing self-play.")
@@ -128,6 +129,7 @@ def main():
                 print("\n" + "="*70 + f"\nSTAGNATION DETECTED: Initiating GUIDED MENTOR SESSION for Game {game_num}.\n" + "="*70)
                 current_mode = "guided-mentor-session"
 
+                # ... (rest of intervention logic is correct) ...
                 print("\n--- Stage 1: Tactical Primer ---")
                 if all_puzzles:
                     num_puzzles_for_primer = config_params.get('TACTICAL_PRIMER_BATCHES', 1) * config_params['BATCH_SIZE']
@@ -152,7 +154,8 @@ def main():
                     agent_color_str=config_params['MENTOR_GAME_AGENT_COLOR'],
                     contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
                 )
-        
+
+        # BUG FIX: This logic must be distinct for each mode.
         game_examples_for_trainer = []
         if current_mode == "self-play":
             print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
@@ -160,7 +163,7 @@ def main():
             game_examples_for_trainer.append(training_examples)
             if not args.disable_puzzle_mixing:
                 puzzles_for_training = all_puzzles
-        else: # Guided session
+        else: # This handles the guided session case
             game_examples_for_trainer.append(training_examples)
 
 
@@ -183,20 +186,6 @@ def main():
 
         print(f"Training on {len(training_examples)} new examples...")
         trainer.network = chess_network
-        
-        # --- START DEBUG PRINTS ---
-        print("\n" + "="*20 + " DEBUG INFO " + "="*20)
-        print(f"Current Mode: {current_mode}")
-        print(f"Type of game_examples_for_trainer: {type(game_examples_for_trainer)}")
-        print(f"Is game_examples_for_trainer a list of lists?: {isinstance(game_examples_for_trainer[0], list)}")
-        print(f"Number of games in batch: {len(game_examples_for_trainer)}")
-        print(f"Number of training examples in first game: {len(game_examples_for_trainer[0])}")
-        print(f"Type of puzzles_for_training: {type(puzzles_for_training)}")
-        print(f"Number of puzzles for training: {len(puzzles_for_training)}")
-        if puzzles_for_training:
-            print(f"First puzzle sample: {puzzles_for_training[0]}")
-        print("="*52 + "\n")
-        # --- END DEBUG PRINTS ---
 
         policy_loss, value_loss, material_loss = trainer.train_on_batch(
             game_examples=game_examples_for_trainer,
