@@ -12,32 +12,28 @@ from torch_geometric.data import Batch
 from typing import Dict, List, Tuple, Any, Optional
 import chess
 
-# MODIFIED: Import correct model
 from ..neural_network.hybrid_transformer_model import HybridTransformerModel
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 
-# MODIFIED: Add XLA support for TPU training
 try:
     import torch_xla.core.xla_model as xm
-    import torch_xla.distributed.parallel_loader as pl
     XLA_AVAILABLE = True
 except ImportError:
     XLA_AVAILABLE = False
 
 
 class Trainer:
-    def __init__(self, model_config: Dict[str, Any], device): # MODIFIED: Accept device
+    def __init__(self, model_config: Dict[str, Any], device):
         self.network: Optional[HybridTransformerModel] = None
         self.model_config = model_config
-        self.device = device # MODIFIED: Use passed-in device
+        self.device = device
         self.optimizer = None
         self.scheduler = None
         self.loss_criterion = MSELoss()
         self.material_balance_loss_weight = self.model_config.get('MATERIAL_BALANCE_LOSS_WEIGHT', 0.5)
 
     def _initialize_new_network(self) -> Tuple[HybridTransformerModel, int]:
-        """Instantiates the new HybridTransformerModel."""
         print("Creating new Transformer network from scratch...")
         self.network = HybridTransformerModel(
             gnn_hidden_dim=self.model_config.get('GNN_HIDDEN_DIM', 128),
@@ -70,12 +66,10 @@ class Trainer:
         if not file_to_load:
             return self._initialize_new_network()
         
-        # Always initialize a network first to get the structure and optimizer
         self._initialize_new_network()
         
         try:
             print(f"Loading checkpoint from: {file_to_load}")
-            # Checkpoint is loaded to the device determined by get_device()
             checkpoint = torch.load(file_to_load, map_location=self.device)
             self.network.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -83,7 +77,6 @@ class Trainer:
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             game_number = checkpoint.get('game_number', 0)
             
-            # Ensure optimizer state is on the correct device
             for state in self.optimizer.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
@@ -127,8 +120,11 @@ class Trainer:
             return 0.0, 0.0, 0.0
 
         self.network.train()
-        total_policy_loss, total_value_loss, total_material_loss, batches_processed = 0.0, 0.0, 0.0, 0
+        total_policy_loss, total_value_loss, total_material_loss = 0.0, 0.0, 0.0
+        game_batches_processed, puzzle_batches_processed = 0, 0
         
+        # --- MODIFIED: Separate loops for puzzles and game examples ---
+
         # --- Handle Puzzles First (Supervised Learning) ---
         if puzzle_examples:
             num_puzzles = len(puzzle_examples)
@@ -142,21 +138,18 @@ class Trainer:
                 
                 gnn_batch, cnn_batch, policy_targets = self._convert_puzzle_to_tensors(batch_puzzles)
                 
-                # Puzzle training is supervised, only policy head is trained
-                # It's a single-step evaluation, so we can use the model's batch mode
                 pred_policy_logits, _, _ = self.network(gnn_batch, cnn_batch)
                 
                 loss = F.cross_entropy(pred_policy_logits, policy_targets)
                 loss.backward()
                 
-                if XLA_AVAILABLE:
+                if XLA_AVAILABLE and 'xla' in self.device.type:
                     xm.optimizer_step(self.optimizer)
                 else:
                     self.optimizer.step()
                 
                 total_policy_loss += loss.item()
-                batches_processed += 1
-
+                puzzle_batches_processed += 1
 
         # --- Handle Self-Play Games (Reinforcement Learning) ---
         for game in game_examples:
@@ -171,15 +164,12 @@ class Trainer:
             gnn_data_list, cnn_data_list, material_targets_list = zip(*conversion_results)
             
             gnn_batch_for_seq = Batch.from_data_list(list(gnn_data_list))
-            
-            # Add a dimension for the sequence: [S, C, H, W] -> [1, S, C, H, W]
             cnn_tensor_for_seq = torch.stack(list(cnn_data_list)).unsqueeze(0)
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)])
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
             material_targets = torch.stack(list(material_targets_list))
 
-            # The Transformer model handles the full sequence in one pass
             pred_policy_logits, pred_values, pred_materials = self.network(gnn_batch_for_seq, cnn_tensor_for_seq)
 
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
@@ -192,7 +182,6 @@ class Trainer:
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), self.model_config.get('CLIP_GRAD_NORM', 1.0))
             
-            # MODIFIED: Use XLA optimizer step if on TPU
             if XLA_AVAILABLE and 'xla' in self.device.type:
                 xm.optimizer_step(self.optimizer)
             else:
@@ -201,14 +190,15 @@ class Trainer:
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
             total_material_loss += material_loss.item()
-            batches_processed += 1
+            game_batches_processed += 1
 
         if self.scheduler:
             self.scheduler.step()
 
-        avg_p_loss = total_policy_loss / batches_processed if batches_processed > 0 else 0
-        avg_v_loss = total_value_loss / batches_processed if batches_processed > 0 else 0
-        avg_m_loss = total_material_loss / batches_processed if batches_processed > 0 else 0
+        total_batches = game_batches_processed + puzzle_batches_processed
+        avg_p_loss = total_policy_loss / total_batches if total_batches > 0 else 0
+        avg_v_loss = total_value_loss / total_batches if total_batches > 0 else 0
+        avg_m_loss = total_material_loss / total_batches if total_batches > 0 else 0
         
         return avg_p_loss, avg_v_loss, avg_m_loss
 
@@ -219,10 +209,8 @@ class Trainer:
         filename = filename_override or f"checkpoint_game_{game_number}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pth.tar"
         filepath = directory / filename
         
-        # MODIFIED: Use XLA-safe saving if on TPU
-        save_device = 'cpu' if XLA_AVAILABLE and 'xla' in self.device.type else self.device
-        if XLA_AVAILABLE and 'xla' in self.device.type:
-            self.network.to(save_device)
+        save_device = 'cpu'
+        self.network.to(save_device)
 
         state = {
             'game_number': game_number,
@@ -231,9 +219,8 @@ class Trainer:
             'scheduler_state_dict': self.scheduler.state_dict() if self.scheduler else None,
             'config_params': self.model_config,
         }
+        
         torch.save(state, filepath)
         print(f"Checkpoint saved to {filepath}")
-
-        # Move network back to TPU device if needed
-        if XLA_AVAILABLE and 'xla' in self.device.type:
-            self.network.to(self.device)
+        
+        self.network.to(self.device)
