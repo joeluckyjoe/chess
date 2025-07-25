@@ -1,3 +1,4 @@
+# /home/giuseppe/chess/gnn_agent/training/trainer.py
 import torch
 import os
 import re
@@ -12,7 +13,8 @@ from torch_geometric.data import Batch
 from typing import Dict, List, Tuple, Any, Optional
 import chess
 
-from ..neural_network.hybrid_transformer_model import HybridTransformerModel
+# --- MODIFIED: Import the new model ---
+from ..neural_network.value_next_state_model import ValueNextStateModel
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
 
@@ -25,25 +27,25 @@ except ImportError:
 
 class Trainer:
     def __init__(self, model_config: Dict[str, Any], device):
-        self.network: Optional[HybridTransformerModel] = None
+        # --- MODIFIED: Update type hint and remove material loss weight ---
+        self.network: Optional[ValueNextStateModel] = None
         self.model_config = model_config
         self.device = device
         self.optimizer = None
         self.scheduler = None
         self.loss_criterion = MSELoss()
-        self.material_balance_loss_weight = self.model_config.get('MATERIAL_BALANCE_LOSS_WEIGHT', 0.5)
+        # --- ADDED: Weight for the new loss term ---
+        self.next_state_loss_weight = self.model_config.get('NEXT_STATE_LOSS_WEIGHT', 1.0)
 
-    def _initialize_new_network(self) -> Tuple[HybridTransformerModel, int]:
-        print("Creating new Transformer network from scratch...")
-        self.network = HybridTransformerModel(
+    def _initialize_new_network(self) -> Tuple[ValueNextStateModel, int]:
+        # --- MODIFIED: Instantiate ValueNextStateModel ---
+        print("Creating new ValueNextStateModel from scratch...")
+        self.network = ValueNextStateModel(
             gnn_hidden_dim=self.model_config.get('GNN_HIDDEN_DIM', 128),
             cnn_in_channels=self.model_config.get('CNN_INPUT_CHANNELS', 14),
             embed_dim=self.model_config.get('EMBED_DIM', 256),
             gnn_num_heads=self.model_config.get('GNN_NUM_HEADS', 4),
-            transformer_nhead=self.model_config.get('TRANSFORMER_NHEAD', 8),
-            transformer_nlayers=self.model_config.get('TRANSFORMER_NLAYERS', 4),
-            transformer_dim_feedforward=self.model_config.get('TRANSFORMER_DIM_FEEDFORWARD', 512),
-            gnn_metadata=(['square', 'piece'], [('piece', 'occupies', 'square'), ('piece', 'attacks', 'piece'), ('piece', 'defends', 'piece'), ('square', 'adjacent_to', 'square')]),
+            gnn_metadata=(['piece', 'square'], [('piece', 'occupies', 'square'), ('square', 'rev_occupies', 'piece'), ('piece', 'attacks', 'piece'), ('piece', 'defends', 'piece')]),
             policy_size=get_action_space_size()
         ).to(self.device)
 
@@ -55,7 +57,8 @@ class Trainer:
         match = re.search(r'_game_(\d+)', filepath.name)
         return int(match.group(1)) if match else -1
 
-    def load_or_initialize_network(self, directory: Optional[Path], specific_checkpoint_path: Optional[Path] = None) -> Tuple[HybridTransformerModel, int]:
+    def load_or_initialize_network(self, directory: Optional[Path], specific_checkpoint_path: Optional[Path] = None) -> Tuple[ValueNextStateModel, int]:
+        # --- MODIFIED: Update return type hint ---
         file_to_load = None
         if specific_checkpoint_path and specific_checkpoint_path.exists():
             file_to_load = specific_checkpoint_path
@@ -115,26 +118,24 @@ class Trainer:
             policy_targets_list.append(policy_target)
             
         if not gnn_data_list:
-             return None, None, None
+            return None, None, None
 
         return Batch.from_data_list(gnn_data_list), torch.stack(cnn_data_list), torch.stack(policy_targets_list)
 
-
-    def train_on_batch(self, game_examples: List[List[Tuple[str, Dict, float]]],
-                       puzzle_examples: List[Dict], batch_size: int, puzzle_ratio: float) -> Tuple[float, float, float]:
+    # --- MODIFIED: Function signature and logic updated for new data and losses ---
+    def train_on_batch(self, game_examples: List[List[Tuple[str, Dict, float, float]]],
+                         puzzle_examples: List[Dict], batch_size: int) -> Tuple[float, float, float]:
         
         if not game_examples and not puzzle_examples:
             return 0.0, 0.0, 0.0
 
         self.network.train()
-        total_policy_loss, total_value_loss, total_material_loss = 0.0, 0.0, 0.0
+        total_policy_loss, total_value_loss, total_next_state_loss = 0.0, 0.0, 0.0
         game_batches_processed, puzzle_batches_processed = 0, 0
         
+        # Puzzle training loop remains largely the same, only training policy
         if puzzle_examples:
-            # --- ADDED FOR VISIBILITY ---
-            print(f"   -> Training on {len(puzzle_examples)} puzzle examples...")
-            # --- END ADDITION ---
-            
+            print(f"  -> Training on {len(puzzle_examples)} puzzle examples...")
             num_puzzles = len(puzzle_examples)
             puzzle_indices = list(range(num_puzzles))
             random.shuffle(puzzle_indices)
@@ -165,33 +166,38 @@ class Trainer:
         for game in game_examples:
             if not game: continue
 
-            # --- ADDED FOR VISIBILITY ---
-            print(f"   -> Training on {len(game)} game examples...")
-            # --- END ADDITION ---
+            print(f"  -> Training on {len(game)} game examples...")
 
             self.optimizer.zero_grad()
             
-            fen_strings, mcts_policies, game_outcomes = zip(*game)
+            # --- MODIFIED: Unpack the new 4-element tuple ---
+            fen_strings, mcts_policies, game_outcomes, next_state_values = zip(*game)
             boards = [chess.Board(fen) for fen in fen_strings]
             
+            # --- MODIFIED: Remove material targets from conversion result ---
             conversion_results = [convert_to_gnn_input(b, self.device) for b in boards]
-            gnn_data_list, cnn_data_list, material_targets_list = zip(*conversion_results)
+            gnn_data_list, cnn_data_list, _ = zip(*conversion_results)
             
-            gnn_batch_for_seq = Batch.from_data_list(list(gnn_data_list))
-            cnn_tensor_for_seq = torch.stack(list(cnn_data_list)).unsqueeze(0)
+            # --- MODIFIED: Prepare a simple batch, not a sequence ---
+            gnn_batch = Batch.from_data_list(list(gnn_data_list))
+            cnn_batch = torch.stack(list(cnn_data_list))
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)])
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
-            material_targets = torch.stack(list(material_targets_list))
+            # --- ADDED: Create targets for the new head ---
+            next_state_value_targets = torch.tensor(next_state_values, dtype=torch.float32, device=self.device).view(-1, 1)
 
-            pred_policy_logits, pred_values, pred_materials = self.network(gnn_batch_for_seq, cnn_tensor_for_seq)
+            # --- MODIFIED: Call new model and get new outputs ---
+            pred_policy_logits, pred_values, pred_next_state_values = self.network(gnn_batch, cnn_batch)
 
             policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
             value_loss = self.loss_criterion(pred_values, value_targets)
-            material_loss = self.loss_criterion(pred_materials, material_targets)
+            # --- MODIFIED: Calculate new next-state value loss ---
+            next_state_value_loss = self.loss_criterion(pred_next_state_values, next_state_value_targets)
 
             value_loss_weight = self.model_config.get('VALUE_LOSS_WEIGHT', 1.0)
-            total_loss = policy_loss + (value_loss * value_loss_weight) + (material_loss * self.material_balance_loss_weight)
+            # --- MODIFIED: Update total loss calculation ---
+            total_loss = policy_loss + (value_loss * value_loss_weight) + (next_state_value_loss * self.next_state_loss_weight)
             
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), self.model_config.get('CLIP_GRAD_NORM', 1.0))
@@ -203,7 +209,8 @@ class Trainer:
 
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
-            total_material_loss += material_loss.item()
+            # --- MODIFIED: Accumulate new loss ---
+            total_next_state_loss += next_state_value_loss.item()
             game_batches_processed += 1
 
         if self.scheduler:
@@ -212,10 +219,10 @@ class Trainer:
         total_batches = game_batches_processed + puzzle_batches_processed
         avg_p_loss = total_policy_loss / total_batches if total_batches > 0 else 0
         avg_v_loss = total_value_loss / total_batches if total_batches > 0 else 0
-        avg_m_loss = total_material_loss / total_batches if total_batches > 0 else 0
+        # --- MODIFIED: Calculate average for new loss ---
+        avg_ns_loss = total_next_state_loss / total_batches if total_batches > 0 else 0
         
-        return avg_p_loss, avg_v_loss, avg_m_loss
-
+        return avg_p_loss, avg_v_loss, avg_ns_loss
 
     def save_checkpoint(self, directory: Path, game_number: int, filename_override: Optional[str] = None):
         if not directory.is_dir():

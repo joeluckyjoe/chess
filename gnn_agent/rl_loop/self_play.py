@@ -1,20 +1,22 @@
+# /home/giuseppe/chess/rl_loop/self_play.py
 import chess
 import torch
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict
 import time
 import chess.pgn
 from datetime import datetime
-import random
 
-from gnn_agent.neural_network.hybrid_transformer_model import HybridTransformerModel
+# --- MODIFIED: Import the new model ---
+from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
 
 class SelfPlay:
     """
-    Orchestrates a single game of self-play for a stateless Transformer model.
+    Orchestrates a single game of self-play for the ValueNextStateModel.
     """
-    def __init__(self, network: HybridTransformerModel, device: torch.device,
+    # --- MODIFIED: Update type hint for the network ---
+    def __init__(self, network: ValueNextStateModel, device: torch.device,
                  mcts_white: MCTS, mcts_black: MCTS, 
                  stockfish_path: str, num_simulations: int, 
                  temperature: float = 1.0, temp_decay_moves: int = 30, 
@@ -31,23 +33,24 @@ class SelfPlay:
         self.print_move_timers = print_move_timers
         self.contempt_factor = contempt_factor
 
-    def play_game(self) -> Tuple[List[Tuple[str, Dict[chess.Move, float], float]], chess.pgn.Game]:
+    # --- MODIFIED: Update the return type hint ---
+    def play_game(self) -> Tuple[List[Tuple[str, Dict[chess.Move, float], float, float]], chess.pgn.Game]:
         """
-        Plays a full game using stateless evaluations.
+        Plays a full game, generating training data including next-state values.
+        Returns tuples of (FEN, policy, value, next_state_value).
         """
         print("Starting a new self-play game...")
         self.game.reset_board()
 
-        training_data: List[Tuple[str, Dict[chess.Move, float], float]] = []
-        game_history: List[Tuple[str, Dict[chess.Move, float], bool]] = []
+        # The history will now store an extra item: the next_state_value
+        game_history: List[Tuple[str, Dict[chess.Move, float], bool, float]] = []
         move_count = 0
 
-        # The loop is correct as is, because communicator's is_game_over already claims draws.
         while not self.game.is_game_over():
             move_count += 1
             if self.print_move_timers:
                 loop_start_time = time.time()
-
+            
             current_player_mcts = self.mcts_white if self.game.board.turn == chess.WHITE else self.mcts_black
             current_board = self.game.board.copy()
             turn_before_move = current_board.turn
@@ -70,7 +73,12 @@ class SelfPlay:
                 print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
                 break
 
-            game_history.append((current_board.fen(), policy, turn_before_move))
+            # --- MODIFIED: Get the value of the next state from MCTS ---
+            next_state_value = current_player_mcts.get_next_state_value(move_to_play)
+            
+            # --- MODIFIED: Store the next_state_value in the history ---
+            game_history.append((current_board.fen(), policy, turn_before_move, next_state_value))
+            
             self.game.make_move(move_to_play.uci())
 
             if self.print_move_timers:
@@ -84,19 +92,22 @@ class SelfPlay:
         
         print(f"\nGame over. Final outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
         
-        for fen_hist, policy_hist, turn_at_state in game_history:
+        # This list will hold the final training data including the new value
+        training_data: List[Tuple[str, Dict[chess.Move, float], float, float]] = []
+        
+        # --- MODIFIED: Unpack the new history tuple and create final training data ---
+        for fen_hist, policy_hist, turn_at_state, next_state_value_hist in game_history:
             value_for_state = raw_outcome if turn_at_state == chess.WHITE else -raw_outcome
-            training_data.append((fen_hist, policy_hist, value_for_state))
+            training_data.append((fen_hist, policy_hist, value_for_state, next_state_value_hist))
 
         pgn = None
         try:
             pgn = chess.pgn.Game.from_board(self.game.board)
             pgn.headers["Event"] = "Self-Play Training Game"
-            pgn.headers["Site"] = "Herstal, Wallonia, Belgium"
+            pgn.headers["Site"] = "Juprelle, Wallonia, Belgium"
             pgn.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
-            pgn.headers["White"] = "MCTS_Agent_v109"
-            pgn.headers["Black"] = "MCTS_Agent_v109"
-            # MODIFIED: Explicitly set the Result header to fix the '*' issue.
+            pgn.headers["White"] = "MCTS_Agent_v111"
+            pgn.headers["Black"] = "MCTS_Agent_v111"
             pgn.headers["Result"] = self.game.board.result(claim_draw=True)
         except Exception as e:
             print(f"[ERROR] Could not generate PGN for the game: {e}")

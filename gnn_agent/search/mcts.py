@@ -1,3 +1,4 @@
+# /home/giuseppe/chess/gnn_agent/search/mcts.py
 import torch
 import chess
 import numpy as np
@@ -5,18 +6,20 @@ from typing import Dict, Tuple, Deque
 import collections
 
 from torch_geometric.data import Batch
+# Adjust the import path according to your project structure
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-from ..neural_network.hybrid_transformer_model import HybridTransformerModel # MODIFIED
+# --- MODIFIED: Import the new model ---
+from ..neural_network.value_next_state_model import ValueNextStateModel
 from .mcts_node import MCTSNode
 
 
 class MCTS:
     """
-    MCTS implementation updated for a stateless, Transformer-based network (Phase BK).
-    It preserves the batched evaluation loop for performance.
+    MCTS implementation updated for the ValueNextStateModel.
     """
-    def __init__(self, network: HybridTransformerModel, device: torch.device, # MODIFIED
+    # --- MODIFIED: Update type hint for the network ---
+    def __init__(self, network: ValueNextStateModel, device: torch.device,
                  batch_size: int, c_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3, dirichlet_epsilon: float = 0.25):
         self.network = network
@@ -40,7 +43,7 @@ class MCTS:
             current_node = current_node.parent
 
     @torch.no_grad()
-    def _expand_and_evaluate_batch(self): # REMOVED: hidden_state parameter
+    def _expand_and_evaluate_batch(self):
         if not self._pending_evaluations:
             return
 
@@ -51,9 +54,8 @@ class MCTS:
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        # REMOVED: hidden_state_batch logic
-
-        # MODIFIED: Call network without hidden state, unpack 3 values
+        # The network now returns (policy, value, next_state_value).
+        # We only need the policy and value for the search phase itself.
         policy_logits_batch, value_batch, _ = self.network(
             batched_gnn_data, batched_cnn_data
         )
@@ -90,7 +92,7 @@ class MCTS:
             child.P = noisy_priors[i]
 
     @torch.no_grad()
-    def run_search(self, board: chess.Board, num_simulations: int) -> Dict[chess.Move, float]: # MODIFIED: Signature changed
+    def run_search(self, board: chess.Board, num_simulations: int) -> Dict[chess.Move, float]:
         self.root = MCTSNode(parent=None, prior_p=1.0, board_turn_at_node=board.turn)
 
         if not board.is_game_over():
@@ -98,7 +100,6 @@ class MCTS:
             gnn_batch = Batch.from_data_list([gnn_data])
             cnn_batch = cnn_data.unsqueeze(0)
             
-            # MODIFIED: Call network without hidden state, unpack 3 values
             policy_logits, value, _ = self.network(gnn_batch, cnn_batch)
             
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
@@ -135,13 +136,13 @@ class MCTS:
                         term_value = 1.0 if outcome.winner == board.turn else -1.0
                     self._backpropagate(current_node, term_value)
 
-            self._expand_and_evaluate_batch() # REMOVED: hidden_state argument
+            self._expand_and_evaluate_batch()
             sims_done += num_to_run_now
 
-        if not self.root.children: return {} # MODIFIED: Return
+        if not self.root.children: return {}
         total_visits = sum(child.N for child in self.root.children.values())
         policy = {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
-        return policy # MODIFIED: Return
+        return policy
 
     def select_move(self, policy: Dict[chess.Move, float], temperature: float) -> chess.Move:
         if not policy: return None
@@ -153,3 +154,19 @@ class MCTS:
             powered_visits = np.power(visit_counts, 1.0 / temperature)
             probabilities = powered_visits / np.sum(powered_visits)
             return np.random.choice(moves, p=probabilities)
+
+    # --- NEW METHOD ---
+    def get_next_state_value(self, move: chess.Move) -> float:
+        """
+        Retrieves the MCTS value of the state resulting from the given move.
+        This is the Q-value of the corresponding child node from the root.
+        The value is negated to reflect the perspective of the current player.
+        """
+        if self.root and self.root.children and move in self.root.children:
+            child_node = self.root.children[move]
+            if child_node.N > 0:
+                # Negate Q-value because child's Q is from the opponent's perspective.
+                # This gives the value from the current player's point of view.
+                return -child_node.Q / child_node.N
+        # Return a neutral value if move is not found or has no visits
+        return 0.0
