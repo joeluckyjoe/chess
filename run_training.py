@@ -13,7 +13,8 @@ from stockfish import Stockfish
 # --- Import from config ---
 from config import get_paths, config_params
 
-from gnn_agent.neural_network.hybrid_transformer_model import HybridTransformerModel
+# --- MODIFIED: Import the new model ---
+from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
 from hardware_setup import get_device, install_xla_if_needed
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.rl_loop.self_play import SelfPlay
@@ -22,10 +23,11 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
-def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, material_loss, game_type):
+# --- MODIFIED: Updated to handle next_state_loss ---
+def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, next_state_loss, game_type):
     file_exists = os.path.isfile(filepath)
-    df = pd.DataFrame([[game_num, policy_loss, value_loss, material_loss, game_type]],
-                      columns=['game', 'policy_loss', 'value_loss', 'material_loss', 'game_type'])
+    df = pd.DataFrame([[game_num, policy_loss, value_loss, next_state_loss, game_type]],
+                      columns=['game', 'policy_loss', 'value_loss', 'next_state_loss', 'game_type'])
     df.to_csv(filepath, mode='a', header=not file_exists, index=False)
 
 def is_in_grace_period(log_file_path: Path, grace_period_length: int) -> bool:
@@ -82,10 +84,11 @@ def main():
     try:
         print("\n" + "-"*45)
         print("--- Model Architecture Verification ---")
-        if isinstance(chess_network, HybridTransformerModel):
-             print("   - GNN+CNN+Transformer Hybrid Model Detected.")
+        # --- MODIFIED: Check for the new model class ---
+        if isinstance(chess_network, ValueNextStateModel):
+            print("   - ValueNextStateModel (GNN+CNN) Detected.")
         else:
-             print("   - [WARNING] Could not verify hybrid structure.")
+            print("   - [WARNING] Could not verify model structure.")
         print("-"*45 + "\n")
     except Exception as e:
         print(f"\n[WARNING] An unexpected error occurred during feature verification: {e}\n")
@@ -136,7 +139,8 @@ def main():
                         puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles.")
                         trainer.network = chess_network
-                        primer_policy_loss, _, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'], puzzle_ratio=1.0)
+                        # --- MODIFIED: Removed puzzle_ratio argument ---
+                        primer_policy_loss, _, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'])
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
                         print(f"[WARNING] Not enough puzzles ({len(all_puzzles)}) for a full primer. Skipping.")
@@ -185,22 +189,21 @@ def main():
         print(f"Training on {len(training_examples)} new examples...")
         trainer.network = chess_network
 
-        # --- START DEBUG PRINTS ---
         print("\n" + "="*20 + " DEBUG INFO " + "="*20)
         print(f"Current Mode: {current_mode}")
         print(f"Data going to trainer - Game Examples: {len(game_examples_for_trainer)} games")
         print(f"Data going to trainer - Puzzle Examples: {len(puzzles_for_training)} puzzles")
-        # --- END DEBUG PRINTS ---
 
-        policy_loss, value_loss, material_loss = trainer.train_on_batch(
+        # --- MODIFIED: Call train_on_batch with new signature and unpack new loss values ---
+        policy_loss, value_loss, next_state_loss = trainer.train_on_batch(
             game_examples=game_examples_for_trainer,
             puzzle_examples=puzzles_for_training,
-            batch_size=config_params['BATCH_SIZE'],
-            puzzle_ratio=config_params.get('PUZZLE_RATIO', 0.25)
+            batch_size=config_params['BATCH_SIZE']
         )
-        print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, Material Loss: {material_loss:.4f}")
+        print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, Next-State Loss: {next_state_loss:.4f}")
         
-        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, material_loss, current_mode)
+        # --- MODIFIED: Write new loss values to CSV ---
+        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, next_state_loss, current_mode)
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")
