@@ -147,6 +147,24 @@ def train_on_corpus():
         gnn_metadata=GNN_METADATA
     ).to(device)
 
+    # --- ADDED: Initialize lazy layers with a dummy forward pass ---
+    logging.info("Initializing lazy layers by performing a dummy forward pass...")
+    try:
+        model.eval()
+        with torch.no_grad():
+            dummy_board = chess.Board()
+            gnn_data, cnn_tensor, _ = convert_to_gnn_input(dummy_board, device='cpu')
+            dummy_gnn_batch = Batch.from_data_list([gnn_data]).to(device)
+            dummy_cnn_tensor = torch.stack([cnn_tensor]).to(device)
+            _ = model(dummy_gnn_batch, dummy_cnn_tensor)
+        logging.info("Model layers initialized successfully.")
+    except Exception as e:
+        logging.error(f"Failed to initialize lazy layers. Error: {e}", exc_info=True)
+        # Exit if initialization fails, as the rest of the script will also fail.
+        exit()
+    # --- END OF ADDED BLOCK ---
+
+    # MOVED: This line now comes AFTER the initialization.
     logging.info(f"Model initialized with {sum(p.numel() for p in model.parameters()):,} trainable parameters.")
 
     # --- 3. Data Loading ---
