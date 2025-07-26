@@ -1,3 +1,5 @@
+# FILENAME: run_training.py
+
 import os
 import torch
 import pandas as pd
@@ -23,7 +25,41 @@ from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
 
-# --- MODIFIED: Updated to handle next_state_loss ---
+# --- MODIFIED: Added for initializing pre-trained model ---
+# This metadata is required to initialize the UnifiedGNN within your model.
+GNN_METADATA = (
+    ['square', 'piece'],
+    [
+        ('square', 'adjacent_to', 'square'),
+        ('piece', 'occupies', 'square'),
+        ('piece', 'attacks', 'piece'),
+        ('piece', 'defends', 'piece')
+    ]
+)
+
+class MoveHandler:
+    """
+    A self-contained class to handle move conversions for model initialization.
+    """
+    def __init__(self):
+        self.move_map = self._create_move_map()
+        self.policy_size = len(self.move_map)
+
+    def _create_move_map(self):
+        moves = {}
+        idx = 0
+        for from_sq in chess.SQUARES:
+            for to_sq in chess.SQUARES:
+                if from_sq == to_sq:
+                    continue
+                for prom in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]:
+                    moves[chess.Move(from_sq, to_sq, promotion=prom)] = idx
+                    idx += 1
+                moves[chess.Move(from_sq, to_sq)] = idx
+                idx += 1
+        return moves
+# --- End of added block ---
+
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, next_state_loss, game_type):
     file_exists = os.path.isfile(filepath)
     df = pd.DataFrame([[game_num, policy_loss, value_loss, next_state_loss, game_type]],
@@ -66,6 +102,8 @@ def load_puzzles_from_sources(puzzle_paths: list[Path]):
 def main():
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
     parser.add_argument('--disable-puzzle-mixing', action='store_true', help="If set, disables the mixing of tactical puzzles during standard training.")
+    # --- MODIFIED: Added new argument for loading a pre-trained model ---
+    parser.add_argument('--load-pretrained-checkpoint', type=str, default=None, help="Path to a pre-trained model checkpoint to start the run.")
     args = parser.parse_args()
 
     if args.disable_puzzle_mixing:
@@ -78,13 +116,40 @@ def main():
     print(f"Using device: {device}")
 
     trainer = Trainer(model_config=config_params, device=device)
-    chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
-    print(f"Resuming training run from game {start_game + 1}")
+    
+    # --- MODIFIED: Logic to handle loading pre-trained model vs. resuming ---
+    if args.load_pretrained_checkpoint:
+        print("\n" + "#"*60)
+        print("--- LOADING PRE-TRAINED MODEL ---")
+        pretrained_path = Path(args.load_pretrained_checkpoint)
+        if not pretrained_path.exists():
+            print(f"[FATAL] Pre-trained checkpoint not found at: {pretrained_path}")
+            sys.exit(1)
+            
+        move_handler = MoveHandler()
+        chess_network = ValueNextStateModel(
+            gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'],
+            cnn_in_channels=14, 
+            embed_dim=config_params['EMBED_DIM'],
+            policy_size=move_handler.policy_size,
+            gnn_num_heads=config_params['GNN_NUM_HEADS'],
+            gnn_metadata=GNN_METADATA
+        ).to(device)
+        
+        chess_network.load_state_dict(torch.load(pretrained_path, map_location=device))
+        start_game = 0
+        trainer.network = chess_network # Ensure the trainer has the loaded network
+        print(f"Successfully loaded pre-trained model from: {pretrained_path}")
+        print("Starting new training run from Game 1.")
+        print("#"*60 + "\n")
+    else:
+        chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
+        print(f"Resuming training run from game {start_game + 1}")
+    # --- END OF MODIFIED BLOCK ---
 
     try:
         print("\n" + "-"*45)
         print("--- Model Architecture Verification ---")
-        # --- MODIFIED: Check for the new model class ---
         if isinstance(chess_network, ValueNextStateModel):
             print("   - ValueNextStateModel (GNN+CNN) Detected.")
         else:
@@ -139,7 +204,6 @@ def main():
                         puzzles_for_primer = random.sample(all_puzzles, num_puzzles_for_primer)
                         print(f"Executing tactical primer with {len(puzzles_for_primer)} puzzles.")
                         trainer.network = chess_network
-                        # --- MODIFIED: Removed puzzle_ratio argument ---
                         primer_policy_loss, _, _ = trainer.train_on_batch(game_examples=[], puzzle_examples=puzzles_for_primer, batch_size=config_params['BATCH_SIZE'])
                         print(f"Tactical Primer Complete. Policy Loss: {primer_policy_loss:.4f}")
                     else:
@@ -194,7 +258,6 @@ def main():
         print(f"Data going to trainer - Game Examples: {len(game_examples_for_trainer)} games")
         print(f"Data going to trainer - Puzzle Examples: {len(puzzles_for_training)} puzzles")
 
-        # --- MODIFIED: Call train_on_batch with new signature and unpack new loss values ---
         policy_loss, value_loss, next_state_loss = trainer.train_on_batch(
             game_examples=game_examples_for_trainer,
             puzzle_examples=puzzles_for_training,
@@ -202,7 +265,6 @@ def main():
         )
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, Next-State Loss: {next_state_loss:.4f}")
         
-        # --- MODIFIED: Write new loss values to CSV ---
         write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, next_state_loss, current_mode)
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
