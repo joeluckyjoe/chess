@@ -2,6 +2,7 @@
 
 import os
 import torch
+import torch.optim as optim  # MODIFIED: Added optimizer import
 import pandas as pd
 from pathlib import Path
 import chess.pgn
@@ -102,7 +103,6 @@ def load_puzzles_from_sources(puzzle_paths: list[Path]):
 def main():
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
     parser.add_argument('--disable-puzzle-mixing', action='store_true', help="If set, disables the mixing of tactical puzzles during standard training.")
-    # --- MODIFIED: Added new argument for loading a pre-trained model ---
     parser.add_argument('--load-pretrained-checkpoint', type=str, default=None, help="Path to a pre-trained model checkpoint to start the run.")
     args = parser.parse_args()
 
@@ -117,7 +117,6 @@ def main():
 
     trainer = Trainer(model_config=config_params, device=device)
     
-    # --- MODIFIED: Logic to handle loading pre-trained model vs. resuming ---
     if args.load_pretrained_checkpoint:
         print("\n" + "#"*60)
         print("--- LOADING PRE-TRAINED MODEL ---")
@@ -138,14 +137,23 @@ def main():
         
         chess_network.load_state_dict(torch.load(pretrained_path, map_location=device))
         start_game = 0
-        trainer.network = chess_network # Ensure the trainer has the loaded network
+        trainer.network = chess_network 
+        
+        # --- MODIFIED: Added optimizer initialization ---
+        print("Initializing optimizer for the pre-trained network...")
+        trainer.optimizer = optim.AdamW(
+            chess_network.parameters(),
+            lr=config_params['LEARNING_RATE'],
+            weight_decay=config_params['WEIGHT_DECAY']
+        )
+        # --- END OF MODIFIED BLOCK ---
+        
         print(f"Successfully loaded pre-trained model from: {pretrained_path}")
         print("Starting new training run from Game 1.")
         print("#"*60 + "\n")
     else:
         chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
         print(f"Resuming training run from game {start_game + 1}")
-    # --- END OF MODIFIED BLOCK ---
 
     try:
         print("\n" + "-"*45)
