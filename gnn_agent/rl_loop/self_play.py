@@ -1,24 +1,28 @@
-# /home/giuseppe/chess/rl_loop/self_play.py
+# FILENAME: gnn_agent/rl_loop/self_play.py
 import chess
 import torch
 from typing import List, Tuple, Dict
 import time
 import chess.pgn
 from datetime import datetime
+import random
+from stockfish import Stockfish
 
-# --- MODIFIED: Import the new model ---
 from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.stockfish_communicator import StockfishCommunicator
+# The problematic board_converter import has been removed.
 
 class SelfPlay:
     """
-    Orchestrates a single game of self-play for the ValueNextStateModel.
+    Orchestrates a single game of self-play for the ValueNextStateModel,
+    with an option for hybrid mentor-corrected play.
     """
-    # --- MODIFIED: Update type hint for the network ---
     def __init__(self, network: ValueNextStateModel, device: torch.device,
                  mcts_white: MCTS, mcts_black: MCTS, 
-                 stockfish_path: str, num_simulations: int, 
+                 stockfish_path: str, num_simulations: int,
+                 mentor_engine: Stockfish,
+                 mentor_intervention_prob: float = 0.0,
                  temperature: float = 1.0, temp_decay_moves: int = 30, 
                  print_move_timers: bool = False, contempt_factor: float = 0.0):
         self.network = network
@@ -32,88 +36,104 @@ class SelfPlay:
         self.temp_decay_moves = temp_decay_moves
         self.print_move_timers = print_move_timers
         self.contempt_factor = contempt_factor
+        self.mentor_engine = mentor_engine
+        self.mentor_intervention_prob = mentor_intervention_prob
+        self.interventions_made = 0
 
-    # --- MODIFIED: Update the return type hint ---
     def play_game(self) -> Tuple[List[Tuple[str, Dict[chess.Move, float], float, float]], chess.pgn.Game]:
         """
-        Plays a full game, generating training data including next-state values.
+        Plays a full game, generating training data.
+        If mentor_intervention_prob > 0, it will periodically force the mentor's move.
         Returns tuples of (FEN, policy, value, next_state_value).
         """
-        print("Starting a new self-play game...")
+        if self.mentor_intervention_prob > 0:
+            print(f"Starting a new hybrid self-play game (Intervention Prob: {self.mentor_intervention_prob:.2f})...")
+        else:
+            print("Starting a new self-play game...")
+            
         self.game.reset_board()
+        self.interventions_made = 0
+        pgn_game = chess.pgn.Game()
+        pgn_game.headers["Event"] = "Hybrid Self-Play Training Game" if self.mentor_intervention_prob > 0 else "Self-Play Training Game"
+        pgn_game.headers["Site"] = "Juprelle, Wallonia, Belgium"
+        pgn_game.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
+        pgn_game.headers["White"] = "Agent_MCTS"
+        pgn_game.headers["Black"] = "Agent_MCTS"
+        if self.mentor_intervention_prob > 0:
+            pgn_game.headers["InterventionRate"] = f"{self.mentor_intervention_prob:.2f}"
+        
+        pgn_node = pgn_game
 
-        # The history will now store an extra item: the next_state_value
         game_history: List[Tuple[str, Dict[chess.Move, float], bool, float]] = []
         move_count = 0
 
         while not self.game.is_game_over():
             move_count += 1
-            if self.print_move_timers:
-                loop_start_time = time.time()
-            
-            current_player_mcts = self.mcts_white if self.game.board.turn == chess.WHITE else self.mcts_black
             current_board = self.game.board.copy()
             turn_before_move = current_board.turn
-
-            if self.print_move_timers:
-                mcts_start_time = time.time()
             
-            policy = current_player_mcts.run_search(
-                board=current_board,
-                num_simulations=self.num_simulations
-            )
+            move_to_play = None
+            policy = {}
+            is_intervention = False
 
-            if self.print_move_timers:
-                mcts_duration = time.time() - mcts_start_time
-            
-            current_temp = self.temperature if move_count <= self.temp_decay_moves else 0.0
-            move_to_play = current_player_mcts.select_move(policy, current_temp)
+            # --- PHASE BQ: HYBRID MENTOR-RL LOGIC ---
+            if random.random() < self.mentor_intervention_prob:
+                is_intervention = True
+                self.interventions_made += 1
+                self.mentor_engine.set_fen_position(current_board.fen())
+                best_move_uci = self.mentor_engine.get_best_move_time(100) # 100ms
+                if best_move_uci:
+                    move_to_play = chess.Move.from_uci(best_move_uci)
+                    # Create a "one-hot" policy targeting the mentor's move
+                    for legal_move in current_board.legal_moves:
+                        policy[legal_move] = 1.0 if legal_move == move_to_play else 0.0
+                    print(f"** Mentor Intervention on move {move_count}: Chose {move_to_play.uci()} **")
+                else:
+                    is_intervention = False # Fallback if mentor fails
 
-            if move_to_play is None:
-                print(f"[INFO] Move {move_count}: No move could be selected. Ending game early.")
+            # --- STANDARD MCTS-DRIVEN MOVE ---
+            if not is_intervention:
+                current_player_mcts = self.mcts_white if turn_before_move == chess.WHITE else self.mcts_black
+                policy = current_player_mcts.run_search(board=current_board, num_simulations=self.num_simulations)
+                current_temp = self.temperature if move_count <= self.temp_decay_moves else 0.0
+                move_to_play = current_player_mcts.select_move(policy, current_temp)
+
+            if move_to_play is None or move_to_play not in current_board.legal_moves:
+                print(f"[INFO] Move {move_count}: No valid move could be selected. Ending game.")
                 break
-
-            # --- MODIFIED: Get the value of the next state from MCTS ---
-            next_state_value = current_player_mcts.get_next_state_value(move_to_play)
             
-            # --- MODIFIED: Store the next_state_value in the history ---
+            # --- MODIFIED: Use the new MCTS method to get the next state value ---
+            temp_board = current_board.copy()
+            temp_board.push(move_to_play)
+            
+            # Evaluate the board *after* the move. Negate it to get the value from the
+            # perspective of the player *making* the move.
+            next_state_value = -self.mcts_white.evaluate_single_board(temp_board)
+            
+            # Store the data for this state
             game_history.append((current_board.fen(), policy, turn_before_move, next_state_value))
             
+            # Make the move on the board and in the PGN
             self.game.make_move(move_to_play.uci())
-
-            if self.print_move_timers:
-                loop_duration = time.time() - loop_start_time
-                print(f"[TIMER] Move {move_count}: MCTS search took {mcts_duration:.4f}s. Full loop took {loop_duration:.4f}s.")
+            pgn_node = pgn_node.add_variation(move_to_play)
+            if is_intervention:
+                pgn_node.comment = "Mentor Intervention"
 
         # --- Game is Over ---
         raw_outcome = self.game.get_game_outcome()
         if raw_outcome == 0.0:
             raw_outcome = self.contempt_factor
         
-        print(f"\nGame over. Final outcome (White's perspective): {raw_outcome}. Total moves: {len(game_history)}")
+        print(f"\nGame over. Final outcome (White's perspective): {raw_outcome}. Total moves: {move_count}. Interventions: {self.interventions_made}.")
         
-        # This list will hold the final training data including the new value
         training_data: List[Tuple[str, Dict[chess.Move, float], float, float]] = []
-        
-        # --- MODIFIED: Unpack the new history tuple and create final training data ---
         for fen_hist, policy_hist, turn_at_state, next_state_value_hist in game_history:
             value_for_state = raw_outcome if turn_at_state == chess.WHITE else -raw_outcome
             training_data.append((fen_hist, policy_hist, value_for_state, next_state_value_hist))
 
-        pgn = None
-        try:
-            pgn = chess.pgn.Game.from_board(self.game.board)
-            pgn.headers["Event"] = "Self-Play Training Game"
-            pgn.headers["Site"] = "Juprelle, Wallonia, Belgium"
-            pgn.headers["Date"] = datetime.now().strftime("%Y.%m.%d")
-            pgn.headers["White"] = "MCTS_Agent_v111"
-            pgn.headers["Black"] = "MCTS_Agent_v111"
-            pgn.headers["Result"] = self.game.board.result(claim_draw=True)
-        except Exception as e:
-            print(f"[ERROR] Could not generate PGN for the game: {e}")
-        
-        return training_data, pgn
+        pgn_game.headers["Result"] = self.game.board.result(claim_draw=True)
+        return training_data, pgn_game
 
     def close(self):
-        """Closes the Stockfish process."""
+        """Closes the local Stockfish communicator process."""
         self.game.close()

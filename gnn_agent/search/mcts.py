@@ -1,4 +1,4 @@
-# /home/giuseppe/chess/gnn_agent/search/mcts.py
+# FILENAME: gnn_agent/search/mcts.py
 import torch
 import chess
 import numpy as np
@@ -155,7 +155,6 @@ class MCTS:
             probabilities = powered_visits / np.sum(powered_visits)
             return np.random.choice(moves, p=probabilities)
 
-    # --- NEW METHOD ---
     def get_next_state_value(self, move: chess.Move) -> float:
         """
         Retrieves the MCTS value of the state resulting from the given move.
@@ -166,7 +165,22 @@ class MCTS:
             child_node = self.root.children[move]
             if child_node.N > 0:
                 # Negate Q-value because child's Q is from the opponent's perspective.
-                # This gives the value from the current player's point of view.
                 return -child_node.Q / child_node.N
-        # Return a neutral value if move is not found or has no visits
         return 0.0
+
+    # --- NEW METHOD TO FIX IMPORT ERROR IN SELF_PLAY ---
+    @torch.no_grad()
+    def evaluate_single_board(self, board: chess.Board) -> float:
+        """
+        Performs a raw evaluation of a single board state using the network,
+        returning the value from the perspective of the current player on that board.
+        """
+        self.network.eval()
+        gnn_data, cnn_data, _ = convert_to_gnn_input(board, self.device)
+        gnn_batch = Batch.from_data_list([gnn_data])
+        cnn_batch = cnn_data.unsqueeze(0)
+
+        # We only need the value prediction for this purpose.
+        _, value_pred, _ = self.network(gnn_batch, cnn_batch)
+
+        return value_pred.item()

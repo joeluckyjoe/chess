@@ -25,10 +25,9 @@ from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
-# MODIFIED: Import the canonical action space converter
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
-# --- MODIFIED: The GNN Metadata is now the single source of truth for the graph structure ---
+# --- The GNN Metadata is now the single source of truth for the graph structure ---
 GNN_METADATA = (
     ['square', 'piece'],
     [
@@ -82,8 +81,9 @@ def main():
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
     parser.add_argument('--disable-puzzle-mixing', action='store_true', help="If set, disables the mixing of tactical puzzles during standard training.")
     parser.add_argument('--load-pretrained-checkpoint', type=str, default=None, help="Path to a pre-trained model checkpoint to start the run.")
-    # --- MODIFIED: Added new argument for freezing layers ---
     parser.add_argument('--freeze-feature-layers', action='store_true', help="If set, freezes the GNN and CNN layers for fine-tuning.")
+    # --- PHASE BQ: Added argument for mentor intervention ---
+    parser.add_argument('--mentor-intervention-prob', type=float, default=None, help="Overrides config: Probability of mentor intervention in self-play.")
     args = parser.parse_args()
 
     if args.disable_puzzle_mixing:
@@ -121,7 +121,6 @@ def main():
         start_game = 0
         trainer.network = chess_network 
         
-        # --- MODIFIED: Logic to handle freezing layers ---
         if args.freeze_feature_layers:
             print("Freezing GNN and CNN layers...")
             for name, param in chess_network.named_parameters():
@@ -130,7 +129,6 @@ def main():
             print("GNN and CNN layers frozen.")
 
         print("Initializing optimizer...")
-        # MODIFIED: The optimizer now only receives parameters that are trainable.
         trainable_params = filter(lambda p: p.requires_grad, chess_network.parameters())
         trainer.optimizer = optim.AdamW(
             trainable_params,
@@ -142,8 +140,6 @@ def main():
         print("Starting new training run from Game 1.")
         print("#"*60 + "\n")
     else:
-        # NOTE: The --freeze-feature-layers flag is not currently supported when resuming a standard run.
-        # This would require refactoring the Trainer class to separate optimizer creation from network loading.
         if args.freeze_feature_layers:
             print("[WARNING] --freeze-feature-layers is only supported when loading a pre-trained model. Ignoring flag.")
         
@@ -155,7 +151,6 @@ def main():
         print("--- Model Architecture Verification ---")
         if isinstance(chess_network, ValueNextStateModel):
             print("   - ValueNextStateModel (GNN+CNN) Detected.")
-            # --- MODIFIED: Added verification for frozen layers ---
             if args.freeze_feature_layers:
                 frozen_layers = [name for name, param in chess_network.named_parameters() if not param.requires_grad]
                 if frozen_layers:
@@ -172,6 +167,18 @@ def main():
 
     mcts_player = MCTS(network=chess_network, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
     
+    try:
+        mentor_engine = Stockfish(path=config_params['STOCKFISH_PATH'], depth=config_params['STOCKFISH_DEPTH_MENTOR'])
+        mentor_engine.set_elo_rating(config_params['MENTOR_ELO'])
+    except Exception as e:
+        print(f"[FATAL] Could not initialize the Stockfish engine: {e}\n" + "Please ensure the STOCKFISH_PATH in config.py is correct and the binary is executable.")
+        sys.exit(1)
+
+    # --- PHASE BQ: Get intervention probability from args or config ---
+    mentor_prob = args.mentor_intervention_prob if args.mentor_intervention_prob is not None else config_params.get('MENTOR_INTERVENTION_PROB', 0.0)
+    if mentor_prob > 0:
+        print("\n" + "#"*60 + f"\n--- HYBRID MENTOR-RL IS ACTIVE (PROBABILITY: {mentor_prob:.2f}) ---\n" + "#"*60 + "\n")
+        
     self_player = SelfPlay(
         network=chess_network,
         device=device,
@@ -179,15 +186,11 @@ def main():
         mcts_black=mcts_player, 
         stockfish_path=config_params['STOCKFISH_PATH'], 
         num_simulations=config_params['MCTS_SIMULATIONS'],
-        contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0)
+        contempt_factor=config_params.get('CONTEMPT_FACTOR', 0.0),
+        # --- PHASE BQ: Pass mentor engine and probability to SelfPlay ---
+        mentor_engine=mentor_engine,
+        mentor_intervention_prob=mentor_prob
     )
-
-    try:
-        mentor_engine = Stockfish(path=config_params['STOCKFISH_PATH'], depth=15)
-        mentor_engine.set_elo_rating(config_params['MENTOR_ELO'])
-    except Exception as e:
-        print(f"[FATAL] Could not initialize the Stockfish engine: {e}\n" + "Please ensure the STOCKFISH_PATH in config.py is correct and the binary is executable.")
-        sys.exit(1)
 
     training_data_manager = TrainingDataManager(data_directory=paths.training_data_dir)
     supervisor = BayesianSupervisor(config=config_params)
@@ -234,26 +237,28 @@ def main():
 
         game_examples_for_trainer = []
         if current_mode == "self-play":
-            print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {current_mode.upper()}) ---")
+            # --- PHASE BQ: Set a more descriptive mode for logging ---
+            log_mode = "hybrid-self-play" if mentor_prob > 0 else "self-play"
+            print(f"\n--- Game {game_num}/{config_params['TOTAL_GAMES']} (Mode: {log_mode.upper()}) ---")
             training_examples, pgn_data = self_player.play_game()
             game_examples_for_trainer.append(training_examples)
             if not args.disable_puzzle_mixing:
                 puzzles_for_training = all_puzzles
         else: 
+            log_mode = current_mode # Use 'guided-mentor-session' for the log
             game_examples_for_trainer.append(training_examples)
 
-
         if not training_examples:
-            print(f"Game type '{current_mode}' resulted in no examples. Skipping training and saving for this cycle.")
+            print(f"Game type '{log_mode}' resulted in no examples. Skipping training and saving for this cycle.")
             continue
         
-        print(f"{current_mode.capitalize()} game complete. Generated {len(training_examples)} examples.")
+        print(f"{log_mode.capitalize().replace('-', ' ')} game complete. Generated {len(training_examples)} examples.")
         
-        data_filename = f"{current_mode}_game_{game_num}_data.pkl"
+        data_filename = f"{log_mode}_game_{game_num}_data.pkl"
         training_data_manager.save_data(training_examples, filename=data_filename)
         
         if pgn_data:
-            pgn_filename = paths.pgn_games_dir / f"{current_mode}_game_{game_num}.pgn"
+            pgn_filename = paths.pgn_games_dir / f"{log_mode}_game_{game_num}.pgn"
             try:
                 with open(pgn_filename, "w", encoding="utf-8") as f:
                     print(pgn_data, file=f, end="\n\n")
@@ -263,11 +268,6 @@ def main():
         print(f"Training on {len(training_examples)} new examples...")
         trainer.network = chess_network
 
-        print("\n" + "="*20 + " DEBUG INFO " + "="*20)
-        print(f"Current Mode: {current_mode}")
-        print(f"Data going to trainer - Game Examples: {len(game_examples_for_trainer)} games")
-        print(f"Data going to trainer - Puzzle Examples: {len(puzzles_for_training)} puzzles")
-
         policy_loss, value_loss, next_state_loss = trainer.train_on_batch(
             game_examples=game_examples_for_trainer,
             puzzle_examples=puzzles_for_training,
@@ -275,7 +275,7 @@ def main():
         )
         print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}, Next-State Loss: {next_state_loss:.4f}")
         
-        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, next_state_loss, current_mode)
+        write_loss_to_csv(paths.loss_log_file, game_num, policy_loss, value_loss, next_state_loss, log_mode)
 
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             print(f"Saving checkpoint at game {game_num}...")

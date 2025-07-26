@@ -45,6 +45,11 @@ config_params = {
     "STOCKFISH_DEPTH_MENTOR": 10,
     "STOCKFISH_DEPTH_EVAL": 10,
 
+    # --- PHASE BQ: HYBRID MENTOR-RL ---
+    # The probability (0.0 to 1.0) of forcing the agent to play the mentor's move
+    # instead of its own MCTS-selected move during a self-play game.
+    "MENTOR_INTERVENTION_PROB": 0.15,
+
     # -- Neural Network & Training Settings --
     "EMBED_DIM": 256,
     "GNN_HIDDEN_DIM": 128,
