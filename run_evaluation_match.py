@@ -164,11 +164,6 @@ def main():
     
     print(f"PGN saved to: {pgn_filename}")
 
-    # Clean up Stockfish processes if they exist
-    if isinstance(player_white, Stockfish):
-        player_white.quit()
-    if isinstance(player_black, Stockfish):
-        player_black.quit()
 
 if __name__ == "__main__":
     main()
