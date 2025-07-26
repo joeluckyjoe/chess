@@ -1,4 +1,4 @@
-# /home/giuseppe/chess/gnn_agent/training/trainer.py
+# FILENAME: /home/giuseppe/chess/gnn_agent/training/trainer.py
 import torch
 import os
 import re
@@ -99,6 +99,7 @@ class Trainer:
             except Exception: pass
         return policy_tensor
     
+    # --- MODIFIED: This function is corrected to fix the RuntimeError ---
     def _convert_puzzle_to_tensors(self, puzzle_examples: List[Dict]) -> Tuple[Batch, torch.Tensor, torch.Tensor]:
         gnn_data_list, cnn_data_list, policy_targets_list = [], [], []
         for puzzle in puzzle_examples:
@@ -113,18 +114,19 @@ class Trainer:
             gnn_data_list.append(gnn_data)
             cnn_data_list.append(cnn_data)
             
-            policy_target = torch.zeros(get_action_space_size(), device=self.device)
-            policy_target[move_to_index(move, board)] = 1.0
-            policy_targets_list.append(policy_target)
+            # Create a simple integer index for the target move, not a one-hot vector.
+            policy_target_index = move_to_index(move, board)
+            policy_targets_list.append(policy_target_index)
             
         if not gnn_data_list:
             return None, None, None
 
-        return Batch.from_data_list(gnn_data_list), torch.stack(cnn_data_list), torch.stack(policy_targets_list)
+        # Return a 1D tensor of target indices (dtype=long) for cross_entropy.
+        return Batch.from_data_list(gnn_data_list), torch.stack(cnn_data_list), torch.tensor(policy_targets_list, dtype=torch.long, device=self.device)
 
     # --- MODIFIED: Function signature and logic updated for new data and losses ---
     def train_on_batch(self, game_examples: List[List[Tuple[str, Dict, float, float]]],
-                         puzzle_examples: List[Dict], batch_size: int) -> Tuple[float, float, float]:
+                       puzzle_examples: List[Dict], batch_size: int) -> Tuple[float, float, float]:
         
         if not game_examples and not puzzle_examples:
             return 0.0, 0.0, 0.0
@@ -152,6 +154,7 @@ class Trainer:
 
                 pred_policy_logits, _, _ = self.network(gnn_batch, cnn_batch)
                 
+                # The loss function will now work correctly with the 1D policy_targets tensor.
                 loss = F.cross_entropy(pred_policy_logits, policy_targets)
                 loss.backward()
                 
