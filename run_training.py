@@ -82,10 +82,15 @@ def main():
     parser = argparse.ArgumentParser(description="Run the MCTS RL training loop.")
     parser.add_argument('--disable-puzzle-mixing', action='store_true', help="If set, disables the mixing of tactical puzzles during standard training.")
     parser.add_argument('--load-pretrained-checkpoint', type=str, default=None, help="Path to a pre-trained model checkpoint to start the run.")
+    # --- MODIFIED: Added new argument for freezing layers ---
+    parser.add_argument('--freeze-feature-layers', action='store_true', help="If set, freezes the GNN and CNN layers for fine-tuning.")
     args = parser.parse_args()
 
     if args.disable_puzzle_mixing:
         print("\n" + "#"*60 + "\n--- TACTICAL PUZZLE MIXING IS DISABLED FOR THIS RUN ---\n" + "#"*60 + "\n")
+    if args.freeze_feature_layers:
+        print("\n" + "#"*60 + "\n--- GNN AND CNN FEATURE LAYERS WILL BE FROZEN --- \n" + "#"*60 + "\n")
+
 
     paths = get_paths()
     
@@ -103,7 +108,6 @@ def main():
             print(f"[FATAL] Pre-trained checkpoint not found at: {pretrained_path}")
             sys.exit(1)
             
-        # MODIFIED: Use the project's canonical action space size for consistency
         chess_network = ValueNextStateModel(
             gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'],
             cnn_in_channels=14, 
@@ -117,9 +121,19 @@ def main():
         start_game = 0
         trainer.network = chess_network 
         
-        print("Initializing optimizer for the pre-trained network...")
+        # --- MODIFIED: Logic to handle freezing layers ---
+        if args.freeze_feature_layers:
+            print("Freezing GNN and CNN layers...")
+            for name, param in chess_network.named_parameters():
+                if name.startswith('gnn.') or name.startswith('cnn.'):
+                    param.requires_grad = False
+            print("GNN and CNN layers frozen.")
+
+        print("Initializing optimizer...")
+        # MODIFIED: The optimizer now only receives parameters that are trainable.
+        trainable_params = filter(lambda p: p.requires_grad, chess_network.parameters())
         trainer.optimizer = optim.AdamW(
-            chess_network.parameters(),
+            trainable_params,
             lr=config_params['LEARNING_RATE'],
             weight_decay=config_params['WEIGHT_DECAY']
         )
@@ -128,6 +142,11 @@ def main():
         print("Starting new training run from Game 1.")
         print("#"*60 + "\n")
     else:
+        # NOTE: The --freeze-feature-layers flag is not currently supported when resuming a standard run.
+        # This would require refactoring the Trainer class to separate optimizer creation from network loading.
+        if args.freeze_feature_layers:
+            print("[WARNING] --freeze-feature-layers is only supported when loading a pre-trained model. Ignoring flag.")
+        
         chess_network, start_game = trainer.load_or_initialize_network(directory=paths.checkpoints_dir)
         print(f"Resuming training run from game {start_game + 1}")
 
@@ -136,6 +155,13 @@ def main():
         print("--- Model Architecture Verification ---")
         if isinstance(chess_network, ValueNextStateModel):
             print("   - ValueNextStateModel (GNN+CNN) Detected.")
+            # --- MODIFIED: Added verification for frozen layers ---
+            if args.freeze_feature_layers:
+                frozen_layers = [name for name, param in chess_network.named_parameters() if not param.requires_grad]
+                if frozen_layers:
+                    print(f"   - Verified {len(frozen_layers)} frozen parameters in 'gnn' and 'cnn' layers.")
+                else:
+                    print("   - [WARNING] --freeze-feature-layers flag was set, but no layers were frozen.")
         else:
             print("   - [WARNING] Could not verify model structure.")
         print("-"*45 + "\n")
