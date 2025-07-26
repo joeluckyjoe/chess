@@ -114,12 +114,13 @@ def play_one_mentor_game(mentor_engine: Stockfish, contempt_factor: float) -> Tu
 
     # --- Generate PGN ---
     pgn = chess.pgn.Game.from_board(board)
-    pgn.headers["Event"] = "Mentor-Play Training Game"
+    pgn.headers["Event"] = "Agent Training via Mentor-Play"
     pgn.headers["Site"] = "Juprelle, Wallonia, Belgium"
     pgn.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
-    pgn.headers["White"] = "Mentor (Stockfish)"
-    pgn.headers["Black"] = "Mentor (Stockfish)"
+    pgn.headers["White"] = "Mentor (Teaching White's moves)"
+    pgn.headers["Black"] = "Mentor (Teaching Black's moves)"
     pgn.headers["Result"] = board.result(claim_draw=True)
+    pgn.headers["TrainingFor"] = "Agent_v116.0"
     
     return training_examples, pgn
 
