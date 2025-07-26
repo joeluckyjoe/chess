@@ -99,7 +99,6 @@ class Trainer:
             except Exception: pass
         return policy_tensor
     
-    # --- MODIFIED: This function is corrected to fix the RuntimeError ---
     def _convert_puzzle_to_tensors(self, puzzle_examples: List[Dict]) -> Tuple[Batch, torch.Tensor, torch.Tensor]:
         gnn_data_list, cnn_data_list, policy_targets_list = [], [], []
         for puzzle in puzzle_examples:
@@ -114,17 +113,14 @@ class Trainer:
             gnn_data_list.append(gnn_data)
             cnn_data_list.append(cnn_data)
             
-            # Create a simple integer index for the target move, not a one-hot vector.
             policy_target_index = move_to_index(move, board)
             policy_targets_list.append(policy_target_index)
             
         if not gnn_data_list:
             return None, None, None
 
-        # Return a 1D tensor of target indices (dtype=long) for cross_entropy.
         return Batch.from_data_list(gnn_data_list), torch.stack(cnn_data_list), torch.tensor(policy_targets_list, dtype=torch.long, device=self.device)
 
-    # --- MODIFIED: Function signature and logic updated for new data and losses ---
     def train_on_batch(self, game_examples: List[List[Tuple[str, Dict, float, float]]],
                        puzzle_examples: List[Dict], batch_size: int) -> Tuple[float, float, float]:
         
@@ -135,7 +131,6 @@ class Trainer:
         total_policy_loss, total_value_loss, total_next_state_loss = 0.0, 0.0, 0.0
         game_batches_processed, puzzle_batches_processed = 0, 0
         
-        # Puzzle training loop remains largely the same, only training policy
         if puzzle_examples:
             print(f"  -> Training on {len(puzzle_examples)} puzzle examples...")
             num_puzzles = len(puzzle_examples)
@@ -154,7 +149,6 @@ class Trainer:
 
                 pred_policy_logits, _, _ = self.network(gnn_batch, cnn_batch)
                 
-                # The loss function will now work correctly with the 1D policy_targets tensor.
                 loss = F.cross_entropy(pred_policy_logits, policy_targets)
                 loss.backward()
                 
@@ -173,33 +167,27 @@ class Trainer:
 
             self.optimizer.zero_grad()
             
-            # --- MODIFIED: Unpack the new 4-element tuple ---
             fen_strings, mcts_policies, game_outcomes, next_state_values = zip(*game)
             boards = [chess.Board(fen) for fen in fen_strings]
             
-            # --- MODIFIED: Remove material targets from conversion result ---
             conversion_results = [convert_to_gnn_input(b, self.device) for b in boards]
             gnn_data_list, cnn_data_list, _ = zip(*conversion_results)
             
-            # --- MODIFIED: Prepare a simple batch, not a sequence ---
             gnn_batch = Batch.from_data_list(list(gnn_data_list))
             cnn_batch = torch.stack(list(cnn_data_list))
             
             policy_targets = torch.stack([self._convert_mcts_policy_to_tensor(p, b, get_action_space_size()) for p, b in zip(mcts_policies, boards)])
             value_targets = torch.tensor(game_outcomes, dtype=torch.float32, device=self.device).view(-1, 1)
-            # --- ADDED: Create targets for the new head ---
             next_state_value_targets = torch.tensor(next_state_values, dtype=torch.float32, device=self.device).view(-1, 1)
 
-            # --- MODIFIED: Call new model and get new outputs ---
             pred_policy_logits, pred_values, pred_next_state_values = self.network(gnn_batch, cnn_batch)
 
-            policy_loss = F.cross_entropy(pred_policy_logits, policy_targets)
+            # --- MODIFIED: This line is corrected to fix the RuntimeError ---
+            policy_loss = -torch.sum(policy_targets * F.log_softmax(pred_policy_logits, dim=1), dim=1).mean()
             value_loss = self.loss_criterion(pred_values, value_targets)
-            # --- MODIFIED: Calculate new next-state value loss ---
             next_state_value_loss = self.loss_criterion(pred_next_state_values, next_state_value_targets)
 
             value_loss_weight = self.model_config.get('VALUE_LOSS_WEIGHT', 1.0)
-            # --- MODIFIED: Update total loss calculation ---
             total_loss = policy_loss + (value_loss * value_loss_weight) + (next_state_value_loss * self.next_state_loss_weight)
             
             total_loss.backward()
@@ -212,7 +200,6 @@ class Trainer:
 
             total_policy_loss += policy_loss.item()
             total_value_loss += value_loss.item()
-            # --- MODIFIED: Accumulate new loss ---
             total_next_state_loss += next_state_value_loss.item()
             game_batches_processed += 1
 
@@ -222,7 +209,6 @@ class Trainer:
         total_batches = game_batches_processed + puzzle_batches_processed
         avg_p_loss = total_policy_loss / total_batches if total_batches > 0 else 0
         avg_v_loss = total_value_loss / total_batches if total_batches > 0 else 0
-        # --- MODIFIED: Calculate average for new loss ---
         avg_ns_loss = total_next_state_loss / total_batches if total_batches > 0 else 0
         
         return avg_p_loss, avg_v_loss, avg_ns_loss
