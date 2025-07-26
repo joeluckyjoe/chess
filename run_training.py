@@ -2,7 +2,7 @@
 
 import os
 import torch
-import torch.optim as optim  # MODIFIED: Added optimizer import
+import torch.optim as optim
 import pandas as pd
 from pathlib import Path
 import chess.pgn
@@ -16,7 +16,7 @@ from stockfish import Stockfish
 # --- Import from config ---
 from config import get_paths, config_params
 
-# --- MODIFIED: Import the new model ---
+# --- Project-specific Imports ---
 from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
 from hardware_setup import get_device, install_xla_if_needed
 from gnn_agent.search.mcts import MCTS
@@ -25,9 +25,10 @@ from gnn_agent.rl_loop.training_data_manager import TrainingDataManager
 from gnn_agent.rl_loop.trainer import Trainer
 from gnn_agent.rl_loop.bayesian_supervisor import BayesianSupervisor
 from gnn_agent.rl_loop.guided_session import run_guided_session
+# MODIFIED: Import the canonical action space converter
+from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
-# --- MODIFIED: Added for initializing pre-trained model ---
-# This metadata is required to initialize the UnifiedGNN within your model.
+# --- MODIFIED: The GNN Metadata is now the single source of truth for the graph structure ---
 GNN_METADATA = (
     ['square', 'piece'],
     [
@@ -37,29 +38,6 @@ GNN_METADATA = (
         ('piece', 'defends', 'piece')
     ]
 )
-
-class MoveHandler:
-    """
-    A self-contained class to handle move conversions for model initialization.
-    """
-    def __init__(self):
-        self.move_map = self._create_move_map()
-        self.policy_size = len(self.move_map)
-
-    def _create_move_map(self):
-        moves = {}
-        idx = 0
-        for from_sq in chess.SQUARES:
-            for to_sq in chess.SQUARES:
-                if from_sq == to_sq:
-                    continue
-                for prom in [chess.QUEEN, chess.ROOK, chess.BISHOP, chess.KNIGHT]:
-                    moves[chess.Move(from_sq, to_sq, promotion=prom)] = idx
-                    idx += 1
-                moves[chess.Move(from_sq, to_sq)] = idx
-                idx += 1
-        return moves
-# --- End of added block ---
 
 def write_loss_to_csv(filepath, game_num, policy_loss, value_loss, next_state_loss, game_type):
     file_exists = os.path.isfile(filepath)
@@ -125,12 +103,12 @@ def main():
             print(f"[FATAL] Pre-trained checkpoint not found at: {pretrained_path}")
             sys.exit(1)
             
-        move_handler = MoveHandler()
+        # MODIFIED: Use the project's canonical action space size for consistency
         chess_network = ValueNextStateModel(
             gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'],
             cnn_in_channels=14, 
             embed_dim=config_params['EMBED_DIM'],
-            policy_size=move_handler.policy_size,
+            policy_size=get_action_space_size(),
             gnn_num_heads=config_params['GNN_NUM_HEADS'],
             gnn_metadata=GNN_METADATA
         ).to(device)
@@ -139,14 +117,12 @@ def main():
         start_game = 0
         trainer.network = chess_network 
         
-        # --- MODIFIED: Added optimizer initialization ---
         print("Initializing optimizer for the pre-trained network...")
         trainer.optimizer = optim.AdamW(
             chess_network.parameters(),
             lr=config_params['LEARNING_RATE'],
             weight_decay=config_params['WEIGHT_DECAY']
         )
-        # --- END OF MODIFIED BLOCK ---
         
         print(f"Successfully loaded pre-trained model from: {pretrained_path}")
         print("Starting new training run from Game 1.")
