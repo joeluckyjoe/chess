@@ -36,7 +36,6 @@ class Trainer:
 
     def _initialize_new_network(self) -> Tuple[ValueNextStateModel, int]:
         print("Creating new ValueNextStateModel from scratch...")
-        # --- FIXED: The hardcoded gnn_metadata now matches the correct architecture ---
         self.network = ValueNextStateModel(
             gnn_hidden_dim=self.model_config.get('GNN_HIDDEN_DIM', 128),
             cnn_in_channels=self.model_config.get('CNN_INPUT_CHANNELS', 14),
@@ -81,8 +80,11 @@ class Trainer:
             checkpoint = torch.load(file_to_load, map_location=self.device)
             self.network.load_state_dict(checkpoint['model_state_dict'])
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            if 'scheduler_state_dict' in checkpoint and self.scheduler:
+            
+            # --- FIXED: Added a check to ensure the scheduler state is not None ---
+            if 'scheduler_state_dict' in checkpoint and self.scheduler and checkpoint['scheduler_state_dict'] is not None:
                 self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+            
             game_number = checkpoint.get('game_number', 0)
             
             for state in self.optimizer.state.values():
