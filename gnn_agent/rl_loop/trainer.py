@@ -1,4 +1,4 @@
-# FILENAME: /home/giuseppe/chess/gnn_agent/training/trainer.py
+# FILENAME: gnn_agent/rl_loop/trainer.py
 import torch
 import os
 import re
@@ -13,7 +13,6 @@ from torch_geometric.data import Batch
 from typing import Dict, List, Tuple, Any, Optional
 import chess
 
-# --- MODIFIED: Import the new model ---
 from ..neural_network.value_next_state_model import ValueNextStateModel
 from ..gamestate_converters.action_space_converter import move_to_index, get_action_space_size
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
@@ -27,25 +26,31 @@ except ImportError:
 
 class Trainer:
     def __init__(self, model_config: Dict[str, Any], device):
-        # --- MODIFIED: Update type hint and remove material loss weight ---
         self.network: Optional[ValueNextStateModel] = None
         self.model_config = model_config
         self.device = device
         self.optimizer = None
         self.scheduler = None
         self.loss_criterion = MSELoss()
-        # --- ADDED: Weight for the new loss term ---
         self.next_state_loss_weight = self.model_config.get('NEXT_STATE_LOSS_WEIGHT', 1.0)
 
     def _initialize_new_network(self) -> Tuple[ValueNextStateModel, int]:
-        # --- MODIFIED: Instantiate ValueNextStateModel ---
         print("Creating new ValueNextStateModel from scratch...")
+        # --- FIXED: The hardcoded gnn_metadata now matches the correct architecture ---
         self.network = ValueNextStateModel(
             gnn_hidden_dim=self.model_config.get('GNN_HIDDEN_DIM', 128),
             cnn_in_channels=self.model_config.get('CNN_INPUT_CHANNELS', 14),
             embed_dim=self.model_config.get('EMBED_DIM', 256),
             gnn_num_heads=self.model_config.get('GNN_NUM_HEADS', 4),
-            gnn_metadata=(['piece', 'square'], [('piece', 'occupies', 'square'), ('square', 'rev_occupies', 'piece'), ('piece', 'attacks', 'piece'), ('piece', 'defends', 'piece')]),
+            gnn_metadata=(
+                ['square', 'piece'],
+                [
+                    ('square', 'adjacent_to', 'square'),
+                    ('piece', 'occupies', 'square'),
+                    ('piece', 'attacks', 'piece'),
+                    ('piece', 'defends', 'piece')
+                ]
+            ),
             policy_size=get_action_space_size()
         ).to(self.device)
 
@@ -58,7 +63,6 @@ class Trainer:
         return int(match.group(1)) if match else -1
 
     def load_or_initialize_network(self, directory: Optional[Path], specific_checkpoint_path: Optional[Path] = None) -> Tuple[ValueNextStateModel, int]:
-        # --- MODIFIED: Update return type hint ---
         file_to_load = None
         if specific_checkpoint_path and specific_checkpoint_path.exists():
             file_to_load = specific_checkpoint_path
@@ -69,6 +73,7 @@ class Trainer:
         if not file_to_load:
             return self._initialize_new_network()
         
+        # Initialize a network with the correct architecture FIRST.
         self._initialize_new_network()
         
         try:
@@ -182,7 +187,6 @@ class Trainer:
 
             pred_policy_logits, pred_values, pred_next_state_values = self.network(gnn_batch, cnn_batch)
 
-            # --- MODIFIED: This line is corrected to fix the RuntimeError ---
             policy_loss = -torch.sum(policy_targets * F.log_softmax(pred_policy_logits, dim=1), dim=1).mean()
             value_loss = self.loss_criterion(pred_values, value_targets)
             next_state_value_loss = self.loss_criterion(pred_next_state_values, next_state_value_targets)
