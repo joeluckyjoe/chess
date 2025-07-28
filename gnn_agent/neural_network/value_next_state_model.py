@@ -1,4 +1,4 @@
-# /home/giuseppe/chess/gnn_agent/neural_network/value_next_state_model.py
+# FILE: gnn_agent/neural_network/value_next_state_model.py
 import torch
 import torch.nn as nn
 from torch_geometric.data import Batch
@@ -9,7 +9,6 @@ from .unified_gnn import UnifiedGNN
 from .cnn_model import CNNModel
 
 class ValueNextStateModel(nn.Module):
-    # ... (init method remains unchanged) ...
     def __init__(self,
                  gnn_hidden_dim: int,
                  cnn_in_channels: int,
@@ -32,23 +31,15 @@ class ValueNextStateModel(nn.Module):
         self.next_state_value_head = nn.Linear(embed_dim, 1)
 
     def forward(self, gnn_batch: Batch, cnn_tensor: torch.Tensor, return_embeddings: bool = False) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
-        """
-        Processes a batch of board states. Can optionally return GNN node embeddings.
-        """
         batch_size = cnn_tensor.size(0)
-
         gnn_out = self.gnn(gnn_batch)
         cnn_out = self.cnn(cnn_tensor)
-
         gnn_out_reshaped = gnn_out.view(batch_size, 64, self.embed_dim)
         gnn_out_pooled = gnn_out_reshaped.mean(dim=1)
-
         cnn_out_flat = cnn_out.view(batch_size, self.embed_dim, -1)
         cnn_out_pooled = cnn_out_flat.mean(dim=2)
-
         fused = torch.cat([gnn_out_pooled, cnn_out_pooled], dim=-1)
         final_embedding = self.embedding_projection(fused)
-
         policy_logits = self.policy_head(final_embedding)
         value = torch.tanh(self.value_head(final_embedding))
         next_state_value = torch.tanh(self.next_state_value_head(final_embedding))

@@ -1,3 +1,4 @@
+# FILE: visualize_gnn_reasoning.py
 import argparse
 import chess
 import chess.pgn
@@ -9,16 +10,17 @@ from torch_geometric.data import Batch
 # Assuming the project is run from the root directory
 from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input, CNN_INPUT_CHANNELS
+from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
 def load_model(checkpoint_path, device):
     """ Loads the model from a .pth.tar checkpoint file. """
     # --- THIS IS THE FIX ---
-    # Updated the hidden and embedding dimensions to match the checkpoint's architecture.
+    # The ground-truth parameters deduced from the training script and error logs.
     model_params = {
-        'gnn_hidden_dim': 256,
+        'gnn_hidden_dim': 128,
         'cnn_in_channels': CNN_INPUT_CHANNELS,
         'embed_dim': 256,
-        'policy_size': 4672,
+        'policy_size': get_action_space_size(),
         'gnn_num_heads': 4,
         'gnn_metadata': (
             ['square', 'piece'],
@@ -32,12 +34,9 @@ def load_model(checkpoint_path, device):
     }
     
     model = ValueNextStateModel(**model_params)
-    
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
     model_state_dict = checkpoint['model_state_dict']
     model.load_state_dict(model_state_dict)
-    
     model.to(device)
     model.eval()
     print(f"Model loaded from {checkpoint_path} and set to evaluation mode.")
@@ -51,12 +50,11 @@ def get_board_at_move(pgn_path, move_number):
         return None, None
     
     node = game
-    # To get the board *before* the nth move, we advance n-1 times
     for _ in range(move_number - 1):
         if node.next():
             node = node.next()
         else:
-            return None, None # Move number is out of bounds
+            return None, None
     
     return node.board(), node.next().move if node.next() else None
 
@@ -69,16 +67,14 @@ def visualize_reasoning(model, board, move, device, move_number):
     print(f"\n--- Analyzing Board State Before Move {move_number}: {board.san(move)} ---")
     print(f"--- Board FEN: {board.fen()} ---")
 
-    # 1. Convert board state to model input
     gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
     gnn_batch = Batch.from_data_list([gnn_data])
     cnn_tensor_batch = cnn_tensor.unsqueeze(0)
 
-    # 2. Perform a forward pass
     with torch.no_grad():
+        # Set return_embeddings=True to get the GNN node data
         _, _, _, gnn_node_embeddings = model(gnn_batch, cnn_tensor_batch, return_embeddings=True)
 
-    # 3. Visualize GNN Node Importance
     node_importance = torch.norm(gnn_node_embeddings, p=2, dim=1).cpu().numpy()
     
     if node_importance.max() > 0:
@@ -111,9 +107,8 @@ def visualize_reasoning(model, board, move, device, move_number):
             
         piece = board.piece_at(square_index)
         if piece:
-            ax.text(file + 0.5, rank + 0.5, piece.unicode_symbol(), 
-                    ha='center', va='center', fontsize=32, zorder=2,
-                    color='black' if piece.color == chess.WHITE else 'dimgray')
+            ax.text(file + 0.5, rank + 0.5, piece.unicode_symbol(invert_color=True), 
+                    ha='center', va='center', fontsize=32, zorder=2)
 
     ax.set_xticks(np.arange(8) + 0.5, labels=['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'])
     ax.set_yticks(np.arange(8) + 0.5, labels=list('87654321'))
