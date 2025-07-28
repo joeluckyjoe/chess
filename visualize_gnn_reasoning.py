@@ -12,11 +12,12 @@ from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_inp
 
 def load_model(checkpoint_path, device):
     """ Loads the model from a .pth.tar checkpoint file. """
-    # Parameters based on common values, confirm these from your config if they differ.
+    # --- THIS IS THE FIX ---
+    # Updated the hidden and embedding dimensions to match the checkpoint's architecture.
     model_params = {
-        'gnn_hidden_dim': 128,
+        'gnn_hidden_dim': 256,
         'cnn_in_channels': CNN_INPUT_CHANNELS,
-        'embed_dim': 128,
+        'embed_dim': 256,
         'policy_size': 4672,
         'gnn_num_heads': 4,
         'gnn_metadata': (
@@ -34,8 +35,6 @@ def load_model(checkpoint_path, device):
     
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    # --- THIS IS THE FIX ---
-    # The traceback showed the model's weights are under the 'model_state_dict' key.
     model_state_dict = checkpoint['model_state_dict']
     model.load_state_dict(model_state_dict)
     
