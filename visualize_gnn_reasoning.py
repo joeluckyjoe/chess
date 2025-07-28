@@ -1,4 +1,4 @@
-# FILE: visualize_gnn_reasoning.py
+# FILE: visualize_gnn_reasoning.py (Final Universal Version)
 import argparse
 import chess
 import chess.pgn
@@ -13,9 +13,10 @@ from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_inp
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
 def load_model(checkpoint_path, device):
-    """ Loads the model from a .pth.tar checkpoint file. """
-    # --- THIS IS THE FIX ---
-    # The ground-truth parameters deduced from the training script and error logs.
+    """
+    Loads the model from a checkpoint file, handling both full training checkpoints
+    and raw pre-trained state_dict files.
+    """
     model_params = {
         'gnn_hidden_dim': 128,
         'cnn_in_channels': CNN_INPUT_CHANNELS,
@@ -35,8 +36,16 @@ def load_model(checkpoint_path, device):
     
     model = ValueNextStateModel(**model_params)
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    model_state_dict = checkpoint['model_state_dict']
-    model.load_state_dict(model_state_dict)
+    
+    # --- THIS IS THE FIX ---
+    # Handle both types of checkpoint files
+    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        print("Detected a full training checkpoint. Loading 'model_state_dict'.")
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        print("Detected a raw state_dict file. Loading directly.")
+        model.load_state_dict(checkpoint) # Assumes the file is the state_dict
+    
     model.to(device)
     model.eval()
     print(f"Model loaded from {checkpoint_path} and set to evaluation mode.")
@@ -72,7 +81,6 @@ def visualize_reasoning(model, board, move, device, move_number):
     cnn_tensor_batch = cnn_tensor.unsqueeze(0)
 
     with torch.no_grad():
-        # Set return_embeddings=True to get the GNN node data
         _, _, _, gnn_node_embeddings = model(gnn_batch, cnn_tensor_batch, return_embeddings=True)
 
     node_importance = torch.norm(gnn_node_embeddings, p=2, dim=1).cpu().numpy()
@@ -114,15 +122,15 @@ def visualize_reasoning(model, board, move, device, move_number):
     ax.set_yticks(np.arange(8) + 0.5, labels=list('87654321'))
     
     plt.title(f"GNN Node Importance Before Move {move_number}: {board.san(move)}", fontsize=16)
-    output_filename = f"analysis_move_{move_number-1}_before_{board.san(move)}.png"
+    output_filename = f"analysis_move_{move_number-1}_before_{board.san(move)}_PRETRAINED.png"
     plt.savefig(output_filename, bbox_inches='tight')
-    print(f"\nVisualization saved to {output_filename}")
+    print(f"\nPre-trained model visualization saved to {output_filename}")
     plt.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Visualize GNN reasoning for a specific chess move.")
-    parser.add_argument('--checkpoint', type=str, required=True, help="Path to the model checkpoint (.pth.tar).")
+    parser.add_argument('--checkpoint', type=str, required=True, help="Path to the model checkpoint file.")
     parser.add_argument('--pgn', type=str, required=True, help="Path to the PGN file of the game to analyze.")
     parser.add_argument('--move', type=int, required=True, help="The (half) move number in the PGN to analyze.")
     
