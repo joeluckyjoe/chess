@@ -11,7 +11,6 @@ import tqdm
 # Assuming the project is run from the root directory
 from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input, CNN_INPUT_CHANNELS
-# --- Corrected import based on the provided file ---
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size, move_to_index
 from hardware_setup import get_device
 
@@ -28,7 +27,8 @@ class OpeningPGNDataset(Dataset):
         self._load_games()
 
     def _load_games(self):
-        with open(self.pgn_path) as f:
+        # --- FIX: Added encoding='latin-1' to handle non-UTF-8 characters in the PGN file ---
+        with open(self.pgn_path, encoding='latin-1') as f:
             while True:
                 game = chess.pgn.read_game(f)
                 if game is None:
@@ -37,7 +37,6 @@ class OpeningPGNDataset(Dataset):
                 for i, move in enumerate(game.mainline_moves()):
                     if i >= self.max_moves:
                         break
-                    # --- Corrected function name from move_to_policy_index to move_to_index ---
                     policy_index = move_to_index(move, board)
                     self.examples.append((board.fen(), policy_index))
                     board.push(move)
