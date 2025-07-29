@@ -15,10 +15,6 @@ from gnn_agent.gamestate_converters.action_space_converter import get_action_spa
 from hardware_setup import get_device
 
 class OpeningPGNDataset(Dataset):
-    """
-    A PyTorch Dataset to load chess openings from a PGN file.
-    It extracts board states and the corresponding next move up to a certain depth.
-    """
     def __init__(self, pgn_path, max_moves=20):
         self.pgn_path = pgn_path
         self.max_moves = max_moves
@@ -27,20 +23,26 @@ class OpeningPGNDataset(Dataset):
         self._load_games()
 
     def _load_games(self):
-        # --- FIX: Added encoding='latin-1' to handle non-UTF-8 characters in the PGN file ---
         with open(self.pgn_path, encoding='latin-1') as f:
+            game_count = 0
             while True:
-                game = chess.pgn.read_game(f)
-                if game is None:
-                    break
-                board = game.board()
-                for i, move in enumerate(game.mainline_moves()):
-                    if i >= self.max_moves:
+                try:
+                    game = chess.pgn.read_game(f)
+                    if game is None:
                         break
-                    policy_index = move_to_index(move, board)
-                    self.examples.append((board.fen(), policy_index))
-                    board.push(move)
-        print(f"Processed {len(self.examples)} board positions from the PGN.")
+                    game_count += 1
+                    board = game.board()
+                    for i, move in enumerate(game.mainline_moves()):
+                        if i >= self.max_moves:
+                            break
+                        policy_index = move_to_index(move, board)
+                        self.examples.append((board.fen(), policy_index))
+                        board.push(move)
+                except Exception as e:
+                    # Catch potential parsing errors in malformed PGNs
+                    # print(f"\nSkipping a game due to parsing error: {e}")
+                    continue
+        print(f"Processed {len(self.examples)} board positions from {game_count} games.")
 
     def __len__(self):
         return len(self.examples)
@@ -50,7 +52,6 @@ class OpeningPGNDataset(Dataset):
         return fen, policy_index
 
 def load_model(checkpoint_path, device):
-    """ Loads the model, using the verified hyperparameters. """
     model_params = {
         'gnn_hidden_dim': 128, 'cnn_in_channels': CNN_INPUT_CHANNELS,
         'embed_dim': 256, 'policy_size': get_action_space_size(),
@@ -71,7 +72,6 @@ def load_model(checkpoint_path, device):
     return model
 
 def custom_collate_fn(batch):
-    """ Custom collate function to handle FEN strings and convert them on the fly. """
     device = get_device()
     gnn_data_list = []
     cnn_tensors = []
@@ -104,7 +104,8 @@ def main():
     device = get_device()
     
     dataset = OpeningPGNDataset(args.pgn_file, args.moves)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn, num_workers=2, pin_memory=True)
+    # --- FIX: Removed num_workers=2 to prevent the CUDA forking error ---
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn)
 
     model = load_model(args.start_checkpoint, device)
 
