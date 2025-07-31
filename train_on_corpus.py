@@ -10,8 +10,8 @@ import json
 import logging
 from tqdm import tqdm
 from pathlib import Path
-# MODIFIED: Import argparse for command-line arguments
 import argparse
+import os # MODIFIED: Imported OS
 
 # --- Project-specific Imports ---
 from config import get_paths, config_params
@@ -23,7 +23,7 @@ from gnn_agent.gamestate_converters.action_space_converter import move_to_index,
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()] # Ensure logs go to console
+    handlers=[logging.StreamHandler()]
 )
 
 # --- GNN Metadata ---
@@ -39,7 +39,6 @@ GNN_METADATA = (
 
 # --- PyTorch Dataset for Supervised Learning ---
 class SupervisedChessDataset(Dataset):
-    """Loads (FEN, move, outcome) data from the generated JSONL file."""
     def __init__(self, jsonl_path: Path):
         self.data = []
         logging.info(f"Loading dataset from {jsonl_path}...")
@@ -56,28 +55,21 @@ class SupervisedChessDataset(Dataset):
         fen = item['fen']
         uci_move = item['played_move']
         outcome = item['outcome']
-
         board = chess.Board(fen)
         try:
             move = chess.Move.from_uci(uci_move)
         except chess.InvalidMoveError:
             logging.warning(f"Invalid UCI move '{uci_move}' for FEN '{fen}'. Skipping.")
             return None
-
         gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device='cpu')
-
         policy_target = move_to_index(move, board)
         value_target = torch.tensor([outcome], dtype=torch.float32)
-
         if policy_target is None:
-            # This can happen if the move is legal but not in our canonical action space (e.g., rare promotions)
             logging.warning(f"Could not find index for move {uci_move} on board {fen}. Skipping.")
             return None
-
         return gnn_data, cnn_tensor, torch.tensor(policy_target, dtype=torch.long), value_target
 
 def collate_fn(batch):
-    """Custom collate function to handle HeteroData batching."""
     batch = list(filter(None, batch))
     if not batch:
         return None, None, None, None
@@ -89,7 +81,7 @@ def collate_fn(batch):
     return gnn_batch, cnn_batch, policy_batch, value_batch
 
 # --- Main Training and Evaluation Loop ---
-def train_on_corpus(input_file: str, output_file: str, epochs: int):
+def train_on_corpus(args):
     """Main function to orchestrate the supervised training process."""
     paths = get_paths()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -103,9 +95,37 @@ def train_on_corpus(input_file: str, output_file: str, epochs: int):
         gnn_num_heads=config_params['GNN_NUM_HEADS'],
         gnn_metadata=GNN_METADATA
     ).to(device)
-
-    logging.info("Initializing lazy layers by performing a dummy forward pass...")
-    try:
+    
+    optimizer = optim.AdamW(model.parameters(), lr=config_params['LEARNING_RATE'], weight_decay=config_params['WEIGHT_DECAY'])
+    
+    # MODIFIED: Logic to resume from a checkpoint
+    start_epoch = 0
+    best_val_loss = float('inf')
+    if args.resume_from_checkpoint:
+        checkpoint_path = paths.checkpoints_dir / args.resume_from_checkpoint
+        if os.path.isfile(checkpoint_path):
+            logging.info(f"Resuming training from checkpoint: {checkpoint_path}")
+            checkpoint = torch.load(checkpoint_path)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = checkpoint['epoch']
+            best_val_loss = checkpoint['loss']
+            logging.info(f"Resuming from Epoch {start_epoch + 1}. Best validation loss so far: {best_val_loss:.4f}")
+        else:
+            logging.error(f"Checkpoint not found at {checkpoint_path}. Starting from scratch.")
+            # Initialize lazy layers if not resuming
+            logging.info("Initializing lazy layers by performing a dummy forward pass...")
+            model.eval()
+            with torch.no_grad():
+                dummy_board = chess.Board()
+                gnn_data, cnn_tensor, _ = convert_to_gnn_input(dummy_board, device='cpu')
+                dummy_gnn_batch = Batch.from_data_list([gnn_data]).to(device)
+                dummy_cnn_tensor = torch.stack([cnn_tensor]).to(device)
+                _ = model(dummy_gnn_batch, dummy_cnn_tensor)
+            logging.info("Model layers initialized successfully.")
+    else:
+        # Initialize lazy layers if starting from scratch
+        logging.info("Initializing lazy layers by performing a dummy forward pass...")
         model.eval()
         with torch.no_grad():
             dummy_board = chess.Board()
@@ -114,16 +134,12 @@ def train_on_corpus(input_file: str, output_file: str, epochs: int):
             dummy_cnn_tensor = torch.stack([cnn_tensor]).to(device)
             _ = model(dummy_gnn_batch, dummy_cnn_tensor)
         logging.info("Model layers initialized successfully.")
-    except Exception as e:
-        logging.error(f"Failed to initialize lazy layers. Error: {e}", exc_info=True)
-        exit()
 
     logging.info(f"Model initialized with {sum(p.numel() for p in model.parameters()):,} trainable parameters.")
 
-    # MODIFIED: Use the dataset path from the command-line argument
-    dataset_path = paths.drive_project_root / input_file
+    dataset_path = paths.drive_project_root / args.input_file
     if not dataset_path.exists():
-        logging.error(f"Dataset not found at {dataset_path}. Please run create_corpus.py with the correct PGN to generate the JSONL file.")
+        logging.error(f"Dataset not found at {dataset_path}.")
         return
 
     dataset = SupervisedChessDataset(dataset_path)
@@ -139,37 +155,26 @@ def train_on_corpus(input_file: str, output_file: str, epochs: int):
     train_loader = DataLoader(train_dataset, batch_size=config_params['BATCH_SIZE'], shuffle=True, collate_fn=collate_fn, num_workers=2, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=config_params['BATCH_SIZE'], shuffle=False, collate_fn=collate_fn, num_workers=2, pin_memory=True)
 
-    optimizer = optim.AdamW(model.parameters(), lr=config_params['LEARNING_RATE'], weight_decay=config_params['WEIGHT_DECAY'])
     policy_loss_fn = nn.CrossEntropyLoss()
     value_loss_fn = nn.MSELoss()
-    best_val_loss = float('inf')
 
-    logging.info(f"Starting supervised training for {epochs} epochs...")
+    logging.info(f"Starting supervised training from Epoch {start_epoch + 1} up to {args.epochs}...")
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         total_train_loss, total_policy_loss, total_value_loss, total_next_state_loss = 0, 0, 0, 0
-        for gnn_batch, cnn_batch, policy_targets, value_targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]"):
+        for gnn_batch, cnn_batch, policy_targets, value_targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Train]"):
             if gnn_batch is None: continue
             gnn_batch, cnn_batch, policy_targets, value_targets = gnn_batch.to(device), cnn_batch.to(device), policy_targets.to(device), value_targets.to(device)
-            
             optimizer.zero_grad()
-            
-            # MODIFIED: Unpack all three head outputs
             policy_logits, value, next_state_value = model(gnn_batch, cnn_batch)
-            
             loss_policy = policy_loss_fn(policy_logits, policy_targets)
             loss_value = value_loss_fn(value.squeeze(-1), value_targets.squeeze(-1))
-            # MODIFIED: Calculate loss for the NextStateValue head
             loss_next_state = value_loss_fn(next_state_value.squeeze(-1), value_targets.squeeze(-1))
-            
-            # MODIFIED: Include all three losses in the total loss
             total_loss = loss_policy + config_params['VALUE_LOSS_WEIGHT'] * (loss_value + loss_next_state)
-            
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Grad clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            
             total_train_loss += total_loss.item()
             total_policy_loss += loss_policy.item()
             total_value_loss += loss_value.item()
@@ -184,22 +189,15 @@ def train_on_corpus(input_file: str, output_file: str, epochs: int):
         total_val_loss = 0
         correct_policy_preds, total_policy_preds = 0, 0
         with torch.no_grad():
-            for gnn_batch, cnn_batch, policy_targets, value_targets in tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
+            for gnn_batch, cnn_batch, policy_targets, value_targets in tqdm(val_loader, desc=f"Epoch {epoch+1}/{args.epochs} [Val]"):
                 if gnn_batch is None: continue
                 gnn_batch, cnn_batch, policy_targets, value_targets = gnn_batch.to(device), cnn_batch.to(device), policy_targets.to(device), value_targets.to(device)
-                
-                # MODIFIED: Unpack all three head outputs
                 policy_logits, value, next_state_value = model(gnn_batch, cnn_batch)
-                
                 loss_policy = policy_loss_fn(policy_logits, policy_targets)
                 loss_value = value_loss_fn(value.squeeze(-1), value_targets.squeeze(-1))
-                # MODIFIED: Calculate loss for the NextStateValue head
                 loss_next_state = value_loss_fn(next_state_value.squeeze(-1), value_targets.squeeze(-1))
-                
-                # MODIFIED: Include all three losses in the total validation loss
                 total_loss = loss_policy + config_params['VALUE_LOSS_WEIGHT'] * (loss_value + loss_next_state)
                 total_val_loss += total_loss.item()
-
                 _, predicted_moves = torch.max(policy_logits, 1)
                 correct_policy_preds += (predicted_moves == policy_targets).sum().item()
                 total_policy_preds += policy_targets.size(0)
@@ -210,34 +208,29 @@ def train_on_corpus(input_file: str, output_file: str, epochs: int):
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            # MODIFIED: Use the output file name from the command-line argument
-            checkpoint_path = paths.checkpoints_dir / output_file
-            torch.save(model.state_dict(), checkpoint_path)
+            checkpoint_path = paths.checkpoints_dir / args.output_file
+            # MODIFIED: Save optimizer state and epoch for resuming
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_val_loss,
+            }, checkpoint_path)
             logging.info(f"New best model saved to {checkpoint_path} with validation loss {best_val_loss:.4f}")
 
     logging.info("Supervised training finished.")
 
-# MODIFIED: Add argument parser to define inputs and outputs
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train a chess model on a corpus of games.")
+    parser.add_argument("--input_file", type=str, required=True)
+    parser.add_argument("--output_file", type=str, required=True)
+    parser.add_argument("--epochs", type=int, default=15)
+    # MODIFIED: Add argument to resume training
     parser.add_argument(
-        "--input_file",
+        "--resume_from_checkpoint",
         type=str,
-        required=True,
-        help="Name of the input .jsonl file (e.g., 'RuyLopezBerlin_supervised_dataset.jsonl') located in the project's root on Drive."
-    )
-    parser.add_argument(
-        "--output_file",
-        type=str,
-        required=True,
-        help="Name of the output model checkpoint file (e.g., 'phase_by_ruy_lopez_specialist.pth') to be saved in the checkpoints directory."
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=15,
-        help="Number of epochs to train for."
+        default=None,
+        help="Optional name of a checkpoint file in the checkpoints directory to resume training from."
     )
     args = parser.parse_args()
-    
-    train_on_corpus(args.input_file, args.output_file, args.epochs)
+    train_on_corpus(args)
