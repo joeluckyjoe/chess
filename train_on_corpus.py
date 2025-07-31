@@ -11,7 +11,7 @@ import logging
 from tqdm import tqdm
 from pathlib import Path
 import argparse
-import os # MODIFIED: Imported OS
+import os
 
 # --- Project-specific Imports ---
 from config import get_paths, config_params
@@ -98,33 +98,34 @@ def train_on_corpus(args):
     
     optimizer = optim.AdamW(model.parameters(), lr=config_params['LEARNING_RATE'], weight_decay=config_params['WEIGHT_DECAY'])
     
-    # MODIFIED: Logic to resume from a checkpoint
     start_epoch = 0
     best_val_loss = float('inf')
     if args.resume_from_checkpoint:
         checkpoint_path = paths.checkpoints_dir / args.resume_from_checkpoint
         if os.path.isfile(checkpoint_path):
-            logging.info(f"Resuming training from checkpoint: {checkpoint_path}")
+            logging.info(f"Attempting to resume training from checkpoint: {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            start_epoch = checkpoint['epoch']
-            best_val_loss = checkpoint['loss']
-            logging.info(f"Resuming from Epoch {start_epoch + 1}. Best validation loss so far: {best_val_loss:.4f}")
+            
+            # MODIFIED: Check for checkpoint format for backward compatibility
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                # New format: checkpoint is a dictionary
+                logging.info("Detected new checkpoint format.")
+                model.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                start_epoch = checkpoint['epoch']
+                best_val_loss = checkpoint.get('loss', float('inf')) # Use .get for safety
+                logging.info(f"Successfully resumed from Epoch {start_epoch}. Best validation loss: {best_val_loss:.4f}")
+            else:
+                # Old format: checkpoint is just the model state_dict
+                logging.info("Detected old checkpoint format. Loading model weights only.")
+                model.load_state_dict(checkpoint)
+                logging.info("Model weights loaded. Optimizer will start fresh. Resuming from Epoch 0.")
+            
         else:
             logging.error(f"Checkpoint not found at {checkpoint_path}. Starting from scratch.")
-            # Initialize lazy layers if not resuming
-            logging.info("Initializing lazy layers by performing a dummy forward pass...")
-            model.eval()
-            with torch.no_grad():
-                dummy_board = chess.Board()
-                gnn_data, cnn_tensor, _ = convert_to_gnn_input(dummy_board, device='cpu')
-                dummy_gnn_batch = Batch.from_data_list([gnn_data]).to(device)
-                dummy_cnn_tensor = torch.stack([cnn_tensor]).to(device)
-                _ = model(dummy_gnn_batch, dummy_cnn_tensor)
-            logging.info("Model layers initialized successfully.")
-    else:
-        # Initialize lazy layers if starting from scratch
+    
+    # Initialize lazy layers if they haven't been already (e.g. starting fresh)
+    if not args.resume_from_checkpoint:
         logging.info("Initializing lazy layers by performing a dummy forward pass...")
         model.eval()
         with torch.no_grad():
@@ -135,7 +136,7 @@ def train_on_corpus(args):
             _ = model(dummy_gnn_batch, dummy_cnn_tensor)
         logging.info("Model layers initialized successfully.")
 
-    logging.info(f"Model initialized with {sum(p.numel() for p in model.parameters()):,} trainable parameters.")
+    logging.info(f"Model loaded with {sum(p.numel() for p in model.parameters()):,} trainable parameters.")
 
     dataset_path = paths.drive_project_root / args.input_file
     if not dataset_path.exists():
@@ -209,7 +210,6 @@ def train_on_corpus(args):
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             checkpoint_path = paths.checkpoints_dir / args.output_file
-            # MODIFIED: Save optimizer state and epoch for resuming
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
@@ -225,7 +225,6 @@ if __name__ == '__main__':
     parser.add_argument("--input_file", type=str, required=True)
     parser.add_argument("--output_file", type=str, required=True)
     parser.add_argument("--epochs", type=int, default=15)
-    # MODIFIED: Add argument to resume training
     parser.add_argument(
         "--resume_from_checkpoint",
         type=str,
