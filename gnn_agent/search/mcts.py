@@ -1,25 +1,24 @@
-# FILENAME: gnn_agent/search/mcts.py
 import torch
 import chess
 import numpy as np
-from typing import Dict, Tuple, Deque
+from typing import Dict, Tuple, Deque, Union
 import collections
 
 from torch_geometric.data import Batch
 # Adjust the import path according to your project structure
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-# --- MODIFIED: Import the new model ---
-from ..neural_network.value_next_state_model import ValueNextStateModel
+# --- MODIFIED: Import the new two-headed model ---
+from ..neural_network.policy_value_model import PolicyValueModel
 from .mcts_node import MCTSNode
 
 
 class MCTS:
     """
-    MCTS implementation updated for the ValueNextStateModel.
+    MCTS implementation updated for the two-headed PolicyValueModel.
     """
     # --- MODIFIED: Update type hint for the network ---
-    def __init__(self, network: ValueNextStateModel, device: torch.device,
+    def __init__(self, network: PolicyValueModel, device: torch.device,
                  batch_size: int, c_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3, dirichlet_epsilon: float = 0.25):
         self.network = network
@@ -54,9 +53,8 @@ class MCTS:
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        # The network now returns (policy, value, next_state_value).
-        # We only need the policy and value for the search phase itself.
-        policy_logits_batch, value_batch, _ = self.network(
+        # --- MODIFIED: The network now returns (policy, value) ---
+        policy_logits_batch, value_batch = self.network(
             batched_gnn_data, batched_cnn_data
         )
 
@@ -100,7 +98,8 @@ class MCTS:
             gnn_batch = Batch.from_data_list([gnn_data])
             cnn_batch = cnn_data.unsqueeze(0)
             
-            policy_logits, value, _ = self.network(gnn_batch, cnn_batch)
+            # --- MODIFIED: Unpack two values ---
+            policy_logits, value = self.network(gnn_batch, cnn_batch)
             
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
             value = value.item()
@@ -155,20 +154,6 @@ class MCTS:
             probabilities = powered_visits / np.sum(powered_visits)
             return np.random.choice(moves, p=probabilities)
 
-    def get_next_state_value(self, move: chess.Move) -> float:
-        """
-        Retrieves the MCTS value of the state resulting from the given move.
-        This is the Q-value of the corresponding child node from the root.
-        The value is negated to reflect the perspective of the current player.
-        """
-        if self.root and self.root.children and move in self.root.children:
-            child_node = self.root.children[move]
-            if child_node.N > 0:
-                # Negate Q-value because child's Q is from the opponent's perspective.
-                return -child_node.Q / child_node.N
-        return 0.0
-
-    # --- NEW METHOD TO FIX IMPORT ERROR IN SELF_PLAY ---
     @torch.no_grad()
     def evaluate_single_board(self, board: chess.Board) -> float:
         """
@@ -180,7 +165,7 @@ class MCTS:
         gnn_batch = Batch.from_data_list([gnn_data])
         cnn_batch = cnn_data.unsqueeze(0)
 
-        # We only need the value prediction for this purpose.
-        _, value_pred, _ = self.network(gnn_batch, cnn_batch)
+        # --- MODIFIED: Unpack two values ---
+        _, value_pred = self.network(gnn_batch, cnn_batch)
 
         return value_pred.item()
