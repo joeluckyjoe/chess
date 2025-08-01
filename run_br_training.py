@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from torch_geometric.data import Batch
 from tqdm import tqdm
+from typing import Dict
 
 # --- Import from config ---
 from config import get_paths, config_params
@@ -15,7 +16,7 @@ from config import get_paths, config_params
 # --- Project-specific Imports ---
 from gnn_agent.neural_network.policy_value_model import PolicyValueModel
 from gnn_agent.rl_loop.style_classifier import StyleClassifier
-from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
+from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size, move_to_action_index
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from gnn_agent.search.mcts import MCTS
 from hardware_setup import get_device
@@ -31,6 +32,17 @@ GNN_METADATA = (
     ]
 )
 
+
+def format_policy_for_training(policy_dict: Dict[chess.Move, float], board: chess.Board) -> torch.Tensor:
+    """Converts the MCTS policy dictionary to a full-sized tensor for training."""
+    policy_tensor = torch.zeros(get_action_space_size())
+    for move, prob in policy_dict.items():
+        action_index = move_to_action_index(move, board)
+        if action_index is not None:
+            policy_tensor[action_index] = prob
+    return policy_tensor
+
+
 def backfill_rewards(game_memory, final_result, discount_factor=0.95):
     """
     Backfills rewards with the discounted final game outcome.
@@ -41,6 +53,7 @@ def backfill_rewards(game_memory, final_result, discount_factor=0.95):
         value_target = game_memory[i]['reward'] + next_value * discount_factor
         game_memory[i]['value_target'] = torch.tensor([value_target], dtype=torch.float32)
         next_value = value_target
+
 
 def train_on_game(model, optimizer, game_memory, batch_size, device):
     """
@@ -54,7 +67,6 @@ def train_on_game(model, optimizer, game_memory, batch_size, device):
     total_policy_loss = 0
     total_value_loss = 0
     
-    # Shuffle the memory for better training dynamics
     np.random.shuffle(game_memory)
     
     num_batches = (len(game_memory) + batch_size - 1) // batch_size
@@ -67,7 +79,6 @@ def train_on_game(model, optimizer, game_memory, batch_size, device):
         if not batch_memory:
             continue
 
-        # Prepare batch data
         gnn_data_list = [item['gnn_data'] for item in batch_memory]
         cnn_tensors = torch.stack([item['cnn_tensor'] for item in batch_memory]).to(device)
         target_policies = torch.stack([item['policy'] for item in batch_memory]).to(device)
@@ -75,16 +86,13 @@ def train_on_game(model, optimizer, game_memory, batch_size, device):
         
         gnn_batch = Batch.from_data_list(gnn_data_list).to(device)
 
-        # Forward pass
         optimizer.zero_grad()
         policy_logits, value_preds = model(gnn_batch, cnn_tensors)
 
-        # Loss calculation
         policy_loss = torch.nn.functional.cross_entropy(policy_logits, target_policies)
         value_loss = torch.nn.functional.mse_loss(value_preds, target_values)
         total_loss = policy_loss + value_loss
 
-        # Backpropagation
         total_loss.backward()
         optimizer.step()
         
@@ -111,13 +119,10 @@ def main():
     parser.add_argument('--checkpoint', type=str, default=None, help="Path to a model checkpoint to continue training.")
     args = parser.parse_args()
 
-    # --- 1. Setup ---
     paths = get_paths()
     device = get_device()
     print(f"Using device: {device}")
 
-    # --- 2. Initialize Model and Optimizer ---
-    print("Initializing the two-headed PolicyValueModel...")
     model = PolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'],
         cnn_in_channels=14, 
@@ -131,12 +136,11 @@ def main():
     
     start_game = 0
     if args.checkpoint:
-        # Code to load checkpoint...
+        # Load checkpoint logic...
         pass
     else:
         print("No checkpoint provided. Starting from scratch.")
 
-    # --- 3. Initialize Reward Classifier, MCTS, and Opponent ---
     style_classifier = StyleClassifier()
     mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
     
@@ -147,7 +151,6 @@ def main():
 
     print("\n" + "#"*60 + "\n--- Initialization Complete. Ready to start training. ---\n" + "#"*60 + "\n")
 
-    # --- 4. Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         print(f"\n--- Starting Game {game_num}/{config_params['TOTAL_GAMES']} ---")
         
@@ -156,17 +159,19 @@ def main():
         agent_is_white = (game_num % 2 == 1)
         print(f"Agent is playing as {'WHITE' if agent_is_white else 'BLACK'}")
 
-        # --- 5. Single Game Loop ---
         while not board.is_game_over(claim_draw=True):
             is_agent_turn = (board.turn == chess.WHITE and agent_is_white) or (board.turn == chess.BLACK and not agent_is_white)
 
             if is_agent_turn:
                 gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
-                policy = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'])
-                move = mcts_player.select_move(policy, temperature=1.0)
+                policy_dict = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'])
+                move = mcts_player.select_move(policy_dict, temperature=1.0)
                 reward = style_classifier.score_move(board, move)
                 
-                game_memory.append({"gnn_data": gnn_data, "cnn_tensor": cnn_tensor, "policy": torch.tensor(policy, dtype=torch.float32), "reward": reward})
+                # --- FIX: Convert policy dict to a full tensor ---
+                policy_tensor = format_policy_for_training(policy_dict, board)
+                
+                game_memory.append({"gnn_data": gnn_data, "cnn_tensor": cnn_tensor, "policy": policy_tensor, "reward": reward})
                 
                 san_move = board.san(move); print(f"Agent plays: {san_move} (Style Reward: {reward:.3f})")
                 board.push(move)
@@ -183,9 +188,7 @@ def main():
         result_str = board.result(claim_draw=True)
         print(f"--- Game Over. Result: {result_str} ---")
 
-        # --- 6. Training Step ---
         if game_memory:
-            # Determine final reward from agent's perspective
             if (result_str == "1-0" and agent_is_white) or (result_str == "0-1" and not agent_is_white):
                 final_reward = 1.0
             elif (result_str == "0-1" and agent_is_white) or (result_str == "1-0" and not agent_is_white):
@@ -197,7 +200,6 @@ def main():
             policy_loss, value_loss = train_on_game(model, optimizer, game_memory, config_params['BATCH_SIZE'], device)
             print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
         
-        # Save checkpoint periodically
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             save_checkpoint(model, optimizer, game_num, paths.checkpoints_dir)
 
