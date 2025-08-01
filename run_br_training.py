@@ -16,7 +16,8 @@ from config import get_paths, config_params
 # --- Project-specific Imports ---
 from gnn_agent.neural_network.policy_value_model import PolicyValueModel
 from gnn_agent.rl_loop.style_classifier import StyleClassifier
-from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size, move_to_action_index
+# --- FIX: Use the correct function name ---
+from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size, move_to_index
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from gnn_agent.search.mcts import MCTS
 from hardware_setup import get_device
@@ -37,7 +38,8 @@ def format_policy_for_training(policy_dict: Dict[chess.Move, float], board: ches
     """Converts the MCTS policy dictionary to a full-sized tensor for training."""
     policy_tensor = torch.zeros(get_action_space_size())
     for move, prob in policy_dict.items():
-        action_index = move_to_action_index(move, board)
+        # --- FIX: Use the correct function name ---
+        action_index = move_to_index(move, board)
         if action_index is not None:
             policy_tensor[action_index] = prob
     return policy_tensor
@@ -165,10 +167,14 @@ def main():
             if is_agent_turn:
                 gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
                 policy_dict = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'])
+                
+                # The MCTS search might return an empty policy if the game ends on its turn
+                if not policy_dict:
+                    break
+                    
                 move = mcts_player.select_move(policy_dict, temperature=1.0)
                 reward = style_classifier.score_move(board, move)
                 
-                # --- FIX: Convert policy dict to a full tensor ---
                 policy_tensor = format_policy_for_training(policy_dict, board)
                 
                 game_memory.append({"gnn_data": gnn_data, "cnn_tensor": cnn_tensor, "policy": policy_tensor, "reward": reward})
