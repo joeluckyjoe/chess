@@ -13,8 +13,8 @@ class StyleClassifier:
             chess.ROOK: 5, chess.QUEEN: 9, chess.KING: 0
         }
         self.pawn_push_reward: float = 0.1
-        # --- NEW: Added a penalty for poor king safety ---
-        self.king_safety_penalty: float = -0.5
+        # --- MODIFIED: Increased the penalty for poor king safety ---
+        self.king_safety_penalty: float = -2.0
 
     def score_move(self, board: chess.Board, move: chess.Move) -> float:
         """Calculates the total style score for a given move."""
@@ -24,7 +24,6 @@ class StyleClassifier:
         score = 0.0
         score += self._score_capture(board, move)
         score += self._score_pawn_push(board, move)
-        # --- NEW: Add the king safety score ---
         score += self._score_king_safety(board, move)
         return score
 
@@ -53,7 +52,6 @@ class StyleClassifier:
         turn = board.turn
         king_square_before = board.king(turn)
         
-        # This can happen in rare illegal positions, so we safe-guard it.
         if king_square_before is None:
             return 0.0
             
