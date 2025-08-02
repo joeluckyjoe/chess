@@ -34,7 +34,6 @@ class StyleDataset(Dataset):
         logging.info(f"Loading dataset from {jsonl_path}...")
         with open(jsonl_path, 'r') as f:
             for line in tqdm(f, desc="Reading dataset file"):
-                # Store the raw JSON line to parse in __getitem__
                 self.positions.append(json.loads(line))
         logging.info(f"Successfully loaded {len(self.positions)} positions.")
 
@@ -52,9 +51,7 @@ class StyleDataset(Dataset):
         board = chess.Board(fen)
         gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, torch.device('cpu'))
         
-        # --- MODIFIED: Convert string label to numeric label ---
-        # "petrosian_win" (safe style) -> 1.0
-        # "tal_win" (risky style) -> 0.0
+        # "petrosian_win" -> 1.0, "tal_win" -> 0.0
         label = 1.0 if "petrosian" in label_str else 0.0
         
         return gnn_data, cnn_tensor, torch.tensor(label, dtype=torch.float32)
@@ -67,10 +64,8 @@ class StyleClassifierModel(nn.Module):
     def __init__(self, base_model: PolicyValueModel):
         super().__init__()
         self.base_model = base_model
-        
         for param in self.base_model.parameters():
             param.requires_grad = False
-            
         self.classifier_head = nn.Sequential(
             nn.Linear(base_model.embed_dim, 128),
             nn.GELU(),
@@ -80,7 +75,6 @@ class StyleClassifierModel(nn.Module):
 
     def forward(self, gnn_batch: Batch, cnn_tensor: torch.Tensor) -> torch.Tensor:
         batch_size = cnn_tensor.size(0)
-        
         with torch.no_grad():
             gnn_out = self.base_model.gnn(gnn_batch)
             cnn_out = self.base_model.cnn(cnn_tensor)
@@ -88,7 +82,6 @@ class StyleClassifierModel(nn.Module):
             cnn_out_pooled = cnn_out.view(batch_size, self.base_model.embed_dim, -1).mean(dim=2)
             fused = torch.cat([gnn_out_reshaped, cnn_out_pooled], dim=-1)
             final_embedding = self.base_model.embedding_projection(fused)
-        
         style_logit = self.classifier_head(final_embedding)
         return style_logit
 
@@ -100,8 +93,8 @@ def main():
 
     device = get_device()
     paths = get_paths()
-    # --- MODIFIED: Point to the new combined dataset ---
-    dataset_path = paths.training_data_dir / "combined_style_dataset.jsonl"
+    # --- MODIFIED: Point to the correct, new middlegame dataset ---
+    dataset_path = paths.training_data_dir / "combined_middlegame_dataset.jsonl"
 
     if not dataset_path.exists():
         logging.error(f"FATAL: Dataset not found at {dataset_path}"); sys.exit(1)
@@ -172,7 +165,8 @@ def main():
 
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
-            save_path = paths.checkpoints_dir / "best_petrosian_vs_tal_classifier.pth"
+            # --- MODIFIED: Save to a new, specific filename ---
+            save_path = paths.checkpoints_dir / "best_middlegame_classifier.pth"
             torch.save(model.classifier_head.state_dict(), save_path)
             logging.info(f"New best model saved to {save_path} with accuracy: {val_accuracy:.4f}")
 
