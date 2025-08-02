@@ -8,21 +8,16 @@ from torch_geometric.data import Batch
 import sys
 from pathlib import Path
 
-# --- FIX: Add project root to Python's path ---
-# This allows the script to find the gnn_agent module from its new location
-# Get the path to the project root (which is the parent of the 'visualization' directory)
+# Add project root to Python's path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
-# --- End of Fix ---
 
 from gnn_agent.neural_network.policy_value_model import PolicyValueModel
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input, CNN_INPUT_CHANNELS
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
 def load_model(checkpoint_path, device):
-    """
-    Loads the PolicyValueModel from a checkpoint file.
-    """
+    """Loads the PolicyValueModel from a checkpoint file."""
     model_params = {
         'gnn_hidden_dim': 128,
         'cnn_in_channels': CNN_INPUT_CHANNELS,
@@ -56,25 +51,24 @@ def load_model(checkpoint_path, device):
     return model
 
 def get_board_at_move(pgn_path, move_number):
-    """ Parses a PGN file and returns the board state *before* a specific move number. """
+    """Parses a PGN file and returns the board state *before* a specific move number."""
     with open(pgn_path) as pgn_file:
         game = chess.pgn.read_game(pgn_file)
     if not game:
-        return None, None
+        return None, None, None
     
     node = game
-    # Navigate to the move *before* the desired move number
     for _ in range(move_number - 1):
         if node.next():
             node = node.next()
         else:
-            return None, None
+            return None, None, None
     
-    # Return the board at this position and the move that follows
-    return node.board(), node.next().move if node.next() else None
+    return game, node.board(), node.next().move if node.next() else None
 
-def visualize_reasoning(model, board, move, device, move_number, checkpoint_path):
-    """ Main function to perform model inference and generate visualizations. """
+# --- FIX: Added 'game' object to the function signature ---
+def visualize_reasoning(model, board, move, device, move_number, checkpoint_path, game):
+    """Main function to perform model inference and generate visualizations."""
     if move is None:
         print(f"Error: Could not find move {move_number} in PGN.")
         return
@@ -128,9 +122,8 @@ def visualize_reasoning(model, board, move, device, move_number, checkpoint_path
     plt.title(f"GNN Node Importance Before Move {move_number}: {board.san(move)}", fontsize=16)
     
     checkpoint_name = Path(checkpoint_path).stem
-    san_move_str = board.san(move).replace('+', 'x').replace('#', 'm') # Sanitize for filename
+    san_move_str = board.san(move).replace('+', 'x').replace('#', 'm')
     
-    # Save the output inside the visualization directory
     output_dir = Path(__file__).resolve().parent
     output_filename = output_dir / f"analysis_{checkpoint_name}_gm{game.headers.get('Round', 'N_A')}_mv{move_number}.png"
     
@@ -151,13 +144,11 @@ def main():
 
     try:
         model = load_model(args.checkpoint, device)
-        board, move = get_board_at_move(args.pgn, args.move_number)
+        game, board, move = get_board_at_move(args.pgn, args.move_number)
     
         if board and move:
-            # Need to get the full game object for the header in the filename
-            with open(args.pgn) as pgn_file:
-                game = chess.pgn.read_game(pgn_file)
-            visualize_reasoning(model, board, move, device, args.move_number, args.checkpoint)
+            # --- FIX: Pass the 'game' object to the visualization function ---
+            visualize_reasoning(model, board, move, device, args.move_number, args.checkpoint, game)
         else:
             print(f"Could not reach move number {args.move_number} in the PGN file.")
     except FileNotFoundError as e:
