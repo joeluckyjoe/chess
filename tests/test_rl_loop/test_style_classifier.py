@@ -1,59 +1,59 @@
 import unittest
 import chess
-from gnn_agent.rl_loop.style_classifier import StyleClassifier
+import torch
+from pathlib import Path
 
-class TestStyleClassifier(unittest.TestCase):
+# Add project root to path to allow importing from our modules
+import sys
+project_root = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from gnn_agent.rl_loop.style_classifier import StyleClassifier
+from config import get_paths
+from hardware_setup import get_device
+
+class TestMLStyleClassifier(unittest.TestCase):
 
     def setUp(self):
-        self.classifier = StyleClassifier()
-
-    def test_pawn_push(self):
-        """Tests that an aggressive pawn push is rewarded."""
-        board = chess.Board("rnbqkbnr/p1pppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2")
-        move = chess.Move.from_uci("e4e5")
-        self.assertAlmostEqual(self.classifier.score_move(board, move), self.classifier.pawn_push_reward)
-
-    def test_capture(self):
-        """Tests that a simple capture is rewarded."""
-        board = chess.Board("rnbqkbnr/ppp2ppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 3")
-        move = chess.Move.from_uci("e4d5")
-        self.assertAlmostEqual(self.classifier.score_move(board, move), self.classifier.piece_values[chess.PAWN])
+        """
+        Set up the classifier for an integration test.
+        Note: This test requires the trained checkpoints to be available.
+        """
+        self.device = get_device()
+        paths = get_paths()
         
-    def test_en_passant_capture(self):
-        """Tests that an en passant capture is rewarded."""
-        board = chess.Board("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3")
-        move = chess.Move.from_uci("e5f6")
-        self.assertAlmostEqual(self.classifier.score_move(board, move), self.classifier.piece_values[chess.PAWN])
-
-    def test_capture_is_not_pawn_push(self):
-        """Tests that a capture is not also rewarded as a pawn push."""
-        board = chess.Board("rnbqkbnr/ppp1pppp/8/3p4/P7/8/1PPPPPPP/RNBQKBNR w KQkq - 0 2")
-        board.push_san("a5")
-        board.push_san("b5")
-        move = chess.Move.from_uci("a5b6")
-        score = self.classifier.score_move(board, move)
-        self.assertAlmostEqual(score, self.classifier.piece_values[chess.PAWN])
-
-    def test_king_safety_penalty(self):
-        """Tests that moving the king into a heavily attacked area is penalized."""
-        # White king on e1 is safe. Black queen on a2 covers d2, e2, f2.
-        board = chess.Board("rnb1kbnr/pp2pppp/8/2p5/2p5/8/q1PPPPPP/RNBQKBNR w KQkq - 0 5")
+        # --- MODIFIED: Point to the correct, existing checkpoint file ---
+        self.base_checkpoint_path = paths.checkpoints_dir / "br_checkpoint_game_1010.pth.tar"
+        self.classifier_head_path = paths.checkpoints_dir / "best_petrosian_vs_tal_classifier.pth"
         
-        # Move Ke1-f1 (still safe)
-        move_safe = chess.Move.from_uci("e1f1")
-        score_safe = self.classifier._score_king_safety(board, move_safe)
-        self.assertAlmostEqual(score_safe, 0.0)
-        
-        # Move Ke1-d1 (moves into attacked squares)
-        move_unsafe = chess.Move.from_uci("e1d1")
-        score_unsafe = self.classifier._score_king_safety(board, move_unsafe)
-        self.assertAlmostEqual(score_unsafe, self.classifier.king_safety_penalty)
+        if not self.base_checkpoint_path.exists() or not self.classifier_head_path.exists():
+            self.skipTest("Required model checkpoints not found. Skipping integration test.")
+            
+        self.classifier = StyleClassifier(
+            base_checkpoint_path=self.base_checkpoint_path,
+            classifier_head_path=self.classifier_head_path,
+            device=self.device
+        )
 
-    def test_zero_score_move(self):
-        """Tests that a quiet move gets a score of zero."""
-        board = chess.Board("rnbqkbnr/pppppppp/8/8/8/N7/PPPPPPPP/R1BQKBNR b KQkq - 1 1")
-        move = chess.Move.from_uci("a7a6")
-        self.assertAlmostEqual(self.classifier.score_move(board, move), 0.0)
+    def test_initialization(self):
+        """Test if the classifier and its models initialize without errors."""
+        self.assertIsNotNone(self.classifier)
+        self.assertIsNotNone(self.classifier.base_model)
+        self.assertIsNotNone(self.classifier.classifier_head)
+
+    def test_score_move_returns_valid_reward(self):
+        """
+        Test that score_move returns a float within the expected range [-0.5, 0.5].
+        """
+        board = chess.Board()
+        move = chess.Move.from_uci("e2e4")
+        
+        reward = self.classifier.score_move(board, move)
+        
+        self.assertIsInstance(reward, float)
+        self.assertGreaterEqual(reward, -0.5)
+        self.assertLessEqual(reward, 0.5)
+        print(f"Sample reward for e4: {reward:.4f}")
 
 if __name__ == '__main__':
     unittest.main()
