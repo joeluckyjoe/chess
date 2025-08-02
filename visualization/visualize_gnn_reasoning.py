@@ -1,4 +1,3 @@
-# FILE: visualize_gnn_reasoning.py (Final Universal Version)
 import argparse
 import chess
 import chess.pgn
@@ -6,16 +5,17 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from torch_geometric.data import Batch
+import sys
+from pathlib import Path
 
-# Assuming the project is run from the root directory
-from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
+# --- MODIFIED: Import the new PolicyValueModel ---
+from gnn_agent.neural_network.policy_value_model import PolicyValueModel
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input, CNN_INPUT_CHANNELS
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
 def load_model(checkpoint_path, device):
     """
-    Loads the model from a checkpoint file, handling both full training checkpoints
-    and raw pre-trained state_dict files.
+    Loads the PolicyValueModel from a checkpoint file.
     """
     model_params = {
         'gnn_hidden_dim': 128,
@@ -34,17 +34,16 @@ def load_model(checkpoint_path, device):
         )
     }
     
-    model = ValueNextStateModel(**model_params)
+    # --- MODIFIED: Instantiate the correct model ---
+    model = PolicyValueModel(**model_params)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    # --- THIS IS THE FIX ---
-    # Handle both types of checkpoint files
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         print("Detected a full training checkpoint. Loading 'model_state_dict'.")
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
         print("Detected a raw state_dict file. Loading directly.")
-        model.load_state_dict(checkpoint) # Assumes the file is the state_dict
+        model.load_state_dict(checkpoint)
     
     model.to(device)
     model.eval()
@@ -59,15 +58,17 @@ def get_board_at_move(pgn_path, move_number):
         return None, None
     
     node = game
+    # Navigate to the move *before* the desired move number
     for _ in range(move_number - 1):
         if node.next():
             node = node.next()
         else:
             return None, None
     
+    # Return the board at this position and the move that follows
     return node.board(), node.next().move if node.next() else None
 
-def visualize_reasoning(model, board, move, device, move_number):
+def visualize_reasoning(model, board, move, device, move_number, checkpoint_path):
     """ Main function to perform model inference and generate visualizations. """
     if move is None:
         print(f"Error: Could not find move {move_number} in PGN.")
@@ -81,8 +82,10 @@ def visualize_reasoning(model, board, move, device, move_number):
     cnn_tensor_batch = cnn_tensor.unsqueeze(0)
 
     with torch.no_grad():
-        _, _, _, gnn_node_embeddings = model(gnn_batch, cnn_tensor_batch, return_embeddings=True)
+        # --- MODIFIED: Unpack 3 values from the updated model ---
+        _, _, gnn_node_embeddings = model(gnn_batch, cnn_tensor_batch, return_embeddings=True)
 
+    # The rest of the visualization logic remains the same...
     node_importance = torch.norm(gnn_node_embeddings, p=2, dim=1).cpu().numpy()
     
     if node_importance.max() > 0:
@@ -91,9 +94,7 @@ def visualize_reasoning(model, board, move, device, move_number):
         normalized_importance = np.zeros_like(node_importance)
 
     fig, ax = plt.subplots(figsize=(8, 8))
-    ax.set_xlim(0, 8)
-    ax.set_ylim(0, 8)
-    ax.set_aspect('equal')
+    ax.set_xlim(0, 8); ax.set_ylim(0, 8); ax.set_aspect('equal')
 
     for i in range(8):
         for j in range(8):
@@ -122,9 +123,13 @@ def visualize_reasoning(model, board, move, device, move_number):
     ax.set_yticks(np.arange(8) + 0.5, labels=list('87654321'))
     
     plt.title(f"GNN Node Importance Before Move {move_number}: {board.san(move)}", fontsize=16)
-    output_filename = f"analysis_move_{move_number-1}_before_{board.san(move)}_PRETRAINED.png"
+    
+    checkpoint_name = Path(checkpoint_path).stem
+    san_move_str = board.san(move).replace('+', 'x') # Sanitize for filename
+    output_filename = f"analysis_{checkpoint_name}_game_{move_number-1}_before_{san_move_str}.png"
+    
     plt.savefig(output_filename, bbox_inches='tight')
-    print(f"\nPre-trained model visualization saved to {output_filename}")
+    print(f"\nVisualization saved to {output_filename}")
     plt.close()
 
 
@@ -132,19 +137,20 @@ def main():
     parser = argparse.ArgumentParser(description="Visualize GNN reasoning for a specific chess move.")
     parser.add_argument('--checkpoint', type=str, required=True, help="Path to the model checkpoint file.")
     parser.add_argument('--pgn', type=str, required=True, help="Path to the PGN file of the game to analyze.")
-    parser.add_argument('--move', type=int, required=True, help="The (half) move number in the PGN to analyze.")
+    # --- MODIFIED: Corrected argument name ---
+    parser.add_argument('--move-number', type=int, required=True, help="The (half) move number in the PGN to analyze.")
     
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     model = load_model(args.checkpoint, device)
-    board, move = get_board_at_move(args.pgn, args.move)
+    board, move = get_board_at_move(args.pgn, args.move_number)
     
     if board and move:
-        visualize_reasoning(model, board, move, device, args.move)
+        visualize_reasoning(model, board, move, device, args.move_number, args.checkpoint)
     else:
-        print(f"Could not reach move number {args.move} in the PGN file.")
+        print(f"Could not reach move number {args.move_number} in the PGN file.")
 
 if __name__ == "__main__":
     main()
