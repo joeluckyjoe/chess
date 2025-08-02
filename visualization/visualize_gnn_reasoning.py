@@ -8,7 +8,13 @@ from torch_geometric.data import Batch
 import sys
 from pathlib import Path
 
-# --- MODIFIED: Import the new PolicyValueModel ---
+# --- FIX: Add project root to Python's path ---
+# This allows the script to find the gnn_agent module from its new location
+# Get the path to the project root (which is the parent of the 'visualization' directory)
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+# --- End of Fix ---
+
 from gnn_agent.neural_network.policy_value_model import PolicyValueModel
 from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input, CNN_INPUT_CHANNELS
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
@@ -34,7 +40,6 @@ def load_model(checkpoint_path, device):
         )
     }
     
-    # --- MODIFIED: Instantiate the correct model ---
     model = PolicyValueModel(**model_params)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
@@ -82,10 +87,8 @@ def visualize_reasoning(model, board, move, device, move_number, checkpoint_path
     cnn_tensor_batch = cnn_tensor.unsqueeze(0)
 
     with torch.no_grad():
-        # --- MODIFIED: Unpack 3 values from the updated model ---
         _, _, gnn_node_embeddings = model(gnn_batch, cnn_tensor_batch, return_embeddings=True)
 
-    # The rest of the visualization logic remains the same...
     node_importance = torch.norm(gnn_node_embeddings, p=2, dim=1).cpu().numpy()
     
     if node_importance.max() > 0:
@@ -125,8 +128,11 @@ def visualize_reasoning(model, board, move, device, move_number, checkpoint_path
     plt.title(f"GNN Node Importance Before Move {move_number}: {board.san(move)}", fontsize=16)
     
     checkpoint_name = Path(checkpoint_path).stem
-    san_move_str = board.san(move).replace('+', 'x') # Sanitize for filename
-    output_filename = f"analysis_{checkpoint_name}_game_{move_number-1}_before_{san_move_str}.png"
+    san_move_str = board.san(move).replace('+', 'x').replace('#', 'm') # Sanitize for filename
+    
+    # Save the output inside the visualization directory
+    output_dir = Path(__file__).resolve().parent
+    output_filename = output_dir / f"analysis_{checkpoint_name}_gm{game.headers.get('Round', 'N_A')}_mv{move_number}.png"
     
     plt.savefig(output_filename, bbox_inches='tight')
     print(f"\nVisualization saved to {output_filename}")
@@ -137,20 +143,28 @@ def main():
     parser = argparse.ArgumentParser(description="Visualize GNN reasoning for a specific chess move.")
     parser.add_argument('--checkpoint', type=str, required=True, help="Path to the model checkpoint file.")
     parser.add_argument('--pgn', type=str, required=True, help="Path to the PGN file of the game to analyze.")
-    # --- MODIFIED: Corrected argument name ---
     parser.add_argument('--move-number', type=int, required=True, help="The (half) move number in the PGN to analyze.")
     
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model = load_model(args.checkpoint, device)
-    board, move = get_board_at_move(args.pgn, args.move_number)
+    try:
+        model = load_model(args.checkpoint, device)
+        board, move = get_board_at_move(args.pgn, args.move_number)
     
-    if board and move:
-        visualize_reasoning(model, board, move, device, args.move_number, args.checkpoint)
-    else:
-        print(f"Could not reach move number {args.move_number} in the PGN file.")
+        if board and move:
+            # Need to get the full game object for the header in the filename
+            with open(args.pgn) as pgn_file:
+                game = chess.pgn.read_game(pgn_file)
+            visualize_reasoning(model, board, move, device, args.move_number, args.checkpoint)
+        else:
+            print(f"Could not reach move number {args.move_number} in the PGN file.")
+    except FileNotFoundError as e:
+        print(f"ERROR: File not found. Please check your paths. Details: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
 
 if __name__ == "__main__":
     main()
