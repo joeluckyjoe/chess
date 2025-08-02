@@ -5,19 +5,13 @@ from typing import Dict, Tuple, Deque, Union
 import collections
 
 from torch_geometric.data import Batch
-# Adjust the import path according to your project structure
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-# --- MODIFIED: Import the new two-headed model ---
 from ..neural_network.policy_value_model import PolicyValueModel
 from .mcts_node import MCTSNode
 
 
 class MCTS:
-    """
-    MCTS implementation updated for the two-headed PolicyValueModel.
-    """
-    # --- MODIFIED: Update type hint for the network ---
     def __init__(self, network: PolicyValueModel, device: torch.device,
                  batch_size: int, c_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3, dirichlet_epsilon: float = 0.25):
@@ -53,11 +47,7 @@ class MCTS:
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        # --- MODIFIED: The network now returns (policy, value) ---
-        policy_logits_batch, value_batch = self.network(
-            batched_gnn_data, batched_cnn_data
-        )
-
+        policy_logits_batch, value_batch = self.network(batched_gnn_data, batched_cnn_data)
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
         for i, node in enumerate(nodes_to_process):
@@ -98,7 +88,6 @@ class MCTS:
             gnn_batch = Batch.from_data_list([gnn_data])
             cnn_batch = cnn_data.unsqueeze(0)
             
-            # --- MODIFIED: Unpack two values ---
             policy_logits, value = self.network(gnn_batch, cnn_batch)
             
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
@@ -111,6 +100,8 @@ class MCTS:
                 for move in policy_priors: policy_priors[move] /= prior_sum
             
             self.root.expand(legal_moves, policy_priors, not board.turn)
+            # The root node's value is implicitly stored in its children's Q-values.
+            # We backpropagate from the children, not the root itself initially.
             self._backpropagate(self.root, value)
             self._add_dirichlet_noise(self.root)
 
@@ -129,12 +120,18 @@ class MCTS:
                 if not sim_board.is_game_over():
                     self._pending_evaluations.append((current_node, sim_board))
                 else:
+                    # --- BUG FIX: Calculate terminal value from the correct perspective ---
+                    # The value must be from the perspective of the player whose turn it is
+                    # at the current node (the end of the simulation).
                     outcome = sim_board.outcome()
                     term_value = 0.0
-                    if outcome and outcome.winner is not None:
-                        term_value = 1.0 if outcome.winner == board.turn else -1.0
+                    if outcome:
+                        winner = outcome.winner
+                        if winner is not None:
+                            player_at_leaf = current_node.board_turn_at_node
+                            term_value = 1.0 if winner == player_at_leaf else -1.0
                     self._backpropagate(current_node, term_value)
-
+            
             self._expand_and_evaluate_batch()
             sims_done += num_to_run_now
 
@@ -153,19 +150,3 @@ class MCTS:
             powered_visits = np.power(visit_counts, 1.0 / temperature)
             probabilities = powered_visits / np.sum(powered_visits)
             return np.random.choice(moves, p=probabilities)
-
-    @torch.no_grad()
-    def evaluate_single_board(self, board: chess.Board) -> float:
-        """
-        Performs a raw evaluation of a single board state using the network,
-        returning the value from the perspective of the current player on that board.
-        """
-        self.network.eval()
-        gnn_data, cnn_data, _ = convert_to_gnn_input(board, self.device)
-        gnn_batch = Batch.from_data_list([gnn_data])
-        cnn_batch = cnn_data.unsqueeze(0)
-
-        # --- MODIFIED: Unpack two values ---
-        _, value_pred = self.network(gnn_batch, cnn_batch)
-
-        return value_pred.item()
