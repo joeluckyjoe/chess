@@ -17,8 +17,9 @@ config_params = {
     "BATCH_SIZE": 256, # Number of game states to use for a single training update
 
     # -- Stockfish Opponent Settings --
-    "STOCKFISH_ELO": 1500, # Target Elo for the sparring partner
-    "STOCKFISH_DEPTH": 5,  # Search depth for the sparring partner
+    # MODIFIED: Reduced ELO to prevent immediate agent collapse.
+    "STOCKFISH_ELO": 800,
+    "STOCKFISH_DEPTH": 5,
 
     # -- MCTS Settings --
     "MCTS_SIMULATIONS": 100, # Number of simulations per move search
@@ -30,7 +31,8 @@ config_params = {
     "GNN_NUM_HEADS": 4, # Number of attention heads in the GNN
 
     # -- Optimizer & Learning Rate --
-    "LEARNING_RATE": 0.001,
+    # MODIFIED: Lowered learning rate to prevent value head collapse.
+    "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
 }
 
@@ -38,20 +40,12 @@ config_params = {
 # =================================================================
 # 2. Path Configuration (Colab-aware)
 # =================================================================
-# This section remains robust. Minor cleanup to remove paths for
-# archived features like tactical puzzles.
+# This section is unchanged.
 
 Paths = namedtuple('Paths', [
     'checkpoints_dir',
     'pgn_games_dir',
     'drive_project_root',
-    # Archived paths removed for clarity
-    # 'training_data_dir',
-    # 'analysis_output_dir',
-    # 'tactical_puzzles_file',
-    # 'generated_puzzles_file',
-    # 'loss_log_file',
-    # 'supervisor_log_file'
 ])
 
 def get_paths():
