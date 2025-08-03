@@ -17,8 +17,8 @@ config_params = {
     "BATCH_SIZE": 256, # Number of game states to use for a single training update
 
     # -- Stockfish Opponent Settings --
-    # MODIFIED: Reduced ELO to prevent immediate agent collapse.
-    "STOCKFISH_ELO": 800,
+    # MODIFIED: Increasing ELO to challenge the agent's passive strategies.
+    "STOCKFISH_ELO": 1000,
     "STOCKFISH_DEPTH": 5,
 
     # -- MCTS Settings --
@@ -31,7 +31,6 @@ config_params = {
     "GNN_NUM_HEADS": 4, # Number of attention heads in the GNN
 
     # -- Optimizer & Learning Rate --
-    # MODIFIED: Lowered learning rate to prevent value head collapse.
     "LEARNING_RATE": 0.0001,
     "WEIGHT_DECAY": 0.0001,
 }
