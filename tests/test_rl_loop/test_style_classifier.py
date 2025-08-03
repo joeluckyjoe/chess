@@ -22,9 +22,9 @@ class TestMLStyleClassifier(unittest.TestCase):
         self.device = get_device()
         paths = get_paths()
         
-        # --- MODIFIED: Point to the correct, existing checkpoint file ---
         self.base_checkpoint_path = paths.checkpoints_dir / "br_checkpoint_game_1010.pth.tar"
-        self.classifier_head_path = paths.checkpoints_dir / "best_petrosian_vs_tal_classifier.pth"
+        # --- MODIFIED: Point to the new middlegame classifier checkpoint ---
+        self.classifier_head_path = paths.checkpoints_dir / "best_middlegame_classifier.pth"
         
         if not self.base_checkpoint_path.exists() or not self.classifier_head_path.exists():
             self.skipTest("Required model checkpoints not found. Skipping integration test.")
