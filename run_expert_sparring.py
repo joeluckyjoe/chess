@@ -95,10 +95,6 @@ def train_on_game(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, g
 
         policy_logits, value_preds = model(gnn_batch, cnn_batch)
 
-        # --- CORRECTED LOSS CALCULATION ---
-        # The MCTS provides a probability distribution (soft labels), not a single class index.
-        # The standard cross_entropy function expects a 1D tensor of class indices.
-        # To train on the probability distribution, we manually compute the cross-entropy.
         policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
         value_loss = torch.nn.functional.mse_loss(value_preds.squeeze(-1), target_values.squeeze(-1))
         total_loss = policy_loss + value_loss
@@ -169,7 +165,9 @@ def main():
     else:
         print("No temporal checkpoint provided. Starting fresh.")
 
-    mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['MCTS_BATCH_SIZE'])
+    # --- CORRECTED MCTS INITIALIZATION ---
+    # The config parameter for MCTS batching is 'BATCH_SIZE', not 'MCTS_BATCH_SIZE'
+    mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
 
     try:
         stockfish_params = {"Skill Level": config_params.get('STOCKFISH_ELO', 1400)}
