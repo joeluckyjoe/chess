@@ -140,11 +140,15 @@ def main():
     try:
         # Configure Stockfish to be a strong, consistent opponent
         stockfish_params = {
-            "depth": config_params.get('STOCKFISH_DEPTH', 10),
-            "Skill Level": config_params.get('STOCKFISH_ELO', 1500) # Corresponds to an Elo of 1500
+            # "depth" is a per-search parameter, not an initial one.
+            "Skill Level": config_params.get('STOCKFISH_ELO', 1500)
         }
         stockfish_opponent = Stockfish(path=config_params['STOCKFISH_PATH'], parameters=stockfish_params)
-        print(f"Initialized Stockfish with Elo: {stockfish_params['Skill Level']} and Depth: {stockfish_params['depth']}")
+        
+        # We get the depth from config to use it in the game loop.
+        stockfish_depth = config_params.get('STOCKFISH_DEPTH', 5) 
+        print(f"Initialized Stockfish with Elo: {stockfish_params['Skill Level']} and Depth: {stockfish_depth}")
+
     except Exception as e:
         print(f"[FATAL] Could not initialize the Stockfish engine: {e}"); sys.exit(1)
 
@@ -186,6 +190,9 @@ def main():
                 print(f"Agent plays: {san_move}")
                 board.push(move)
             else: # Stockfish's turn
+                # Set the search depth before asking for the best move.
+                stockfish_opponent.set_depth(stockfish_depth)
+                
                 stockfish_opponent.set_fen_position(board.fen())
                 best_move_uci = stockfish_opponent.get_best_move()
                 if not best_move_uci: break # Break if Stockfish returns no move
