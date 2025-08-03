@@ -21,7 +21,8 @@ config_params = {
     "STOCKFISH_DEPTH": 5,
 
     # -- MCTS Settings --
-    "MCTS_SIMULATIONS": 100, # Number of simulations per move search
+    # MODIFIED: Increased simulations to improve search quality.
+    "MCTS_SIMULATIONS": 200, # Number of simulations per move search
     "CPUCT": 4.0, # Exploration-exploitation trade-off in PUCT formula
 
     # -- Neural Network Architecture --
@@ -30,7 +31,6 @@ config_params = {
     "GNN_NUM_HEADS": 4, # Number of attention heads in the GNN
 
     # -- Optimizer & Learning Rate --
-    # MODIFIED: Significantly lowered learning rate to stabilize the value function.
     "LEARNING_RATE": 0.00002,
     "WEIGHT_DECAY": 0.0001,
 }
