@@ -128,6 +128,10 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
+    # ADDED THIS DIAGNOSTIC LINE:
+    print(f"--- DIAGNOSTIC ---: Action space size from get_action_space_size() is {get_action_space_size()}")
+
+    # 1. Load the pre-trained GNN+CNN Encoder model
     encoder = EncoderPolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
@@ -165,8 +169,6 @@ def main():
     else:
         print("No temporal checkpoint provided. Starting fresh.")
 
-    # --- CORRECTED MCTS INITIALIZATION ---
-    # The config parameter for MCTS batching is 'BATCH_SIZE', not 'MCTS_BATCH_SIZE'
     mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
 
     try:
