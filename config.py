@@ -17,11 +17,11 @@ config_params = {
     "BATCH_SIZE": 256, # Number of game states to use for a single training update
 
     # -- Stockfish Opponent Settings --
-    "STOCKFISH_ELO": 1000,
+    # MODIFIED: Increasing ELO to continue the learning curriculum.
+    "STOCKFISH_ELO": 1200,
     "STOCKFISH_DEPTH": 5,
 
     # -- MCTS Settings --
-    # MODIFIED: Increased simulations to improve search quality.
     "MCTS_SIMULATIONS": 200, # Number of simulations per move search
     "CPUCT": 4.0, # Exploration-exploitation trade-off in PUCT formula
 
