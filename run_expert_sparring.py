@@ -1,3 +1,4 @@
+# FILENAME: run_expert_sparring.py
 import torch
 import torch.optim as optim
 import argparse
@@ -41,13 +42,7 @@ def format_policy_for_training(policy_dict: Dict[chess.Move, float], board: ches
             policy_tensor[action_index] = prob
     return policy_tensor
 
-def backfill_rewards(game_memory: List[Dict], final_result: float):
-    """
-    Backfills the final game result to every agent move in the game memory.
-    This is the core of the pure RL signal for Phase C.
-    """
-    for step in game_memory:
-        step['value_target'] = torch.tensor([final_result], dtype=torch.float32)
+# --- REMOVED: The backfill_rewards function is no longer needed. ---
 
 def train_on_game(model: PolicyValueModel, optimizer: optim.Optimizer, game_memory: List[GameStep], batch_size: int, device: torch.device):
     """Trains the model on the data collected from a single game."""
@@ -56,7 +51,7 @@ def train_on_game(model: PolicyValueModel, optimizer: optim.Optimizer, game_memo
 
     model.train()
     total_policy_loss, total_value_loss = 0, 0
-    np.random.shuffle(game_memory) # Shuffle to break temporal correlations
+    np.random.shuffle(game_memory)
 
     num_batches = (len(game_memory) + batch_size - 1) // batch_size
 
@@ -75,7 +70,6 @@ def train_on_game(model: PolicyValueModel, optimizer: optim.Optimizer, game_memo
         optimizer.zero_grad()
         policy_logits, value_preds = model(gnn_batch, cnn_tensors)
 
-        # Calculate losses
         policy_loss = torch.nn.functional.cross_entropy(policy_logits, target_policies)
         value_loss = torch.nn.functional.mse_loss(value_preds, target_values)
         total_loss = policy_loss + value_loss
@@ -90,7 +84,6 @@ def train_on_game(model: PolicyValueModel, optimizer: optim.Optimizer, game_memo
 
 def save_checkpoint(model: PolicyValueModel, optimizer: optim.Optimizer, game_number: int, directory: Path):
     """Saves a training checkpoint."""
-    # Updated checkpoint naming for Phase C
     checkpoint_path = directory / f"expert_sparring_checkpoint_game_{game_number}.pth.tar"
     torch.save({
         'game_number': game_number,
@@ -102,7 +95,6 @@ def save_checkpoint(model: PolicyValueModel, optimizer: optim.Optimizer, game_nu
 def main():
     """Main execution function for the Phase C Expert Sparring training loop."""
     parser = argparse.ArgumentParser(description="Run the Phase C training loop against an expert opponent.")
-    # Simplified argument for loading agent checkpoints
     parser.add_argument('--checkpoint', type=str, default=None, help="Path to a model checkpoint to continue training.")
     args = parser.parse_args()
 
@@ -110,7 +102,6 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
-    # --- Model and Optimizer Initialization ---
     model = PolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
@@ -134,27 +125,20 @@ def main():
     else:
         print("No checkpoint provided. Starting from scratch.")
 
-    # --- MCTS and Stockfish Initialization ---
     mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
 
     try:
-        # Configure Stockfish to be a strong, consistent opponent
         stockfish_params = {
-            # "depth" is a per-search parameter, not an initial one.
-            "Skill Level": config_params.get('STOCKFISH_ELO', 1500)
+            "Skill Level": config_params.get('STOCKFISH_ELO', 800)
         }
         stockfish_opponent = Stockfish(path=config_params['STOCKFISH_PATH'], parameters=stockfish_params)
-        
-        # We get the depth from config to use it in the game loop.
         stockfish_depth = config_params.get('STOCKFISH_DEPTH', 5) 
         print(f"Initialized Stockfish with Elo: {stockfish_params['Skill Level']} and Depth: {stockfish_depth}")
-
     except Exception as e:
         print(f"[FATAL] Could not initialize the Stockfish engine: {e}"); sys.exit(1)
 
-    print("\n" + "#"*60 + "\n--- Phase C: Expert Sparring Training Begins ---\n" + "#"*60 + "\n")
+    print("\n" + "#"*60 + "\n--- Phase C: Expert Sparring Training Begins (MCTS Targets) ---\n" + "#"*60 + "\n")
 
-    # --- Main Training Loop ---
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         print(f"\n--- Starting Game {game_num}/{config_params['TOTAL_GAMES']} ---")
         board = chess.Board()
@@ -162,9 +146,8 @@ def main():
         agent_is_white = (game_num % 2 == 1)
         print(f"Agent is playing as {'WHITE' if agent_is_white else 'BLACK'}")
 
-        # PGN Game Setup
         game = chess.pgn.Game()
-        game.headers["Event"] = "Phase C Expert Sparring"
+        game.headers["Event"] = "Phase C Expert Sparring (MCTS Targets)"
         game.headers["Site"] = "Colab"
         game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
         game.headers["Round"] = str(game_num)
@@ -177,25 +160,32 @@ def main():
 
             if is_agent_turn:
                 gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
-                policy_dict = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'])
+                
+                # --- MODIFIED: Capture both policy and MCTS value from the search ---
+                policy_dict, mcts_value = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'])
 
-                if not policy_dict: break # Break if MCTS returns no moves
+                if not policy_dict: break
 
-                # Select move and store state for later training
                 move = mcts_player.select_move(policy_dict, temperature=1.0)
                 policy_tensor = format_policy_for_training(policy_dict, board)
-                game_memory.append({"gnn_data": gnn_data, "cnn_tensor": cnn_tensor, "policy": policy_tensor})
+                
+                # --- MODIFIED: Store the MCTS-derived value as the target ---
+                value_target_tensor = torch.tensor([mcts_value], dtype=torch.float32)
+                game_memory.append({
+                    "gnn_data": gnn_data, 
+                    "cnn_tensor": cnn_tensor, 
+                    "policy": policy_tensor, 
+                    "value_target": value_target_tensor # Use MCTS value as the target
+                })
 
                 san_move = board.san(move)
-                print(f"Agent plays: {san_move}")
+                print(f"Agent plays: {san_move} (MCTS Value: {mcts_value:.4f})")
                 board.push(move)
-            else: # Stockfish's turn
-                # Set the search depth before asking for the best move.
+            else: 
                 stockfish_opponent.set_depth(stockfish_depth)
-                
                 stockfish_opponent.set_fen_position(board.fen())
                 best_move_uci = stockfish_opponent.get_best_move()
-                if not best_move_uci: break # Break if Stockfish returns no move
+                if not best_move_uci: break
 
                 move = chess.Move.from_uci(best_move_uci)
                 san_move = board.san(move)
@@ -204,12 +194,10 @@ def main():
 
             node = node.add_variation(move)
 
-        # --- Post-Game Processing ---
         result_str = board.result(claim_draw=True)
         game.headers["Result"] = result_str
         print(f"--- Game Over. Result: {result_str} ---")
 
-        # Save PGN
         pgn_filename = paths.pgn_games_dir / f"expert_sparring_game_{game_num}.pgn"
         with open(pgn_filename, "w", encoding="utf-8") as f:
             exporter = chess.pgn.FileExporter(f)
@@ -217,18 +205,10 @@ def main():
         print(f"PGN for game saved to: {pgn_filename}")
 
         if game_memory:
-            # Determine final reward based on game outcome
-            final_reward = 0.0
-            if (result_str == "1-0" and agent_is_white) or (result_str == "0-1" and not agent_is_white):
-                final_reward = 1.0 # Agent won
-            elif (result_str == "0-1" and agent_is_white) or (result_str == "1-0" and not agent_is_white):
-                final_reward = -1.0 # Agent lost
-
-            backfill_rewards(game_memory, final_reward)
+            # --- MODIFIED: No backfilling needed; we train directly on MCTS values ---
             policy_loss, value_loss = train_on_game(model, optimizer, game_memory, config_params['BATCH_SIZE'], device)
             print(f"Training complete. Policy Loss: {policy_loss:.4f}, Value Loss: {value_loss:.4f}")
 
-        # --- Checkpointing ---
         if game_num % config_params['CHECKPOINT_INTERVAL'] == 0:
             save_checkpoint(model, optimizer, game_num, paths.checkpoints_dir)
 

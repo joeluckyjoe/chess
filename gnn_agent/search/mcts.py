@@ -1,3 +1,4 @@
+# FILENAME: gnn_agent/search/mcts.py
 import torch
 import chess
 import numpy as np
@@ -80,7 +81,8 @@ class MCTS:
             child.P = noisy_priors[i]
 
     @torch.no_grad()
-    def run_search(self, board: chess.Board, num_simulations: int) -> Dict[chess.Move, float]:
+    # --- MODIFIED: The function now returns the policy and the MCTS-derived value ---
+    def run_search(self, board: chess.Board, num_simulations: int) -> Tuple[Dict[chess.Move, float], float]:
         self.root = MCTSNode(parent=None, prior_p=1.0, board_turn_at_node=board.turn)
 
         if not board.is_game_over():
@@ -100,8 +102,6 @@ class MCTS:
                 for move in policy_priors: policy_priors[move] /= prior_sum
             
             self.root.expand(legal_moves, policy_priors, not board.turn)
-            # The root node's value is implicitly stored in its children's Q-values.
-            # We backpropagate from the children, not the root itself initially.
             self._backpropagate(self.root, value)
             self._add_dirichlet_noise(self.root)
 
@@ -120,9 +120,6 @@ class MCTS:
                 if not sim_board.is_game_over():
                     self._pending_evaluations.append((current_node, sim_board))
                 else:
-                    # --- BUG FIX: Calculate terminal value from the correct perspective ---
-                    # The value must be from the perspective of the player whose turn it is
-                    # at the current node (the end of the simulation).
                     outcome = sim_board.outcome()
                     term_value = 0.0
                     if outcome:
@@ -135,10 +132,16 @@ class MCTS:
             self._expand_and_evaluate_batch()
             sims_done += num_to_run_now
 
-        if not self.root.children: return {}
+        if not self.root.children: 
+            return {}, 0.0
+
         total_visits = sum(child.N for child in self.root.children.values())
         policy = {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
-        return policy
+        
+        # --- NEW: Calculate the MCTS-derived value of the root state ---
+        mcts_value = self.root.Q / self.root.N if self.root.N > 0 else 0.0
+
+        return policy, mcts_value
 
     def select_move(self, policy: Dict[chess.Move, float], temperature: float) -> chess.Move:
         if not policy: return None
