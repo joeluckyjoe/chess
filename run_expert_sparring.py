@@ -1,5 +1,3 @@
-# FILENAME: run_expert_sparring.py
-
 import torch
 import torch.optim as optim
 import argparse
@@ -209,16 +207,21 @@ def main():
         initial_state_tuple = (initial_gnn, initial_cnn)
         state_sequence_queue = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
 
+        # Correctly initialize the PGN game object and the current node
         game = chess.pgn.Game()
         game.headers["Event"] = "Phase D Temporal Sparring"
-        node = game.headers.copy() # Use a dictionary-like object for headers
+        game.headers["Site"] = "Colab Environment"
+        game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
+        game.headers["Round"] = str(game_num)
+        game.headers["White"] = "Agent" if agent_is_white else "Stockfish"
+        game.headers["Black"] = "Stockfish" if agent_is_white else "Agent"
+        current_node = game # The current node starts at the root of the game
 
         while not board.is_game_over(claim_draw=True):
             is_agent_turn = (board.turn == chess.WHITE and agent_is_white) or (board.turn == chess.BLACK and not agent_is_white)
 
             if is_agent_turn:
                 # The MCTS now needs the full sequence of states
-                # NOTE: This requires updating the MCTS.run_search method!
                 policy_dict, mcts_value = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'], state_sequence=list(state_sequence_queue))
 
                 if not policy_dict: break
@@ -254,14 +257,9 @@ def main():
                 # Update the sequence with the new state resulting from opponent's move
                 new_gnn, new_cnn, _ = convert_to_gnn_input(board, device)
                 state_sequence_queue.append((new_gnn, new_cnn))
-
-            # This part of PGN creation seems to have a bug in the original code.
-            # `node` was a `Game` object, but `add_variation` returns a `GameNode`.
-            # Let's handle it properly.
-            if isinstance(game, chess.pgn.Game) and game.is_mainline_empty():
-                 game_node = game.add_main_variation(move)
-            else:
-                 game_node = game_node.add_main_variation(move)
+            
+            # Correctly add the move to the PGN. add_main_variation returns the new node.
+            current_node = current_node.add_main_variation(move)
 
 
         result_str = board.result(claim_draw=True)
