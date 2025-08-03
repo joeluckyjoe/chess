@@ -41,9 +41,13 @@ def format_policy_for_training(policy_dict: Dict[chess.Move, float], board: ches
     """Converts the MCTS policy dictionary to a flat tensor for training."""
     policy_tensor = torch.zeros(get_action_space_size())
     for move, prob in policy_dict.items():
-        action_index = move_to_index(move, board)
-        if action_index is not None:
-            policy_tensor[action_index] = prob
+        try:
+            action_index = move_to_index(move, board)
+            if action_index is not None:
+                policy_tensor[action_index] = prob
+        except IndexError:
+            print(f"Warning: IndexError for move {move} skipped in policy formatting.")
+            continue
     return policy_tensor
 
 def prepare_sequence_batch(batch_memory: List[GameStep], device: torch.device):
@@ -128,10 +132,7 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
-    # ADDED THIS DIAGNOSTIC LINE:
-    print(f"--- DIAGNOSTIC ---: Action space size from get_action_space_size() is {get_action_space_size()}")
-
-    # 1. Load the pre-trained GNN+CNN Encoder model
+    # 1. Initialize the Encoder model with the CORRECT action space size
     encoder = EncoderPolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
@@ -144,9 +145,26 @@ def main():
         sys.exit(1)
 
     print(f"Loading pre-trained encoder from: {encoder_checkpoint_path}")
+    
+    # --- CORRECTED CHECKPOINT LOADING LOGIC ---
+    # Load the state dict from the old checkpoint
     encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
-    encoder.load_state_dict(encoder_checkpoint['model_state_dict'])
+    encoder_state_dict = encoder_checkpoint['model_state_dict']
 
+    # Remove the policy head weights, as they have an incompatible shape
+    if 'policy_head.weight' in encoder_state_dict:
+        encoder_state_dict.pop('policy_head.weight')
+        print("INFO: Popped 'policy_head.weight' from checkpoint due to architecture mismatch.")
+    if 'policy_head.bias' in encoder_state_dict:
+        encoder_state_dict.pop('policy_head.bias')
+        print("INFO: Popped 'policy_head.bias' from checkpoint due to architecture mismatch.")
+    
+    # Load the remaining weights. `strict=False` allows us to load a dict with missing keys.
+    encoder.load_state_dict(encoder_state_dict, strict=False)
+    print("INFO: Successfully loaded compatible weights from encoder checkpoint.")
+
+
+    # 2. Initialize the main Temporal model, using the loaded encoder
     model = TemporalPolicyValueModel(
         encoder_model=encoder,
         d_model=config_params['EMBED_DIM']
@@ -154,6 +172,7 @@ def main():
 
     optimizer = optim.AdamW(model.parameters(), lr=config_params['LEARNING_RATE'], weight_decay=config_params['WEIGHT_DECAY'])
 
+    # 3. Load checkpoint for the new Temporal model if provided
     start_game = 0
     if args.checkpoint:
         checkpoint_path = Path(args.checkpoint)
