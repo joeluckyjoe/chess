@@ -17,7 +17,6 @@ config_params = {
     "BATCH_SIZE": 256, # Number of game states to use for a single training update
 
     # -- Stockfish Opponent Settings --
-    # MODIFIED: Increasing ELO to challenge the agent's passive strategies.
     "STOCKFISH_ELO": 1000,
     "STOCKFISH_DEPTH": 5,
 
@@ -31,7 +30,8 @@ config_params = {
     "GNN_NUM_HEADS": 4, # Number of attention heads in the GNN
 
     # -- Optimizer & Learning Rate --
-    "LEARNING_RATE": 0.0001,
+    # MODIFIED: Significantly lowered learning rate to stabilize the value function.
+    "LEARNING_RATE": 0.00002,
     "WEIGHT_DECAY": 0.0001,
 }
 
