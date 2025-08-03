@@ -22,7 +22,8 @@ config_params = {
     "STOCKFISH_DEPTH": 5,
 
     # -- MCTS Settings --
-    "MCTS_SIMULATIONS": 200, # Number of simulations per move search
+    # MODIFIED: Increased simulations for a deeper search.
+    "MCTS_SIMULATIONS": 300,
     "CPUCT": 4.0, # Exploration-exploitation trade-off in PUCT formula
 
     # -- Neural Network Architecture --
