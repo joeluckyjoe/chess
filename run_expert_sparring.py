@@ -51,28 +51,19 @@ def prepare_sequence_batch(batch_memory: List[GameStep], device: torch.device):
     Prepares a batch of sequences for the TemporalPolicyValueModel.
     This is the most complex data preparation step in the project.
     """
-    # Each item in batch_memory contains a `state_sequence` of 8 (gnn_data, cnn_tensor) tuples.
-    # We need to disentangle these into two main structures:
-    # 1. A single giant Batch object for all GNN data across all sequences in the batch.
-    # 2. A single tensor for all CNN data: [batch_size, seq_len, channels, height, width]
-
     batch_size = len(batch_memory)
     all_gnn_data = []
     cnn_sequences = []
 
     for step in batch_memory:
-        # step['state_sequence'] is a list of 8 (gnn_data, cnn_tensor) tuples
         gnn_sequence_for_step = [s[0] for s in step['state_sequence']]
         cnn_sequence_for_step = [s[1] for s in step['state_sequence']]
 
         all_gnn_data.extend(gnn_sequence_for_step)
-        cnn_sequences.append(torch.stack(cnn_sequence_for_step)) # Shape: [seq_len, C, H, W]
+        cnn_sequences.append(torch.stack(cnn_sequence_for_step))
 
-    # Create one large GNN batch. The model's forward pass will need to handle this.
     gnn_batch = Batch.from_data_list(all_gnn_data).to(device)
-
-    # Stack the CNN sequences to get the final batch tensor
-    cnn_batch = torch.stack(cnn_sequences).to(device) # Shape: [batch_size, seq_len, C, H, W]
+    cnn_batch = torch.stack(cnn_sequences).to(device)
 
     target_policies = torch.stack([item['policy'] for item in batch_memory]).to(device)
     target_values = torch.stack([item['value_target'] for item in batch_memory]).to(device)
@@ -86,7 +77,6 @@ def train_on_game(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, g
         return 0.0, 0.0
 
     model.train()
-    # Ensure the encoder part remains in eval mode
     model.encoder.eval()
 
     total_policy_loss, total_value_loss = 0, 0
@@ -95,20 +85,22 @@ def train_on_game(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, g
     num_batches = (len(game_memory) + batch_size - 1) // batch_size
 
     for i in tqdm(range(num_batches), desc="Training on game batches", leave=False):
-        batch_memory = game_memory[i * batch_size : (i + 1) * batch_size]
-        if not batch_memory:
+        batch_memory_slice = game_memory[i * batch_size : (i + 1) * batch_size]
+        if not batch_memory_slice:
             continue
 
-        gnn_batch, cnn_batch, target_policies, target_values = prepare_sequence_batch(batch_memory, device)
+        gnn_batch, cnn_batch, target_policies, target_values = prepare_sequence_batch(batch_memory_slice, device)
 
         optimizer.zero_grad()
 
-        # The model's forward pass expects the prepared batches.
-        # NOTE: This requires a corresponding update in the TemporalPolicyValueModel's forward pass.
         policy_logits, value_preds = model(gnn_batch, cnn_batch)
 
-        policy_loss = torch.nn.functional.cross_entropy(policy_logits, target_policies)
-        value_loss = torch.nn.functional.mse_loss(value_preds, target_values)
+        # --- CORRECTED LOSS CALCULATION ---
+        # The MCTS provides a probability distribution (soft labels), not a single class index.
+        # The standard cross_entropy function expects a 1D tensor of class indices.
+        # To train on the probability distribution, we manually compute the cross-entropy.
+        policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
+        value_loss = torch.nn.functional.mse_loss(value_preds.squeeze(-1), target_values.squeeze(-1))
         total_loss = policy_loss + value_loss
 
         total_loss.backward()
@@ -140,7 +132,6 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
-    # 1. Load the pre-trained GNN+CNN Encoder model
     encoder = EncoderPolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
@@ -156,17 +147,13 @@ def main():
     encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
     encoder.load_state_dict(encoder_checkpoint['model_state_dict'])
 
-    # 2. Initialize the main Temporal model, using the loaded encoder
     model = TemporalPolicyValueModel(
         encoder_model=encoder,
         d_model=config_params['EMBED_DIM']
     ).to(device)
 
-    # The optimizer will only train the new parts (Transformer + heads) because the
-    # TemporalPolicyValueModel's __init__ freezes the encoder's parameters.
     optimizer = optim.AdamW(model.parameters(), lr=config_params['LEARNING_RATE'], weight_decay=config_params['WEIGHT_DECAY'])
 
-    # 3. Load checkpoint for the new Temporal model if provided
     start_game = 0
     if args.checkpoint:
         checkpoint_path = Path(args.checkpoint)
@@ -182,11 +169,10 @@ def main():
     else:
         print("No temporal checkpoint provided. Starting fresh.")
 
-    # MCTS now uses the new temporal model
-    mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['BATCH_SIZE'])
+    mcts_player = MCTS(network=model, device=device, c_puct=config_params['CPUCT'], batch_size=config_params['MCTS_BATCH_SIZE'])
 
     try:
-        stockfish_params = {"Skill Level": config_params.get('STOCKFISH_ELO', 800)}
+        stockfish_params = {"Skill Level": config_params.get('STOCKFISH_ELO', 1400)}
         stockfish_opponent = Stockfish(path=config_params['STOCKFISH_PATH'], parameters=stockfish_params)
         stockfish_depth = config_params.get('STOCKFISH_DEPTH', 5)
         print(f"Initialized Stockfish with Elo: {stockfish_params['Skill Level']} and Depth: {stockfish_depth}")
@@ -198,16 +184,14 @@ def main():
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         print(f"\n--- Starting Game {game_num}/{config_params['TOTAL_GAMES']} ---")
         board = chess.Board()
-        game_memory: List[Dict] = []
+        game_memory: List[GameStep] = []
         agent_is_white = (game_num % 2 == 1)
         print(f"Agent is playing as {'WHITE' if agent_is_white else 'BLACK'}")
 
-        # Initialize the state sequence queue
         initial_gnn, initial_cnn, _ = convert_to_gnn_input(chess.Board(), device)
         initial_state_tuple = (initial_gnn, initial_cnn)
         state_sequence_queue = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
 
-        # Correctly initialize the PGN game object and the current node
         game = chess.pgn.Game()
         game.headers["Event"] = "Phase D Temporal Sparring"
         game.headers["Site"] = "Colab Environment"
@@ -215,13 +199,12 @@ def main():
         game.headers["Round"] = str(game_num)
         game.headers["White"] = "Agent" if agent_is_white else "Stockfish"
         game.headers["Black"] = "Stockfish" if agent_is_white else "Agent"
-        current_node = game # The current node starts at the root of the game
+        current_node = game
 
         while not board.is_game_over(claim_draw=True):
             is_agent_turn = (board.turn == chess.WHITE and agent_is_white) or (board.turn == chess.BLACK and not agent_is_white)
 
             if is_agent_turn:
-                # The MCTS now needs the full sequence of states
                 policy_dict, mcts_value = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'], state_sequence=list(state_sequence_queue))
 
                 if not policy_dict: break
@@ -230,7 +213,6 @@ def main():
                 policy_tensor = format_policy_for_training(policy_dict, board)
                 value_target_tensor = torch.tensor([mcts_value], dtype=torch.float32)
                 
-                # Store the state sequence that *led* to this move
                 game_memory.append({
                     "state_sequence": list(state_sequence_queue),
                     "policy": policy_tensor,
@@ -241,7 +223,6 @@ def main():
                 print(f"Agent plays: {san_move} (MCTS Value: {mcts_value:.4f})")
                 board.push(move)
 
-                # Update the sequence with the new state
                 new_gnn, new_cnn, _ = convert_to_gnn_input(board, device)
                 state_sequence_queue.append((new_gnn, new_cnn))
             else:
@@ -254,13 +235,10 @@ def main():
                 print(f"Stockfish plays: {san_move}")
                 board.push(move)
 
-                # Update the sequence with the new state resulting from opponent's move
                 new_gnn, new_cnn, _ = convert_to_gnn_input(board, device)
                 state_sequence_queue.append((new_gnn, new_cnn))
             
-            # Correctly add the move to the PGN. add_main_variation returns the new node.
             current_node = current_node.add_main_variation(move)
-
 
         result_str = board.result(claim_draw=True)
         game.headers["Result"] = result_str
