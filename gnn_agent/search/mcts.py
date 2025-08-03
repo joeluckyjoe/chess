@@ -2,18 +2,18 @@
 import torch
 import chess
 import numpy as np
-from typing import Dict, Tuple, Deque, Union
+from typing import Dict, Tuple, Deque, Union, List
 import collections
 
 from torch_geometric.data import Batch
 from ..gamestate_converters.action_space_converter import move_to_index
 from ..gamestate_converters.gnn_data_converter import convert_to_gnn_input
-from ..neural_network.policy_value_model import PolicyValueModel
+from ..neural_network.temporal_model import TemporalPolicyValueModel
 from .mcts_node import MCTSNode
 
 
 class MCTS:
-    def __init__(self, network: PolicyValueModel, device: torch.device,
+    def __init__(self, network: TemporalPolicyValueModel, device: torch.device,
                  batch_size: int, c_puct: float = 1.41,
                  dirichlet_alpha: float = 0.3, dirichlet_epsilon: float = 0.25):
         self.network = network
@@ -48,7 +48,11 @@ class MCTS:
         batched_gnn_data = Batch.from_data_list(list(gnn_data_list)).to(self.device)
         batched_cnn_data = torch.stack(cnn_data_list, 0).to(self.device)
 
-        policy_logits_batch, value_batch = self.network(batched_gnn_data, batched_cnn_data)
+        # --- MODIFIED FOR PHASE D ---
+        # For leaf nodes found during search, we do NOT have a sequence history.
+        # Therefore, we use the stateless ENCODER model for evaluation. This provides
+        # the positional evaluation needed to guide the search from that leaf.
+        policy_logits_batch, value_batch, _ = self.network.encoder(batched_gnn_data, batched_cnn_data)
         policy_probs_batch = torch.softmax(policy_logits_batch, dim=1)
 
         for i, node in enumerate(nodes_to_process):
@@ -81,15 +85,23 @@ class MCTS:
             child.P = noisy_priors[i]
 
     @torch.no_grad()
-    # --- MODIFIED: The function now returns the policy and the MCTS-derived value ---
-    def run_search(self, board: chess.Board, num_simulations: int) -> Tuple[Dict[chess.Move, float], float]:
+    def run_search(self, board: chess.Board, num_simulations: int, state_sequence: List[tuple]) -> Tuple[Dict[chess.Move, float], float]:
+        """
+        Run MCTS search from the root board state using sequence context.
+        """
         self.root = MCTSNode(parent=None, prior_p=1.0, board_turn_at_node=board.turn)
 
         if not board.is_game_over():
-            gnn_data, cnn_data, _ = convert_to_gnn_input(board, self.device)
-            gnn_batch = Batch.from_data_list([gnn_data])
-            cnn_batch = cnn_data.unsqueeze(0)
+            # --- MODIFIED FOR PHASE D ---
+            # The root evaluation is context-aware. It uses the full Temporal model
+            # with the sequence of historical states.
+            gnn_data_list = [s[0] for s in state_sequence]
+            cnn_tensor_list = [s[1] for s in state_sequence]
             
+            gnn_batch = Batch.from_data_list(gnn_data_list).to(self.device)
+            # Create a batch of 1 sequence: [1, seq_len, C, H, W]
+            cnn_batch = torch.stack(cnn_tensor_list).unsqueeze(0).to(self.device)
+
             policy_logits, value = self.network(gnn_batch, cnn_batch)
             
             policy_probs = torch.softmax(policy_logits, dim=1).squeeze(0)
@@ -122,11 +134,9 @@ class MCTS:
                 else:
                     outcome = sim_board.outcome()
                     term_value = 0.0
-                    if outcome:
-                        winner = outcome.winner
-                        if winner is not None:
-                            player_at_leaf = current_node.board_turn_at_node
-                            term_value = 1.0 if winner == player_at_leaf else -1.0
+                    if outcome and outcome.winner is not None:
+                        player_at_leaf = current_node.board_turn_at_node
+                        term_value = 1.0 if outcome.winner == player_at_leaf else -1.0
                     self._backpropagate(current_node, term_value)
             
             self._expand_and_evaluate_batch()
@@ -137,13 +147,11 @@ class MCTS:
 
         total_visits = sum(child.N for child in self.root.children.values())
         policy = {move: child.N / total_visits for move, child in self.root.children.items()} if total_visits > 0 else {}
-        
-        # --- NEW: Calculate the MCTS-derived value of the root state ---
         mcts_value = self.root.Q / self.root.N if self.root.N > 0 else 0.0
 
         return policy, mcts_value
 
-    def select_move(self, policy: Dict[chess.Move, float], temperature: float) -> chess.Move:
+    def select_move(self, policy: Dict[chess.Move, float], temperature: float) -> Union[chess.Move, None]:
         if not policy: return None
         moves = list(policy.keys())
         visit_counts = np.array([policy[m] for m in moves])
