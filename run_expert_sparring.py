@@ -1,3 +1,5 @@
+# run_expert_sparring.py
+
 import torch
 import torch.optim as optim
 import argparse
@@ -146,12 +148,9 @@ def main():
 
     print(f"Loading pre-trained encoder from: {encoder_checkpoint_path}")
     
-    # --- CORRECTED CHECKPOINT LOADING LOGIC ---
-    # Load the state dict from the old checkpoint
     encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
     encoder_state_dict = encoder_checkpoint['model_state_dict']
 
-    # Remove the policy head weights, as they have an incompatible shape
     if 'policy_head.weight' in encoder_state_dict:
         encoder_state_dict.pop('policy_head.weight')
         print("INFO: Popped 'policy_head.weight' from checkpoint due to architecture mismatch.")
@@ -159,7 +158,6 @@ def main():
         encoder_state_dict.pop('policy_head.bias')
         print("INFO: Popped 'policy_head.bias' from checkpoint due to architecture mismatch.")
     
-    # Load the remaining weights. `strict=False` allows us to load a dict with missing keys.
     encoder.load_state_dict(encoder_state_dict, strict=False)
     print("INFO: Successfully loaded compatible weights from encoder checkpoint.")
 
@@ -167,6 +165,7 @@ def main():
     # 2. Initialize the main Temporal model, using the loaded encoder
     model = TemporalPolicyValueModel(
         encoder_model=encoder,
+        policy_size=get_action_space_size(), # Pass the correct policy size
         d_model=config_params['EMBED_DIM']
     ).to(device)
 

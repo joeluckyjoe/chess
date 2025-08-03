@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch_geometric.data import Batch
 
 from .policy_value_model import PolicyValueModel
+from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
 
 class PositionalEncoding(nn.Module):
     """
@@ -39,7 +40,7 @@ class TemporalPolicyValueModel(nn.Module):
     The main model for Phase D, combining a GNN+CNN encoder with a Transformer
     to process sequences of board states.
     """
-    def __init__(self, encoder_model: PolicyValueModel, d_model: int = 512, nhead: int = 8, num_layers: int = 3, dim_feedforward: int = 2048, dropout: float = 0.1):
+    def __init__(self, encoder_model: PolicyValueModel, policy_size: int, d_model: int = 512, nhead: int = 8, num_layers: int = 3, dim_feedforward: int = 2048, dropout: float = 0.1):
         super().__init__()
         self.d_model = d_model
 
@@ -64,8 +65,8 @@ class TemporalPolicyValueModel(nn.Module):
             num_layers=num_layers
         )
 
-        # 4. Policy and Value Heads
-        self.policy_head = nn.Linear(d_model, 1880)
+        # 4. Policy and Value Heads (Correctly Sized)
+        self.policy_head = nn.Linear(d_model, policy_size)
         self.value_head = nn.Linear(d_model, 1)
 
     def forward(self, gnn_batch: Batch, cnn_batch: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
