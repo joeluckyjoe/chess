@@ -61,7 +61,6 @@ def load_player(player_string: str, device: torch.device):
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model_state_dict = checkpoint['model_state_dict']
 
-        # Determine model type by inspecting the checkpoint keys
         is_temporal = any(key.startswith('transformer_encoder') for key in model_state_dict.keys())
 
         if is_temporal:
@@ -107,13 +106,11 @@ def get_move(player, board: chess.Board, num_simulations: int, device: torch.dev
         return chess.Move.from_uci(best_move_uci) if best_move_uci else None
         
     elif isinstance(player, MCTS):
-        state_sequence = None
-        if isinstance(player.network, TemporalPolicyValueModel):
-            # For simplicity in eval, we create a dummy sequence queue on the fly for each move
-            initial_gnn, initial_cnn, _ = convert_to_gnn_input(chess.Board(), device)
-            state_sequence_queue = deque([(initial_gnn, initial_cnn)] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
-            # This is a simplification; a more rigorous eval could track the real history
-            state_sequence = list(state_sequence_queue)
+        # The MCTS search was updated to always require a state_sequence.
+        # We will provide a dummy sequence for both model types. The GNN model will ignore it.
+        initial_gnn, initial_cnn, _ = convert_to_gnn_input(chess.Board(), device)
+        state_sequence_queue = deque([(initial_gnn, initial_cnn)] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
+        state_sequence = list(state_sequence_queue)
 
         policy, _ = player.run_search(board, num_simulations, state_sequence=state_sequence)
         return player.select_move(policy, temperature=0.0)
