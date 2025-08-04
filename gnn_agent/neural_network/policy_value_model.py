@@ -1,7 +1,9 @@
+# gnn_agent/neural_network/policy_value_model.py
+
 import torch
 import torch.nn as nn
 from torch_geometric.data import Batch
-from typing import Tuple
+from typing import Tuple, Union
 
 # Project-specific imports
 from .unified_gnn import UnifiedGNN
@@ -9,8 +11,7 @@ from .cnn_model import CNNModel
 
 class PolicyValueModel(nn.Module):
     """
-    A GNN+CNN hybrid model for chess that outputs a policy, a value, and a final embedding.
-    This is the core architecture used as a feature encoder for Phase D.
+    A GNN+CNN hybrid model for chess that outputs a policy, a value, and an embedding.
     """
     def __init__(self,
                  gnn_hidden_dim: int,
@@ -35,19 +36,18 @@ class PolicyValueModel(nn.Module):
         self.policy_head = nn.Linear(embed_dim, policy_size)
         self.value_head = nn.Linear(embed_dim, 1)
 
-    def forward(self, gnn_batch: Batch, cnn_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(self, gnn_batch: Batch, cnn_tensor: torch.Tensor, return_embeddings: bool = False) -> Union[Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         """
         Performs a forward pass through the network.
         
         Args:
             gnn_batch: A PyTorch Geometric Batch object for the GNN.
             cnn_tensor: A tensor of shape (batch_size, channels, 8, 8) for the CNN.
+            return_embeddings: If True, returns the raw GNN node embeddings instead of the final board embedding.
 
         Returns:
-            A tuple containing:
-            - policy_logits (torch.Tensor): Raw scores for each possible move.
-            - value (torch.Tensor): The evaluation of the board state, from -1 to 1.
-            - final_embedding (torch.Tensor): The processed embedding representing the board state.
+            - (policy_logits, value, final_embedding) if return_embeddings is False.
+            - (policy_logits, value, gnn_node_embeddings) if return_embeddings is True.
         """
         batch_size = cnn_tensor.size(0)
         
@@ -67,4 +67,7 @@ class PolicyValueModel(nn.Module):
         policy_logits = self.policy_head(final_embedding)
         value = torch.tanh(self.value_head(final_embedding))
         
-        return policy_logits, value, final_embedding
+        if return_embeddings:
+            return policy_logits, value, gnn_out
+        else:
+            return policy_logits, value, final_embedding

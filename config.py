@@ -3,7 +3,7 @@ from pathlib import Path
 from collections import namedtuple
 
 # =================================================================
-# 1. Hyperparameter Configuration (Phase C: Expert Sparring)
+# 1. Hyperparameter Configuration (Phase D: Fine-Tuning)
 # =================================================================
 
 config_params = {
@@ -17,7 +17,6 @@ config_params = {
     "BATCH_SIZE": 256, # Number of game states to use for a single training update
 
     # -- Stockfish Opponent Settings --
-    # MODIFIED: Increasing ELO to the strong tournament player level.
     "STOCKFISH_ELO": 1600,
     "STOCKFISH_DEPTH": 5,
 
@@ -31,8 +30,12 @@ config_params = {
     "GNN_NUM_HEADS": 4, # Number of attention heads in the GNN
 
     # -- Optimizer & Learning Rate --
-    "LEARNING_RATE": 0.00002,
+    # <<< MODIFIED: Reduced learning rate for fine-tuning.
+    "LEARNING_RATE": 0.000002,
     "WEIGHT_DECAY": 0.0001,
+
+    # <<< ADDED: Flag to control the fine-tuning behavior.
+    "FINE_TUNE_ENCODER": True,
 }
 
 

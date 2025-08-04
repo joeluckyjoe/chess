@@ -1,7 +1,10 @@
+# visualization/visualize_gnn_reasoning.py
+
 import argparse
 import chess
 import chess.pgn
 import torch
+import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
 from torch_geometric.data import Batch
@@ -13,82 +16,99 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from gnn_agent.neural_network.policy_value_model import PolicyValueModel
-from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input, CNN_INPUT_CHANNELS
+from gnn_agent.neural_network.temporal_model import TemporalPolicyValueModel
+from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
+from config import config_params
+from hardware_setup import get_device
 
-def load_model(checkpoint_path, device):
-    """Loads the PolicyValueModel from a checkpoint file."""
-    model_params = {
-        'gnn_hidden_dim': 128,
-        'cnn_in_channels': CNN_INPUT_CHANNELS,
-        'embed_dim': 256,
-        'policy_size': get_action_space_size(),
-        'gnn_num_heads': 4,
-        'gnn_metadata': (
-            ['square', 'piece'],
-            [
-                ('square', 'adjacent_to', 'square'),
-                ('piece', 'occupies', 'square'),
-                ('piece', 'attacks', 'piece'),
-                ('piece', 'defends', 'piece')
-            ]
-        )
-    }
-    
-    model = PolicyValueModel(**model_params)
+GNN_METADATA = (
+    ['square', 'piece'],
+    [('square', 'adjacent_to', 'square'), ('piece', 'occupies', 'square'),
+     ('piece', 'attacks', 'piece'), ('piece', 'defends', 'piece')]
+)
+
+def load_model(checkpoint_path_str: str, device: torch.device) -> nn.Module:
+    checkpoint_path = Path(checkpoint_path_str)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found at {checkpoint_path}")
+
+    print(f"Loading model from {checkpoint_path}...")
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    model_state_dict = checkpoint.get('model_state_dict', checkpoint)
     
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        print("Detected a full training checkpoint. Loading 'model_state_dict'.")
-        model.load_state_dict(checkpoint['model_state_dict'])
+    is_temporal = any(key.startswith('transformer_encoder') for key in model_state_dict.keys())
+
+    if is_temporal:
+        print("Detected Temporal Model.")
+        encoder_model = PolicyValueModel(
+            gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
+            embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
+            gnn_num_heads=config_params['GNN_NUM_HEADS'], gnn_metadata=GNN_METADATA
+        )
+        model = TemporalPolicyValueModel(
+            encoder_model=encoder_model,
+            policy_size=get_action_space_size(),
+            d_model=config_params['EMBED_DIM']
+        ).to(device)
     else:
-        print("Detected a raw state_dict file. Loading directly.")
-        model.load_state_dict(checkpoint)
-    
-    model.to(device)
+        print("Detected GNN Model.")
+        model = PolicyValueModel(
+            gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
+            embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
+            gnn_num_heads=config_params['GNN_NUM_HEADS'], gnn_metadata=GNN_METADATA
+        ).to(device)
+        
+    model.load_state_dict(model_state_dict)
     model.eval()
-    print(f"Model loaded from {checkpoint_path} and set to evaluation mode.")
+    print("Model loaded successfully and set to evaluation mode.")
     return model
 
-def get_board_at_move(pgn_path, move_number):
-    """Parses a PGN file and returns the board state *before* a specific move number."""
+def get_board_from_pgn(pgn_path, move_number):
     with open(pgn_path) as pgn_file:
         game = chess.pgn.read_game(pgn_file)
     if not game:
-        return None, None, None
+        return None, None, None, None
+
+    # We need to find the node corresponding to the position *before* the move number
+    # A full move number (e.g., 5) corresponds to 2 plies (half-moves)
+    target_ply = (move_number - 1) * 2
     
     node = game
-    for _ in range(move_number - 1):
-        if node.next():
-            node = node.next()
-        else:
-            return None, None, None
+    for i in range(target_ply):
+        if node.is_end(): return None, None, None, None
+        node = node.next()
     
-    return game, node.board(), node.next().move if node.next() else None
+    board = node.board()
+    
+    if node.is_end():
+        return None, None, None, None
 
-# --- FIX: Added 'game' object to the function signature ---
-def visualize_reasoning(model, board, move, device, move_number, checkpoint_path, game):
-    """Main function to perform model inference and generate visualizations."""
-    if move is None:
-        print(f"Error: Could not find move {move_number} in PGN.")
-        return
-        
-    print(f"\n--- Analyzing Board State Before Move {move_number}: {board.san(move)} ---")
-    print(f"--- Board FEN: {board.fen()} ---")
+    move = node.next().move
+    move_san = board.san(move)
+    title = f"GNN Node Importance\nGame: {Path(pgn_path).name}, Before Move {move_number}: {move_san}"
+    filename_suffix = f"gm{game.headers.get('Round', 'NA')}_mv{move_number}"
+    return board, title, filename_suffix, move
+
+def visualize_reasoning(model, board, device, title, checkpoint_path, filename_suffix):
+    print(f"\n--- Analyzing Board State ---")
+    print(f"--- FEN: {board.fen()} ---")
 
     gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
     gnn_batch = Batch.from_data_list([gnn_data])
     cnn_tensor_batch = cnn_tensor.unsqueeze(0)
 
     with torch.no_grad():
-        _, _, gnn_node_embeddings = model(gnn_batch, cnn_tensor_batch, return_embeddings=True)
+        model_to_call = model.encoder if isinstance(model, TemporalPolicyValueModel) else model
+        _, _, gnn_node_embeddings = model_to_call(gnn_batch, cnn_tensor_batch, return_embeddings=True)
 
     node_importance = torch.norm(gnn_node_embeddings, p=2, dim=1).cpu().numpy()
     
-    if node_importance.max() > 0:
-        normalized_importance = node_importance / node_importance.max()
-    else:
+    if node_importance.max() == 0:
+        print("Warning: GNN node embeddings are all zero.")
         normalized_importance = np.zeros_like(node_importance)
+    else:
+        normalized_importance = node_importance / node_importance.max()
 
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.set_xlim(0, 8); ax.set_ylim(0, 8); ax.set_aspect('equal')
@@ -105,10 +125,8 @@ def visualize_reasoning(model, board, move, device, move_number, checkpoint_path
         
         if importance > 0.01:
             circle = plt.Circle((file + 0.5, rank + 0.5), 
-                                radius=importance * 0.45,
-                                color='#c23b22', 
-                                alpha=max(0.1, importance * 0.7),
-                                zorder=1)
+                                radius=importance * 0.45, color='#c23b22', 
+                                alpha=max(0.1, importance * 0.7), zorder=1)
             ax.add_patch(circle)
             
         piece = board.piece_at(square_index)
@@ -119,43 +137,50 @@ def visualize_reasoning(model, board, move, device, move_number, checkpoint_path
     ax.set_xticks(np.arange(8) + 0.5, labels=['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'])
     ax.set_yticks(np.arange(8) + 0.5, labels=list('87654321'))
     
-    plt.title(f"GNN Node Importance Before Move {move_number}: {board.san(move)}", fontsize=16)
+    plt.title(title, fontsize=14)
     
     checkpoint_name = Path(checkpoint_path).stem
-    san_move_str = board.san(move).replace('+', 'x').replace('#', 'm')
-    
     output_dir = Path(__file__).resolve().parent
-    output_filename = output_dir / f"analysis_{checkpoint_name}_gm{game.headers.get('Round', 'N_A')}_mv{move_number}.png"
+    output_filename = output_dir / f"analysis_{checkpoint_name}_{filename_suffix}.png"
     
     plt.savefig(output_filename, bbox_inches='tight')
     print(f"\nVisualization saved to {output_filename}")
     plt.close()
 
-
 def main():
-    parser = argparse.ArgumentParser(description="Visualize GNN reasoning for a specific chess move.")
+    parser = argparse.ArgumentParser(description="Visualize GNN reasoning for a specific chess position.")
     parser.add_argument('--checkpoint', type=str, required=True, help="Path to the model checkpoint file.")
-    parser.add_argument('--pgn', type=str, required=True, help="Path to the PGN file of the game to analyze.")
-    parser.add_argument('--move-number', type=int, required=True, help="The (half) move number in the PGN to analyze.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--fen', type=str, help="FEN string of the board position to analyze.")
+    group.add_argument('--pgn', type=str, help="Path to the PGN file of the game to analyze.")
+    parser.add_argument('--move-number', type=int, help="The full move number in the PGN to analyze (requires --pgn).")
     
     args = parser.parse_args()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    if args.pgn and args.move_number is None:
+        parser.error("--move-number is required when using --pgn.")
+
+    device = get_device()
     print(f"Using device: {device}")
 
     try:
         model = load_model(args.checkpoint, device)
-        game, board, move = get_board_at_move(args.pgn, args.move_number)
-    
-        if board and move:
-            # --- FIX: Pass the 'game' object to the visualization function ---
-            visualize_reasoning(model, board, move, device, args.move_number, args.checkpoint, game)
+        
+        if args.fen:
+            board = chess.Board(args.fen)
+            title = f"GNN Node Importance\nFEN: {args.fen}"
+            filename_suffix = "from_fen"
         else:
-            print(f"Could not reach move number {args.move_number} in the PGN file.")
-    except FileNotFoundError as e:
-        print(f"ERROR: File not found. Please check your paths. Details: {e}")
+            board, title, filename_suffix, _ = get_board_from_pgn(args.pgn, args.move_number)
+            if board is None:
+                raise ValueError(f"Could not reach move number {args.move_number} in the PGN file.")
+    
+        visualize_reasoning(model, board, device, title, args.checkpoint, filename_suffix)
+
+    except (FileNotFoundError, ValueError) as e:
+        print(f"ERROR: {e}")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
-
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,3 @@
-# run_expert_sparring.py
-
 import torch
 import torch.optim as optim
 import argparse
@@ -19,7 +17,6 @@ from collections import deque
 from config import get_paths, config_params
 
 # --- Project-specific Imports ---
-# Import the original model as an encoder and the new temporal model
 from gnn_agent.neural_network.policy_value_model import PolicyValueModel as EncoderPolicyValueModel
 from gnn_agent.neural_network.temporal_model import TemporalPolicyValueModel
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size, move_to_index
@@ -32,7 +29,7 @@ SEQUENCE_LENGTH = 8 # As defined in the Global Plan
 
 # --- Type Hint for Game Memory ---
 class GameStep(TypedDict):
-    state_sequence: List[object] # Stores the sequence of (gnn_data, cnn_tensor) tuples
+    state_sequence: List[object]
     policy: torch.Tensor
     value_target: torch.Tensor
 
@@ -40,7 +37,6 @@ class GameStep(TypedDict):
 GNN_METADATA = (['square', 'piece'],[('square', 'adjacent_to', 'square'), ('piece', 'occupies', 'square'), ('piece', 'attacks', 'piece'), ('piece', 'defends', 'piece')])
 
 def format_policy_for_training(policy_dict: Dict[chess.Move, float], board: chess.Board) -> torch.Tensor:
-    """Converts the MCTS policy dictionary to a flat tensor for training."""
     policy_tensor = torch.zeros(get_action_space_size())
     for move, prob in policy_dict.items():
         try:
@@ -53,10 +49,6 @@ def format_policy_for_training(policy_dict: Dict[chess.Move, float], board: ches
     return policy_tensor
 
 def prepare_sequence_batch(batch_memory: List[GameStep], device: torch.device):
-    """
-    Prepares a batch of sequences for the TemporalPolicyValueModel.
-    This is the most complex data preparation step in the project.
-    """
     batch_size = len(batch_memory)
     all_gnn_data = []
     cnn_sequences = []
@@ -82,8 +74,12 @@ def train_on_game(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, g
     if not game_memory:
         return 0.0, 0.0
 
-    model.train()
-    model.encoder.eval()
+    model.train() # This puts the entire model, including encoder, in training mode.
+
+    # <<< MODIFIED: Conditionally set encoder back to eval() mode only if not fine-tuning.
+    # This is the key change for the training loop.
+    if not config_params.get('FINE_TUNE_ENCODER', False):
+        model.encoder.eval()
 
     total_policy_loss, total_value_loss = 0, 0
     np.random.shuffle(game_memory)
@@ -98,7 +94,6 @@ def train_on_game(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, g
         gnn_batch, cnn_batch, target_policies, target_values = prepare_sequence_batch(batch_memory_slice, device)
 
         optimizer.zero_grad()
-
         policy_logits, value_preds = model(gnn_batch, cnn_batch)
 
         policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
@@ -114,7 +109,6 @@ def train_on_game(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, g
     return total_policy_loss / num_batches, total_value_loss / num_batches
 
 def save_checkpoint(model: TemporalPolicyValueModel, optimizer: optim.Optimizer, game_number: int, directory: Path):
-    """Saves a training checkpoint."""
     checkpoint_path = directory / f"temporal_checkpoint_game_{game_number}.pth.tar"
     torch.save({
         'game_number': game_number,
@@ -124,7 +118,6 @@ def save_checkpoint(model: TemporalPolicyValueModel, optimizer: optim.Optimizer,
     print(f"Checkpoint saved to {checkpoint_path}")
 
 def main():
-    """Main execution function for the Phase D Temporal Transformer training loop."""
     parser = argparse.ArgumentParser(description="Run the Phase D training loop with a Temporal Transformer.")
     parser.add_argument('--encoder_checkpoint', type=str, required=True, help="Path to a PRE-TRAINED ENCODER model from Phase C.")
     parser.add_argument('--checkpoint', type=str, default=None, help="Path to a TEMPORAL model checkpoint to continue training.")
@@ -134,7 +127,6 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
-    # 1. Initialize the Encoder model with the CORRECT action space size
     encoder = EncoderPolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
@@ -143,35 +135,31 @@ def main():
 
     encoder_checkpoint_path = Path(args.encoder_checkpoint)
     if not encoder_checkpoint_path.exists():
-        print(f"[FATAL] Encoder checkpoint not found at {encoder_checkpoint_path}. An encoder is required for Phase D.")
+        print(f"[FATAL] Encoder checkpoint not found at {encoder_checkpoint_path}.")
         sys.exit(1)
 
     print(f"Loading pre-trained encoder from: {encoder_checkpoint_path}")
-    
     encoder_checkpoint = torch.load(encoder_checkpoint_path, map_location=device)
     encoder_state_dict = encoder_checkpoint['model_state_dict']
 
     if 'policy_head.weight' in encoder_state_dict:
         encoder_state_dict.pop('policy_head.weight')
-        print("INFO: Popped 'policy_head.weight' from checkpoint due to architecture mismatch.")
     if 'policy_head.bias' in encoder_state_dict:
         encoder_state_dict.pop('policy_head.bias')
-        print("INFO: Popped 'policy_head.bias' from checkpoint due to architecture mismatch.")
     
     encoder.load_state_dict(encoder_state_dict, strict=False)
     print("INFO: Successfully loaded compatible weights from encoder checkpoint.")
 
-
-    # 2. Initialize the main Temporal model, using the loaded encoder
+    # <<< MODIFIED: Pass the fine_tune_encoder flag from config to the model.
     model = TemporalPolicyValueModel(
         encoder_model=encoder,
-        policy_size=get_action_space_size(), # Pass the correct policy size
-        d_model=config_params['EMBED_DIM']
+        policy_size=get_action_space_size(),
+        d_model=config_params['EMBED_DIM'],
+        fine_tune_encoder=config_params.get('FINE_TUNE_ENCODER', False)
     ).to(device)
 
     optimizer = optim.AdamW(model.parameters(), lr=config_params['LEARNING_RATE'], weight_decay=config_params['WEIGHT_DECAY'])
-
-    # 3. Load checkpoint for the new Temporal model if provided
+    
     start_game = 0
     if args.checkpoint:
         checkpoint_path = Path(args.checkpoint)
@@ -197,7 +185,11 @@ def main():
     except Exception as e:
         print(f"[FATAL] Could not initialize the Stockfish engine: {e}"); sys.exit(1)
 
+    # ... (The rest of the main loop is unchanged) ...
     print("\n" + "#"*60 + "\n--- Phase D: Temporal Transformer Training Begins ---\n" + "#"*60 + "\n")
+    if config_params.get('FINE_TUNE_ENCODER', False):
+        print("--- RUNNING IN FINE-TUNING MODE ---")
+
 
     for game_num in range(start_game + 1, config_params['TOTAL_GAMES'] + 1):
         print(f"\n--- Starting Game {game_num}/{config_params['TOTAL_GAMES']} ---")
@@ -211,7 +203,7 @@ def main():
         state_sequence_queue = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
 
         game = chess.pgn.Game()
-        game.headers["Event"] = "Phase D Temporal Sparring"
+        game.headers["Event"] = "Phase D Temporal Sparring (Fine-Tuning)" if config_params.get('FINE_TUNE_ENCODER', False) else "Phase D Temporal Sparring (Frozen)"
         game.headers["Site"] = "Colab Environment"
         game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
         game.headers["Round"] = str(game_num)
@@ -224,35 +216,24 @@ def main():
 
             if is_agent_turn:
                 policy_dict, mcts_value = mcts_player.run_search(board, config_params['MCTS_SIMULATIONS'], state_sequence=list(state_sequence_queue))
-
                 if not policy_dict: break
-
                 move = mcts_player.select_move(policy_dict, temperature=1.0)
                 policy_tensor = format_policy_for_training(policy_dict, board)
                 value_target_tensor = torch.tensor([mcts_value], dtype=torch.float32)
-                
-                game_memory.append({
-                    "state_sequence": list(state_sequence_queue),
-                    "policy": policy_tensor,
-                    "value_target": value_target_tensor
-                })
-
+                game_memory.append({ "state_sequence": list(state_sequence_queue), "policy": policy_tensor, "value_target": value_target_tensor})
                 san_move = board.san(move)
                 print(f"Agent plays: {san_move} (MCTS Value: {mcts_value:.4f})")
                 board.push(move)
-
                 new_gnn, new_cnn, _ = convert_to_gnn_input(board, device)
                 state_sequence_queue.append((new_gnn, new_cnn))
             else:
                 stockfish_opponent.set_fen_position(board.fen())
                 best_move_uci = stockfish_opponent.get_best_move()
                 if not best_move_uci: break
-
                 move = chess.Move.from_uci(best_move_uci)
                 san_move = board.san(move)
                 print(f"Stockfish plays: {san_move}")
                 board.push(move)
-
                 new_gnn, new_cnn, _ = convert_to_gnn_input(board, device)
                 state_sequence_queue.append((new_gnn, new_cnn))
             
@@ -276,6 +257,7 @@ def main():
             save_checkpoint(model, optimizer, game_num, paths.checkpoints_dir)
 
     print("\n--- Training Run Finished ---")
+
 
 if __name__ == "__main__":
     main()
