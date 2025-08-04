@@ -6,16 +6,19 @@ import chess.pgn
 import argparse
 import sys
 from pathlib import Path
-from stockfish import Stockfish
 import datetime
+from stockfish import Stockfish
+from collections import deque
+from tqdm import tqdm
 
 # --- Project-specific Imports ---
-# Assuming a standard project structure where this script is in the root
 from config import get_paths, config_params
 from hardware_setup import get_device
-from gnn_agent.neural_network.value_next_state_model import ValueNextStateModel
+from gnn_agent.neural_network.policy_value_model import PolicyValueModel
+from gnn_agent.neural_network.temporal_model import TemporalPolicyValueModel
 from gnn_agent.search.mcts import MCTS
 from gnn_agent.gamestate_converters.action_space_converter import get_action_space_size
+from gnn_agent.gamestate_converters.gnn_data_converter import convert_to_gnn_input
 
 # --- GNN Metadata (copied for self-containment) ---
 GNN_METADATA = (
@@ -27,6 +30,7 @@ GNN_METADATA = (
         ('piece', 'defends', 'piece')
     ]
 )
+SEQUENCE_LENGTH = 8
 
 def load_player(player_string: str, device: torch.device):
     """
@@ -34,11 +38,11 @@ def load_player(player_string: str, device: torch.device):
     Returns either a Stockfish instance or an MCTS instance wrapping a loaded model.
     """
     if player_string.lower() == 'stockfish':
-        print(f"Loading player: Stockfish engine...")
+        print("Loading player: Stockfish engine...")
         try:
             stockfish_path = config_params.get('STOCKFISH_PATH', '/usr/games/stockfish')
             player = Stockfish(path=stockfish_path, depth=config_params.get('STOCKFISH_DEPTH_EVAL', 10))
-            return player
+            return player, "Stockfish"
         except Exception as e:
             print(f"[FATAL] Could not initialize Stockfish engine: {e}")
             sys.exit(1)
@@ -46,7 +50,6 @@ def load_player(player_string: str, device: torch.device):
     elif player_string.endswith(('.pth', '.pth.tar')):
         checkpoint_path = Path(player_string)
         if not checkpoint_path.exists():
-            # Try to resolve relative to the checkpoints directory
             paths = get_paths()
             checkpoint_path = paths.checkpoints_dir / player_string
             if not checkpoint_path.exists():
@@ -55,52 +58,64 @@ def load_player(player_string: str, device: torch.device):
 
         print(f"Loading player: Model from checkpoint '{checkpoint_path.name}'...")
         
-        # Instantiate the network architecture
-        model = ValueNextStateModel(
-            gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'],
-            cnn_in_channels=14, 
-            embed_dim=config_params['EMBED_DIM'],
-            policy_size=get_action_space_size(),
-            gnn_num_heads=config_params['GNN_NUM_HEADS'],
-            gnn_metadata=GNN_METADATA
-        ).to(device)
-        
-        # Load the learned weights
-        # Handle both full checkpoints and simple state_dict files
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
+        model_state_dict = checkpoint['model_state_dict']
+
+        # Determine model type by inspecting the checkpoint keys
+        is_temporal = any(key.startswith('transformer_encoder') for key in model_state_dict.keys())
+
+        if is_temporal:
+            print("Detected Temporal Model.")
+            encoder_model = PolicyValueModel(
+                gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
+                embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
+                gnn_num_heads=config_params['GNN_NUM_HEADS'], gnn_metadata=GNN_METADATA
+            )
+            model = TemporalPolicyValueModel(
+                encoder_model=encoder_model,
+                policy_size=get_action_space_size(),
+                d_model=config_params['EMBED_DIM']
+            ).to(device)
         else:
-            model.load_state_dict(checkpoint)
+            print("Detected GNN Model.")
+            model = PolicyValueModel(
+                gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
+                embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
+                gnn_num_heads=config_params['GNN_NUM_HEADS'], gnn_metadata=GNN_METADATA
+            ).to(device)
         
+        model.load_state_dict(model_state_dict)
         model.eval()
 
-        # Wrap the model in an MCTS search object
         mcts_player = MCTS(
-            network=model,
-            device=device,
+            network=model, device=device,
             c_puct=config_params['CPUCT'],
             batch_size=config_params['BATCH_SIZE']
         )
-        return mcts_player
+        return mcts_player, f"Agent ({checkpoint_path.stem})"
     else:
-        print(f"[FATAL] Invalid player specified: '{player_string}'. Must be 'stockfish' or a path to a model checkpoint.")
+        print(f"[FATAL] Invalid player specified: '{player_string}'.")
         sys.exit(1)
 
-def get_move(player, board: chess.Board, num_simulations: int) -> chess.Move:
+def get_move(player, board: chess.Board, num_simulations: int, device: torch.device) -> chess.Move:
     """
     Gets a move from the given player object (either Stockfish or MCTS).
     """
     if isinstance(player, Stockfish):
         player.set_fen_position(board.fen())
         best_move_uci = player.get_best_move()
-        if best_move_uci:
-            return chess.Move.from_uci(best_move_uci)
-        return None # Should not happen unless game is over
+        return chess.Move.from_uci(best_move_uci) if best_move_uci else None
         
     elif isinstance(player, MCTS):
-        policy = player.run_search(board, num_simulations)
-        # For evaluation, we want the best move, so temperature is 0
+        state_sequence = None
+        if isinstance(player.network, TemporalPolicyValueModel):
+            # For simplicity in eval, we create a dummy sequence queue on the fly for each move
+            initial_gnn, initial_cnn, _ = convert_to_gnn_input(chess.Board(), device)
+            state_sequence_queue = deque([(initial_gnn, initial_cnn)] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
+            # This is a simplification; a more rigorous eval could track the real history
+            state_sequence = list(state_sequence_queue)
+
+        policy, _ = player.run_search(board, num_simulations, state_sequence=state_sequence)
         return player.select_move(policy, temperature=0.0)
         
     return None
@@ -109,61 +124,46 @@ def main():
     parser = argparse.ArgumentParser(description="Run an evaluation match between two players.")
     parser.add_argument('--white', type=str, required=True, help="White player: 'stockfish' or path to a model checkpoint.")
     parser.add_argument('--black', type=str, required=True, help="Black player: 'stockfish' or path to a model checkpoint.")
+    parser.add_argument('--games', type=int, default=10, help="Number of games to play.")
     parser.add_argument('--sims', type=int, default=config_params.get('MCTS_SIMULATIONS', 400), help="Number of MCTS simulations for agent players.")
     args = parser.parse_args()
 
     device = get_device()
     print(f"Using device: {device}")
 
-    player_white = load_player(args.white, device)
-    player_black = load_player(args.black, device)
-
-    board = chess.Board()
-    game = chess.pgn.Game()
-    game.headers["Event"] = "Evaluation Match"
-    game.headers["Site"] = "Juprelle, Wallonia, Belgium"
-    game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
-    game.headers["White"] = f"Agent ({Path(args.white).name})" if 'stockfish' not in args.white.lower() else "Stockfish"
-    game.headers["Black"] = f"Agent ({Path(args.black).name})" if 'stockfish' not in args.black.lower() else "Stockfish"
+    player_white, white_name = load_player(args.white, device)
+    player_black, black_name = load_player(args.black, device)
     
-    node = game
+    scores = {"White": 0, "Black": 0, "Draw": 0}
 
     print("\n--- Starting Evaluation Match ---")
-    print(f"White: {game.headers['White']}")
-    print(f"Black: {game.headers['Black']}")
+    print(f"White: {white_name}")
+    print(f"Black: {black_name}")
+    print(f"Games: {args.games}")
     print("-" * 35)
 
-    while not board.is_game_over(claim_draw=True):
-        current_player = player_white if board.turn == chess.WHITE else player_black
-        move = get_move(current_player, board, args.sims)
+    for game_num in tqdm(range(1, args.games + 1), desc="Playing Games"):
+        board = chess.Board()
+        while not board.is_game_over(claim_draw=True):
+            current_player = player_white if board.turn == chess.WHITE else player_black
+            move = get_move(current_player, board, args.sims, device)
+            if move is None: break
+            board.push(move)
 
-        if move is None:
-            print("No move returned, ending game.")
-            break
-        
-        san_move = board.san(move)
-        print(f"{board.fullmove_number}. {'...' if board.turn == chess.BLACK else ''}{san_move}")
-        node = node.add_variation(move)
-        board.push(move)
+        result = board.result(claim_draw=True)
+        if result == "1-0":
+            scores["White"] += 1
+        elif result == "0-1":
+            scores["Black"] += 1
+        else:
+            scores["Draw"] += 1
 
-    result = board.result(claim_draw=True)
-    game.headers["Result"] = result
+    print("\n" + "-" * 35)
+    print("--- Final Score ---")
+    print(f"{white_name} (White): {scores['White']}")
+    print(f"{black_name} (Black): {scores['Black']}")
+    print(f"Draws: {scores['Draw']}")
     print("-" * 35)
-    print(f"Game Over. Result: {result}")
-    print("-" * 35)
-
-    # Save the PGN
-    paths = get_paths()
-    white_name = Path(args.white).stem if 'stockfish' not in args.white.lower() else "stockfish"
-    black_name = Path(args.black).stem if 'stockfish' not in args.black.lower() else "stockfish"
-    pgn_filename = paths.pgn_games_dir / f"eval_{white_name}_vs_{black_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pgn"
-    
-    with open(pgn_filename, "w", encoding="utf-8") as f:
-        exporter = chess.pgn.FileExporter(f)
-        game.accept(exporter)
-    
-    print(f"PGN saved to: {pgn_filename}")
-
 
 if __name__ == "__main__":
     main()
