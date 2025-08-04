@@ -123,6 +123,9 @@ def main():
     player_black, black_name = load_player(args.black, device)
     
     scores = {"White": 0, "Black": 0, "Draw": 0}
+    paths = get_paths()
+    white_name_stem = Path(args.white).stem
+    black_name_stem = Path(args.black).stem
 
     print("\n--- Starting Evaluation Match ---")
     print(f"White: {white_name}")
@@ -132,19 +135,34 @@ def main():
 
     for game_num in tqdm(range(1, args.games + 1), desc="Playing Games"):
         board = chess.Board()
+        game = chess.pgn.Game()
+        game.headers["Event"] = "Evaluation Match"
+        game.headers["White"] = white_name
+        game.headers["Black"] = black_name
+        game.headers["Round"] = str(game_num)
+        node = game
+
         while not board.is_game_over(claim_draw=True):
             current_player = player_white if board.turn == chess.WHITE else player_black
             move = get_move(current_player, board, args.sims, device)
             if move is None: break
+            node = node.add_variation(move)
             board.push(move)
 
         result = board.result(claim_draw=True)
+        game.headers["Result"] = result
         if result == "1-0":
             scores["White"] += 1
         elif result == "0-1":
             scores["Black"] += 1
         else:
             scores["Draw"] += 1
+
+        # --- Corrected PGN Saving Logic ---
+        pgn_filename = paths.pgn_games_dir / f"eval_{white_name_stem}_vs_{black_name_stem}_game_{game_num}.pgn"
+        with open(pgn_filename, "w", encoding="utf-8") as f:
+            exporter = chess.pgn.FileExporter(f)
+            game.accept(exporter)
 
     print("\n" + "-" * 35)
     print("--- Final Score ---")
