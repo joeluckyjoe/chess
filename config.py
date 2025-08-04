@@ -12,7 +12,7 @@ config_params = {
     "STOCKFISH_PATH": "/usr/games/stockfish", # Or your local path to the Stockfish executable
 
     # -- Expert Sparring Run Settings --
-    "TOTAL_GAMES": 2500, # Total number of games to play for the entire run
+    "TOTAL_GAMES": 5000, # Total number of games to play for the entire run
     "CHECKPOINT_INTERVAL": 20, # Save a model checkpoint every N games
     "BATCH_SIZE": 256, # Number of game states to use for a single training update
 
