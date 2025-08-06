@@ -17,10 +17,6 @@ from hardware_setup import get_device
 # --- Configuration ---
 # Set to None to process all games in the corpus.
 MAX_GAMES_TO_PROCESS = None
-
-# Save data in chunks to prevent memory overload.
-SAVE_CHECKPOINT_INTERVAL = 100000
-
 # The sequence length our temporal model expects
 SEQUENCE_LENGTH = 8
 
@@ -38,103 +34,95 @@ def main():
     device = get_device()
     
     pgn_corpus_dir = paths.drive_project_root / 'pgn_corpus'
-    if not pgn_corpus_dir.exists():
-        print(f"[FATAL] PGN Corpus directory not found at: {pgn_corpus_dir}")
-        sys.exit(1)
+    output_dir = paths.drive_project_root / 'training_data'
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure output directory exists
 
-    pgn_files = list(pgn_corpus_dir.glob('*.pgn'))
+    pgn_files = sorted(list(pgn_corpus_dir.glob('*.pgn'))) # Sort for consistent order
     if not pgn_files:
         print(f"[FATAL] No PGN files found in {pgn_corpus_dir}")
         sys.exit(1)
 
     print(f"Found {len(pgn_files)} PGN files to process.")
-
-    all_training_data = []
-    games_processed_count = 0
-    samples_since_last_save = 0
-    checkpoint_counter = 0
+    total_games_processed = 0
 
     empty_board = chess.Board()
     initial_gnn, initial_cnn, _ = convert_to_gnn_input(empty_board, device)
     initial_state_tuple = (initial_gnn, initial_cnn)
 
-    try:
-        for pgn_file_path in pgn_files:
-            print(f"\nProcessing file: {pgn_file_path.name}")
-            with open(pgn_file_path, encoding='utf-8', errors='ignore') as pgn_file:
-                with tqdm(desc="Processing games") as pbar:
-                    while True:
-                        # <<< FIXED: Corrected the variable name's casing
-                        if MAX_GAMES_TO_PROCESS and games_processed_count >= MAX_GAMES_TO_PROCESS:
-                            raise StopIteration
-
-                        try:
-                            game = chess.pgn.read_game(pgn_file)
-                        except (ValueError, UnicodeDecodeError) as e:
-                            pbar.set_postfix_str(f"Skipping bad game: {e}")
-                            continue
-                            
-                        if game is None:
-                            break
-
-                        games_processed_count += 1
-                        pbar.update(1)
-
-                        result = game.headers.get("Result", "*")
-                        if result == '*':
-                            continue
-
-                        board = game.board()
-                        state_deque = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
-                        
-                        for move in game.mainline_moves():
-                            player_turn = board.turn
-                            policy_target = torch.zeros(get_action_space_size())
-                            try:
-                                action_index = move_to_index(move, board)
-                                if action_index is not None:
-                                    policy_target[action_index] = 1.0
-                                else:
-                                    continue
-                            except Exception:
-                                continue
-
-                            value_target = torch.tensor([get_value_target(result, player_turn)], dtype=torch.float32)
-
-                            all_training_data.append({
-                                'state_sequence': list(state_deque),
-                                'policy': policy_target,
-                                'value_target': value_target
-                            })
-                            samples_since_last_save += 1
-
-                            board.push(move)
-                            gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
-                            state_deque.append((gnn_data, cnn_tensor))
-                            
-                            if samples_since_last_save >= SAVE_CHECKPOINT_INTERVAL:
-                                checkpoint_counter += 1
-                                save_path = paths.drive_project_root / 'training_data' / f"supervised_dataset_part_{checkpoint_counter}.pt"
-                                save_path.parent.mkdir(parents=True, exist_ok=True)
-                                print(f"\nSaving chunk {checkpoint_counter} with {len(all_training_data)} samples to {save_path}")
-                                torch.save(all_training_data, save_path)
-                                all_training_data = [] # Clear memory
-                                samples_since_last_save = 0
-
-    except StopIteration:
-        print(f"\nReached the limit of {MAX_GAMES_TO_PROCESS} games.")
-    except Exception as e:
-        print(f"\nAn error occurred: {e}")
-
-    finally:
-        if all_training_data:
-            checkpoint_counter += 1
-            save_path = paths.drive_project_root / 'training_data' / f"supervised_dataset_part_{checkpoint_counter}.pt"
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            print(f"\nSaving final chunk {checkpoint_counter} with {len(all_training_data)} samples to {save_path}")
-            torch.save(all_training_data, save_path)
+    for pgn_file_path in pgn_files:
+        # <<< MODIFIED: Create a unique output path for each input file.
+        output_path = output_dir / f"{pgn_file_path.stem}.pt"
         
-        print("\n✅ Dataset generation finished.")
+        # <<< MODIFIED: This is the core of the resume logic.
+        if output_path.exists():
+            print(f"\nSkipping already processed file: {pgn_file_path.name}")
+            continue
+
+        print(f"\nProcessing file: {pgn_file_path.name}")
+        
+        file_training_data = []
+        games_in_file_count = 0
+
+        with open(pgn_file_path, encoding='utf-8', errors='ignore') as pgn_file:
+            # We can't easily get a total count, so the progress bar will just count games.
+            with tqdm(desc=f"Processing {pgn_file_path.name}") as pbar:
+                while True:
+                    if MAX_GAMES_TO_PROCESS and total_games_processed >= MAX_GAMES_TO_PROCESS:
+                        # Save any pending data before stopping completely
+                        if file_training_data:
+                           print(f"\nLimit reached. Saving final chunk for {pgn_file_path.name}...")
+                           torch.save(file_training_data, output_path)
+                        raise StopIteration
+
+                    try:
+                        game = chess.pgn.read_game(pgn_file)
+                    except Exception:
+                        continue
+                        
+                    if game is None:
+                        break
+
+                    games_in_file_count += 1
+                    total_games_processed += 1
+                    pbar.update(1)
+
+                    result = game.headers.get("Result", "*")
+                    if result == '*':
+                        continue
+
+                    board = game.board()
+                    state_deque = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
+                    
+                    for move in game.mainline_moves():
+                        player_turn = board.turn
+                        policy_target = torch.zeros(get_action_space_size())
+                        try:
+                            action_index = move_to_index(move, board)
+                            if action_index is not None:
+                                policy_target[action_index] = 1.0
+                            else:
+                                continue
+                        except Exception:
+                            continue
+
+                        value_target = torch.tensor([get_value_target(result, player_turn)], dtype=torch.float32)
+
+                        file_training_data.append({
+                            'state_sequence': list(state_deque),
+                            'policy': policy_target,
+                            'value_target': value_target
+                        })
+
+                        board.push(move)
+                        gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
+                        state_deque.append((gnn_data, cnn_tensor))
+        
+        if file_training_data:
+            print(f"\nSaving data for {pgn_file_path.name} ({len(file_training_data)} samples)...")
+            torch.save(file_training_data, output_path)
+            print(f"✅ Saved to {output_path}")
+
+    print("\n--- All files processed. Dataset generation complete. ---")
 
 
 if __name__ == "__main__":
