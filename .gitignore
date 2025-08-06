@@ -56,6 +56,7 @@ dist/
 /checkpoints/
 /pgn_games/
 /test_outputs/
+/pgn_corpus/
 
 # Log files and analysis output
 /analysis_output/
