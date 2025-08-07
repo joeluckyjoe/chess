@@ -36,14 +36,13 @@ def main():
         for chunk_file in tqdm(chunk_files, desc="Processing chunks"):
             data_chunk = torch.load(chunk_file)
             for sample in tqdm(data_chunk, desc=f"Scanning {chunk_file.name}", leave=False):
-                # The last CNN tensor in the sequence represents the current board state.
                 last_cnn_tensor = sample['state_sequence'][-1][1]
-                # Using a hash of the tensor's data is more memory-efficient for the set
-                sample_key = hash(last_cnn_tensor.storage().tobytes())
+
+                # <<< FIXED: Convert to NumPy array before calling .tobytes()
+                sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
 
                 if sample_key not in unique_samples_hashes:
                     unique_samples_hashes.add(sample_key)
-                    # Write the unique sample to the file immediately
                     pickle.dump(sample, f_out)
                     total_unique_count += 1
 
