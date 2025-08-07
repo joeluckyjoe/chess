@@ -18,6 +18,7 @@ from hardware_setup import get_device
 # --- Configuration ---
 SAVE_CHECKPOINT_INTERVAL = 50000  # Save a new chunk every 50,000 samples
 SEQUENCE_LENGTH = 8
+AVG_SAMPLES_PER_GAME = 90 # An estimated average for calculating games to skip
 
 def get_value_target(result: str, player_turn: chess.Color) -> float:
     if result == '1-0': return 1.0 if player_turn == chess.WHITE else -1.0
@@ -52,14 +53,14 @@ def main():
         print(f"[FATAL] No PGN files found in {pgn_corpus_dir}")
         sys.exit(1)
 
-    # <<< MODIFIED: Resume logic >>>
+    # <<< MODIFIED: More efficient resume logic >>>
     last_chunk_num, total_samples_processed = find_last_checkpoint(output_dir)
+    games_to_skip = 0
     if last_chunk_num > 0:
-        print(f"Resuming after chunk {last_chunk_num}. Already processed {total_samples_processed} samples.")
+        games_to_skip = total_samples_processed // AVG_SAMPLES_PER_GAME
+        print(f"Resuming after chunk {last_chunk_num}. Skipping approximately {games_to_skip} games...")
     
     checkpoint_counter = last_chunk_num
-    samples_to_skip = total_samples_processed
-    
     current_training_data = []
     samples_since_last_save = 0
     
@@ -80,6 +81,12 @@ def main():
                         if game is None: break
 
                         pbar.update(1)
+
+                        # <<< MODIFIED: Skip entire games, which is much faster >>>
+                        if games_to_skip > 0:
+                            games_to_skip -= 1
+                            continue
+
                         result = game.headers.get("Result", "*")
                         if result == '*': continue
 
@@ -87,14 +94,6 @@ def main():
                         state_deque = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
                         
                         for move in game.mainline_moves():
-                            # <<< MODIFIED: Skip samples if we are resuming >>>
-                            if samples_to_skip > 0:
-                                samples_to_skip -= 1
-                                board.push(move)
-                                gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
-                                state_deque.append((gnn_data, cnn_tensor))
-                                continue
-
                             player_turn = board.turn
                             policy_target = torch.zeros(get_action_space_size())
                             try:
