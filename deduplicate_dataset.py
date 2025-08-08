@@ -24,6 +24,7 @@ def load_progress(output_dir):
     if progress_path.exists():
         print(f"Found existing progress file. Loading...")
         with open(progress_path, 'rb') as f:
+            # <<< MODIFIED: Added map_location for robust loading
             return pickle.load(f)
     return None
 
@@ -59,29 +60,23 @@ def main():
         for i in tqdm(range(last_processed_chunk_index + 1, len(chunk_files)), desc="Processing chunks"):
             chunk_file = chunk_files[i]
             
+            # <<< MODIFIED: Added map_location for robust loading
+            data_chunk = torch.load(chunk_file, map_location=torch.device('cpu'))
+            
             new_samples_in_chunk = 0
-            # <<< MODIFIED: Read the chunk file sample by sample to save memory >>>
-            try:
-                with open(chunk_file, 'rb') as f_in:
-                    while True:
-                        try:
-                            sample = pickle.load(f_in)
-                            last_cnn_tensor = sample['state_sequence'][-1][1]
-                            sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
+            for sample in tqdm(data_chunk, desc=f"Scanning {chunk_file.name}", leave=False):
+                last_cnn_tensor = sample['state_sequence'][-1][1]
+                sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
 
-                            if sample_key not in unique_samples_hashes:
-                                unique_samples_hashes.add(sample_key)
-                                pickle.dump(sample, f_out)
-                                new_samples_in_chunk += 1
-                        except EOFError:
-                            # End of file reached
-                            break
-            except Exception as e:
-                print(f"Error processing {chunk_file.name}: {e}")
-                continue
+                if sample_key not in unique_samples_hashes:
+                    unique_samples_hashes.add(sample_key)
+                    pickle.dump(sample, f_out)
+                    new_samples_in_chunk += 1
             
             total_unique_count += new_samples_in_chunk
-            print(f"Found {new_samples_in_chunk} new unique samples in {chunk_file.name}.")
+            if new_samples_in_chunk > 0:
+                print(f"Found {new_samples_in_chunk} new unique samples in {chunk_file.name}.")
+            
             save_progress(data_dir, chunk_file, unique_samples_hashes)
 
     print(f"\nDe-duplication complete.")
