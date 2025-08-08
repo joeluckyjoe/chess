@@ -13,7 +13,6 @@ from config import get_paths
 # --- Configuration ---
 PROGRESS_FILENAME = "deduplication_progress.pkl"
 FINAL_DATASET_FILENAME = "supervised_dataset_final_deduplicated.pkl"
-CLEAR_CACHE_INTERVAL = 50 # Clear cache every 50 chunks
 
 def save_progress(output_dir, last_chunk_processed, hashes_set):
     progress_path = output_dir / PROGRESS_FILENAME
@@ -28,14 +27,8 @@ def load_progress(output_dir):
             return pickle.load(f)
     return None
 
-def clear_system_cache():
-    """Runs apt-get clean to clear the local runtime's cache."""
-    print("\n--- Clearing system cache to free up disk space... ---")
-    os.system('apt-get clean')
-    print("--- Cache cleared. ---")
-
 def main():
-    print("--- Starting Dataset De-duplication (Resumable & Self-Cleaning) ---")
+    print("--- Starting Dataset De-duplication (Final Version) ---")
     paths = get_paths()
     data_dir = paths.drive_project_root / 'training_data'
     
@@ -61,32 +54,35 @@ def main():
     final_save_path = data_dir / FINAL_DATASET_FILENAME
     write_mode = 'ab' if last_processed_chunk_index > -1 else 'wb'
     total_unique_count = len(unique_samples_hashes)
-    chunks_processed_since_cache_clear = 0
 
     with open(final_save_path, write_mode) as f_out:
         for i in tqdm(range(last_processed_chunk_index + 1, len(chunk_files)), desc="Processing chunks"):
             chunk_file = chunk_files[i]
-            data_chunk = torch.load(chunk_file)
             
             new_samples_in_chunk = 0
-            for sample in tqdm(data_chunk, desc=f"Scanning {chunk_file.name}", leave=False):
-                last_cnn_tensor = sample['state_sequence'][-1][1]
-                sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
+            # <<< MODIFIED: Read the chunk file sample by sample to save memory >>>
+            try:
+                with open(chunk_file, 'rb') as f_in:
+                    while True:
+                        try:
+                            sample = pickle.load(f_in)
+                            last_cnn_tensor = sample['state_sequence'][-1][1]
+                            sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
 
-                if sample_key not in unique_samples_hashes:
-                    unique_samples_hashes.add(sample_key)
-                    pickle.dump(sample, f_out)
-                    new_samples_in_chunk += 1
+                            if sample_key not in unique_samples_hashes:
+                                unique_samples_hashes.add(sample_key)
+                                pickle.dump(sample, f_out)
+                                new_samples_in_chunk += 1
+                        except EOFError:
+                            # End of file reached
+                            break
+            except Exception as e:
+                print(f"Error processing {chunk_file.name}: {e}")
+                continue
             
             total_unique_count += new_samples_in_chunk
             print(f"Found {new_samples_in_chunk} new unique samples in {chunk_file.name}.")
             save_progress(data_dir, chunk_file, unique_samples_hashes)
-
-            # <<< MODIFIED: Periodically clear the system cache >>>
-            chunks_processed_since_cache_clear += 1
-            if chunks_processed_since_cache_clear >= CLEAR_CACHE_INTERVAL:
-                clear_system_cache()
-                chunks_processed_since_cache_clear = 0
 
     print(f"\nDe-duplication complete.")
     print(f"Total unique samples in final dataset: {total_unique_count}")
