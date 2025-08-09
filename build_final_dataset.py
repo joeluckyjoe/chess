@@ -3,10 +3,20 @@ from pathlib import Path
 import sys
 from tqdm import tqdm
 import torch
+import os # <<< ADDED
 
 # --- Import from project files ---
 sys.path.append(str(Path(__file__).resolve().parent))
 from config import get_paths
+
+# --- Configuration ---
+CLEAR_CACHE_INTERVAL = 50 # <<< ADDED: Clear cache every 50 chunks
+
+def clear_system_cache(): # <<< ADDED
+    """Runs apt-get clean to clear the local runtime's cache."""
+    print("\n--- Clearing system cache to free up disk space... ---")
+    os.system('apt-get clean')
+    print("--- Cache cleared. ---")
 
 def main():
     """
@@ -39,9 +49,9 @@ def main():
     final_dataset_path = data_dir / "supervised_dataset_final.pt"
     
     found_unique_samples = 0
+    chunks_processed_since_cache_clear = 0 # <<< ADDED
     
     with open(final_dataset_path, 'wb') as f_out:
-        # Iterate through the original chunks
         for chunk_file in tqdm(chunk_files, desc="Processing Chunks"):
             try:
                 data_chunk = torch.load(chunk_file, map_location=torch.device('cpu'))
@@ -49,15 +59,19 @@ def main():
                     last_cnn_tensor = sample['state_sequence'][-1][1]
                     sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
                     
-                    # If this sample's hash is in our unique set, save it
                     if sample_key in unique_hashes:
                         pickle.dump(sample, f_out)
                         found_unique_samples += 1
-                        # Remove the hash from the set to avoid re-checking and to speed up future checks
                         unique_hashes.remove(sample_key)
             except Exception as e:
                 print(f"Error processing {chunk_file.name}: {e}")
                 continue
+            
+            # <<< ADDED: Periodically clear the system cache >>>
+            chunks_processed_since_cache_clear += 1
+            if chunks_processed_since_cache_clear >= CLEAR_CACHE_INTERVAL:
+                clear_system_cache()
+                chunks_processed_since_cache_clear = 0
 
     print("\n--- Final Dataset Construction Complete ---")
     print(f"Total unique samples found and saved: {found_unique_samples}")
