@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 from tqdm import tqdm
 import pickle
+import gc # <<< ADDED: Import the garbage collection module
 
 # --- Import from project files ---
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -21,7 +22,6 @@ def main():
     hashes_dir = data_dir / "hashes"
     hashes_dir.mkdir(parents=True, exist_ok=True)
     
-    # <<< MODIFIED: Find files with its own progress bar for immediate feedback >>>
     print("Discovering dataset chunks...")
     all_files_in_dir = list(data_dir.iterdir())
     chunk_files = []
@@ -57,6 +57,10 @@ def main():
         
         with open(output_hash_path, 'wb') as f_out:
             pickle.dump(chunk_hashes, f_out)
+            
+        # <<< ADDED: Explicitly delete the large data chunk and run garbage collection
+        del data_chunk
+        gc.collect()
 
     print("\n✅ Stage 1: Hash generation complete.")
 
