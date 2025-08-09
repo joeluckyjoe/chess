@@ -18,7 +18,6 @@ def main():
     paths = get_paths()
     data_dir = paths.drive_project_root / 'training_data'
     
-    # Create a dedicated subdirectory for the hash files
     hashes_dir = data_dir / "hashes"
     hashes_dir.mkdir(parents=True, exist_ok=True)
     
@@ -29,34 +28,25 @@ def main():
         
     print(f"Found {len(chunk_files)} dataset chunks to process.")
 
-    # Main loop iterates through each chunk file
     for chunk_file in tqdm(chunk_files, desc="Processing Chunks"):
         output_hash_path = hashes_dir / f"{chunk_file.stem}.hashes"
 
-        # --- Resume Logic ---
-        # If the hash file already exists, skip to the next chunk.
         if output_hash_path.exists():
             continue
 
         chunk_hashes = []
         try:
-            with open(chunk_file, 'rb') as f_in:
-                # Use a progress bar for the samples within each chunk
-                with tqdm(desc=f"Scanning {chunk_file.name}", leave=False, unit="samples") as pbar:
-                    while True:
-                        try:
-                            sample = pickle.load(f_in)
-                            last_cnn_tensor = sample['state_sequence'][-1][1]
-                            sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
-                            chunk_hashes.append(sample_key)
-                            pbar.update(1)
-                        except EOFError:
-                            break # Finished reading all samples in this chunk
+            # <<< MODIFIED: Use torch.load with map_location and iterate through the loaded chunk
+            data_chunk = torch.load(chunk_file, map_location=torch.device('cpu'))
+            for sample in tqdm(data_chunk, desc=f"Scanning {chunk_file.name}", leave=False, unit="samples"):
+                last_cnn_tensor = sample['state_sequence'][-1][1]
+                sample_key = hash(last_cnn_tensor.cpu().numpy().tobytes())
+                chunk_hashes.append(sample_key)
+
         except Exception as e:
-            print(f"Error processing {chunk_file.name}: {e}")
+            print(f"\nError processing {chunk_file.name}: {e}")
             continue
         
-        # Save the list of hashes for the current chunk
         with open(output_hash_path, 'wb') as f_out:
             pickle.dump(chunk_hashes, f_out)
 
