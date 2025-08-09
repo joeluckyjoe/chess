@@ -21,13 +21,22 @@ def main():
     hashes_dir = data_dir / "hashes"
     hashes_dir.mkdir(parents=True, exist_ok=True)
     
-    chunk_files = sorted(list(data_dir.glob("supervised_dataset_part_*.pt")))
+    # <<< MODIFIED: Find files with its own progress bar for immediate feedback >>>
+    print("Discovering dataset chunks...")
+    all_files_in_dir = list(data_dir.iterdir())
+    chunk_files = []
+    for f in tqdm(all_files_in_dir, desc="Discovering chunks"):
+        if f.name.startswith("supervised_dataset_part_") and f.name.endswith(".pt"):
+            chunk_files.append(f)
+    chunk_files.sort()
+    
     if not chunk_files:
         print(f"[FATAL] No dataset chunks found in {data_dir}")
         sys.exit(1)
         
     print(f"Found {len(chunk_files)} dataset chunks to process.")
 
+    # Main loop iterates through each chunk file
     for chunk_file in tqdm(chunk_files, desc="Processing Chunks"):
         output_hash_path = hashes_dir / f"{chunk_file.stem}.hashes"
 
@@ -36,7 +45,6 @@ def main():
 
         chunk_hashes = []
         try:
-            # <<< MODIFIED: Use torch.load with map_location and iterate through the loaded chunk
             data_chunk = torch.load(chunk_file, map_location=torch.device('cpu'))
             for sample in tqdm(data_chunk, desc=f"Scanning {chunk_file.name}", leave=False, unit="samples"):
                 last_cnn_tensor = sample['state_sequence'][-1][1]
