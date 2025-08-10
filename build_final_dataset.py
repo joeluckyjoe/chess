@@ -4,6 +4,7 @@ import sys
 from tqdm import tqdm
 import torch
 import os
+import re
 
 # --- Import from project files ---
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -14,13 +15,11 @@ PROGRESS_FILENAME = "build_progress.pkl"
 FINAL_DATASET_FILENAME = "supervised_dataset_final.pt"
 
 def save_progress(output_dir, last_chunk_processed):
-    """Saves the name of the last chunk that was successfully processed."""
     progress_path = output_dir / PROGRESS_FILENAME
     with open(progress_path, 'wb') as f:
         pickle.dump({'last_chunk_processed': last_chunk_processed}, f)
 
 def load_progress(output_dir):
-    """Loads the name of the last chunk that was successfully processed."""
     progress_path = output_dir / PROGRESS_FILENAME
     if progress_path.exists():
         print(f"Found existing progress file. Loading...")
@@ -29,16 +28,10 @@ def load_progress(output_dir):
     return None
 
 def main():
-    """
-    Stage 3: Build Final Dataset.
-    Loads the set of unique hashes, then iterates through the original data chunks
-    one last time to find and save only the unique samples to a final file.
-    """
     print("--- Stage 3: Starting Final Dataset Construction (Restartable) ---")
     paths = get_paths()
     data_dir = paths.drive_project_root / 'training_data'
     
-    # --- Load the set of unique hashes ---
     hashes_path = data_dir / "unique_hashes.pkl"
     if not hashes_path.exists():
         print(f"[FATAL] unique_hashes.pkl not found at: {hashes_path}")
@@ -49,13 +42,15 @@ def main():
         unique_hashes = pickle.load(f)
     print(f"Successfully loaded {len(unique_hashes)} unique hashes.")
 
-    # --- Find original data chunks ---
-    chunk_files = sorted(list(data_dir.glob("supervised_dataset_part_*.pt")))
+    # <<< FIXED: Implement correct numerical sorting of chunk files >>>
+    all_chunk_files = list(data_dir.glob("supervised_dataset_part_*.pt"))
+    # This lambda function extracts the first number (the part number) from the filename for true numerical sorting
+    chunk_files = sorted(all_chunk_files, key=lambda f: int(re.search(r'part_(\d+)', f.name).group(1)))
+
     if not chunk_files:
         print(f"[FATAL] No dataset chunks found in {data_dir}")
         sys.exit(1)
 
-    # --- Resume Logic ---
     last_processed_chunk_index = -1
     progress = load_progress(data_dir)
     if progress:
@@ -66,14 +61,10 @@ def main():
         except ValueError:
             print("Warning: Last processed file not found. Starting from beginning.")
     
-    # --- Build the final dataset ---
     final_dataset_path = data_dir / FINAL_DATASET_FILENAME
     write_mode = 'ab' if last_processed_chunk_index > -1 else 'wb'
     
-    found_unique_samples = 0
-    
     with open(final_dataset_path, write_mode) as f_out:
-        # Start the loop from the next file to be processed
         for i in tqdm(range(last_processed_chunk_index + 1, len(chunk_files)), desc="Processing Chunks"):
             chunk_file = chunk_files[i]
             try:
@@ -84,10 +75,8 @@ def main():
                     
                     if sample_key in unique_hashes:
                         pickle.dump(sample, f_out)
-                        found_unique_samples += 1
                         unique_hashes.remove(sample_key)
                 
-                # After successfully processing a chunk, save progress
                 save_progress(data_dir, chunk_file)
                         
             except Exception as e:
@@ -96,7 +85,6 @@ def main():
 
     print("\n--- Final Dataset Construction Complete ---")
     
-    # Final verification of sample count
     with open(final_dataset_path, 'rb') as f:
         final_count = 0
         while True:
