@@ -14,7 +14,7 @@ config_params = {
     # -- Expert Sparring Run Settings --
     "TOTAL_GAMES": 5000, # Total number of games to play for the entire run
     "CHECKPOINT_INTERVAL": 20, # Save a model checkpoint every N games
-    "BATCH_SIZE": 256, # Number of game states to use for a single training update
+    "BATCH_SIZE": 64, # Number of game states to use for a single training update
 
     # -- Stockfish Opponent Settings --
     "STOCKFISH_ELO": 1600,
