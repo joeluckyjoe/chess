@@ -10,6 +10,7 @@ from tqdm import tqdm
 import re
 import gc
 import argparse
+from functools import partial
 
 # --- Import from project files ---
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -35,58 +36,41 @@ def get_value_target(result: str, player_turn: chess.Color) -> float:
     return 0.0
 
 def process_pgn_stream_to_samples(pgn_stream, device, pbar):
-    """
-    Reads games from a PGN file stream and yields samples.
-    """
     empty_board = chess.Board()
     initial_gnn, initial_cnn, _ = convert_to_gnn_input(empty_board, device)
     initial_state_tuple = (initial_gnn, initial_cnn)
-
     while True:
         try:
             game = chess.pgn.read_game(pgn_stream)
             if game is None: break
             if pbar is not None: pbar.update(1)
-            
             result = game.headers.get("Result", "*")
             if result == '*': continue
-
             board = game.board()
             state_deque = deque([initial_state_tuple] * SEQUENCE_LENGTH, maxlen=SEQUENCE_LENGTH)
-            
             for move in game.mainline_moves():
                 player_turn = board.turn
                 policy_target = torch.zeros(get_action_space_size())
                 action_index = move_to_index(move, board)
                 if action_index is None: continue
                 policy_target[action_index] = 1.0
-                
                 value_target = torch.tensor([get_value_target(result, player_turn)], dtype=torch.float32)
-
-                yield {
-                    'state_sequence': list(state_deque),
-                    'policy': policy_target,
-                    'value_target': value_target
-                }
-
+                yield {'state_sequence': list(state_deque), 'policy': policy_target, 'value_target': value_target}
                 board.push(move)
                 gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
                 state_deque.append((gnn_data, cnn_tensor))
         except (ValueError, KeyError, IndexError, AttributeError):
-            # Catch potential errors in malformed PGNs and continue
             continue
 
 def validate(model, validation_pgn_files, device):
-    """Runs an evaluation on the validation set by streaming it file by file."""
     model.eval()
     total_val_loss, correct_policy_preds, total_policy_samples = 0, 0, 0
     num_batches = 0
-
     print("Running validation...")
+    custom_collate = partial(prepare_sequence_batch, device=device)
     for pgn_path in validation_pgn_files:
         with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_stream:
             sample_generator = process_pgn_stream_to_samples(pgn_stream, device, None)
-            
             is_file_done = False
             while not is_file_done:
                 validation_samples = []
@@ -96,25 +80,20 @@ def validate(model, validation_pgn_files, device):
                         is_file_done = True
                         break
                     validation_samples.append(sample)
-                
                 if not validation_samples: break
-
-                validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE)
                 
+                validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
                 with torch.no_grad():
-                    for batch in validation_loader:
-                        gnn_batch, cnn_batch, target_policies, target_values = prepare_sequence_batch(batch, device)
+                    for gnn_batch, cnn_batch, target_policies, target_values in validation_loader:
                         policy_logits, value_preds = model(gnn_batch, cnn_batch)
                         policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
                         value_loss = torch.nn.functional.mse_loss(value_preds.squeeze(-1), target_values.squeeze(-1))
                         total_val_loss += (policy_loss + value_loss).item()
-                        
                         predicted_moves = torch.argmax(policy_logits, dim=1)
                         correct_moves = torch.argmax(target_policies, dim=1)
                         correct_policy_preds += (predicted_moves == correct_moves).sum().item()
                         total_policy_samples += len(target_policies)
                         num_batches += 1
-
     if num_batches == 0: return 0.0, 0.0
     return total_val_loss / num_batches, (correct_policy_preds / total_policy_samples) * 100
 
@@ -126,33 +105,25 @@ def main():
     paths = get_paths()
     device = get_device()
 
-    # --- Initialize Model and Optimizer ---
     encoder = EncoderPolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
         gnn_num_heads=config_params['GNN_NUM_HEADS'], gnn_metadata=GNN_METADATA
     ).to(device)
-    
     model = TemporalPolicyValueModel(
-        encoder_model=encoder, 
-        policy_size=get_action_space_size(), 
-        d_model=config_params['EMBED_DIM'],
-        fine_tune_encoder=True
+        encoder_model=encoder, policy_size=get_action_space_size(), 
+        d_model=config_params['EMBED_DIM'], fine_tune_encoder=True
     ).to(device)
-    
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    # --- Data and Checkpoint Setup ---
     train_corpus_dir = paths.drive_project_root / 'pgn_corpus'
     validation_corpus_dir = paths.drive_project_root / 'validation_corpus'
     
     def get_sort_key(f):
         name = f.stem
-        # Handles KingBaseLite2019-A00-A39.pgn
         kingbase_match = re.search(r'KingBaseLite\d+-([A-E]\d+)-([A-E]\d+)', name)
         if kingbase_match:
             return (1, kingbase_match.group(1), kingbase_match.group(2))
-        # Handles filenames like Petrosian.pgn
         return (2, name)
 
     train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
@@ -176,10 +147,8 @@ def main():
         start_epoch = checkpoint['epoch']
         last_processed_file_index = checkpoint.get('last_processed_file_index', -1)
 
-    # --- Main Training Loop ---
     for epoch in range(start_epoch, EPOCHS):
         print(f"\n--- Starting Epoch {epoch + 1}/{EPOCHS} ---")
-        
         start_index = last_processed_file_index + 1
         last_processed_file_index = -1 
 
@@ -204,11 +173,11 @@ def main():
                     if not train_samples: break
                     batch_num += 1
 
-                    train_loader = DataLoader(train_samples, batch_size=BATCH_SIZE, shuffle=True)
+                    custom_collate = partial(prepare_sequence_batch, device=device)
+                    train_loader = DataLoader(train_samples, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate)
                     
                     model.train()
-                    for batch in tqdm(train_loader, desc=f"Training on batch {batch_num}", leave=False):
-                        gnn_batch, cnn_batch, target_policies, target_values = prepare_sequence_batch(batch, device)
+                    for gnn_batch, cnn_batch, target_policies, target_values in tqdm(train_loader, desc=f"Training on batch {batch_num}", leave=False):
                         optimizer.zero_grad()
                         policy_logits, value_preds = model(gnn_batch, cnn_batch)
                         policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
