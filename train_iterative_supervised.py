@@ -35,6 +35,9 @@ def get_value_target(result: str, player_turn: chess.Color) -> float:
     return 0.0
 
 def process_pgn_stream_to_samples(pgn_stream, device, pbar):
+    """
+    Reads games from a PGN file stream and yields samples.
+    """
     empty_board = chess.Board()
     initial_gnn, initial_cnn, _ = convert_to_gnn_input(empty_board, device)
     initial_state_tuple = (initial_gnn, initial_cnn)
@@ -43,8 +46,6 @@ def process_pgn_stream_to_samples(pgn_stream, device, pbar):
         try:
             game = chess.pgn.read_game(pgn_stream)
             if game is None: break
-            
-            # <<< FIXED: The check for the progress bar object must be 'is not None'
             if pbar is not None: pbar.update(1)
             
             result = game.headers.get("Result", "*")
@@ -71,10 +72,12 @@ def process_pgn_stream_to_samples(pgn_stream, device, pbar):
                 board.push(move)
                 gnn_data, cnn_tensor, _ = convert_to_gnn_input(board, device)
                 state_deque.append((gnn_data, cnn_tensor))
-        except (ValueError, KeyError, IndexError):
+        except (ValueError, KeyError, IndexError, AttributeError):
+            # Catch potential errors in malformed PGNs and continue
             continue
 
 def validate(model, validation_pgn_files, device):
+    """Runs an evaluation on the validation set by streaming it file by file."""
     model.eval()
     total_val_loss, correct_policy_preds, total_policy_samples = 0, 0, 0
     num_batches = 0
@@ -82,11 +85,18 @@ def validate(model, validation_pgn_files, device):
     print("Running validation...")
     for pgn_path in validation_pgn_files:
         with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_stream:
-            # Pass pbar as None since we don't need a progress bar here
             sample_generator = process_pgn_stream_to_samples(pgn_stream, device, None)
             
-            while True:
-                validation_samples = [s for _, s in zip(range(SAMPLES_PER_BATCH), sample_generator)]
+            is_file_done = False
+            while not is_file_done:
+                validation_samples = []
+                for _ in range(SAMPLES_PER_BATCH):
+                    sample = next(sample_generator, None)
+                    if sample is None:
+                        is_file_done = True
+                        break
+                    validation_samples.append(sample)
+                
                 if not validation_samples: break
 
                 validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE)
@@ -116,40 +126,45 @@ def main():
     paths = get_paths()
     device = get_device()
 
-    dummy_encoder = EncoderPolicyValueModel(
+    # --- Initialize Model and Optimizer ---
+    encoder = EncoderPolicyValueModel(
         gnn_hidden_dim=config_params['GNN_HIDDEN_DIM'], cnn_in_channels=14,
         embed_dim=config_params['EMBED_DIM'], policy_size=get_action_space_size(),
         gnn_num_heads=config_params['GNN_NUM_HEADS'], gnn_metadata=GNN_METADATA
     ).to(device)
-    model = TemporalPolicyValueModel(encoder_model=dummy_encoder, policy_size=get_action_space_size(), d_model=config_params['EMBED_DIM']).to(device)
+    
+    model = TemporalPolicyValueModel(
+        encoder_model=encoder, 
+        policy_size=get_action_space_size(), 
+        d_model=config_params['EMBED_DIM'],
+        fine_tune_encoder=True
+    ).to(device)
+    
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+    # --- Data and Checkpoint Setup ---
     train_corpus_dir = paths.drive_project_root / 'pgn_corpus'
     validation_corpus_dir = paths.drive_project_root / 'validation_corpus'
     
-    # <<< FIXED: More robust sorting for all file name types
-    def get_part_num(f):
-        # This handles both KingBase files and other files like Petrosian.pgn
-        match = re.search(r'(\d+)', f.name)
-        # We also use a secondary sort key (the name itself) for non-KingBase files
-        return int(match.group(1)) if match else -1, f.name
+    def get_sort_key(f):
+        name = f.stem
+        # Handles KingBaseLite2019-A00-A39.pgn
+        kingbase_match = re.search(r'KingBaseLite\d+-([A-E]\d+)-([A-E]\d+)', name)
+        if kingbase_match:
+            return (1, kingbase_match.group(1), kingbase_match.group(2))
+        # Handles filenames like Petrosian.pgn
+        return (2, name)
 
-    train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_part_num)
+    train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
     validation_pgn_files = list(validation_corpus_dir.glob('*.pgn'))
 
-    if not train_pgn_files or not validation_pgn_files:
-        print("[FATAL] Both a training and validation corpus are required.")
+    if not train_pgn_files:
+        print("[FATAL] No training PGN files found in the corpus.")
         sys.exit(1)
-
-    print("Loading and processing validation set...")
-    validation_samples = []
-    for pgn_path in tqdm(validation_pgn_files, desc="Loading validation files"):
-        with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_stream:
-            # We don't need a game-level pbar for validation loading
-            validation_samples.extend(list(process_pgn_stream_to_samples(pgn_stream, device, None)))
-    validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, shuffle=False)
-    print(f"Validation set loaded with {len(validation_samples)} samples.")
-
+    if not validation_pgn_files:
+        print("[FATAL] No validation PGN files found in the validation corpus.")
+        sys.exit(1)
+        
     start_epoch = 0
     last_processed_file_index = -1
 
@@ -161,6 +176,7 @@ def main():
         start_epoch = checkpoint['epoch']
         last_processed_file_index = checkpoint.get('last_processed_file_index', -1)
 
+    # --- Main Training Loop ---
     for epoch in range(start_epoch, EPOCHS):
         print(f"\n--- Starting Epoch {epoch + 1}/{EPOCHS} ---")
         
@@ -171,7 +187,7 @@ def main():
             pgn_path = train_pgn_files[i]
             print(f"\nProcessing training file: {pgn_path.name} ({i+1}/{len(train_pgn_files)})")
             
-            with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_stream, tqdm(desc=f"Reading {pgn_path.name}") as pbar:
+            with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_stream, tqdm(desc=f"Reading games from {pgn_path.name}") as pbar:
                 sample_generator = process_pgn_stream_to_samples(pgn_stream, device, pbar)
                 
                 batch_num = 0
@@ -179,11 +195,11 @@ def main():
                 while not is_file_done:
                     train_samples = []
                     for _ in range(SAMPLES_PER_BATCH):
-                        try:
-                            train_samples.append(next(sample_generator))
-                        except StopIteration:
+                        sample = next(sample_generator, None)
+                        if sample is None:
                             is_file_done = True
                             break
+                        train_samples.append(sample)
 
                     if not train_samples: break
                     batch_num += 1
@@ -191,7 +207,7 @@ def main():
                     train_loader = DataLoader(train_samples, batch_size=BATCH_SIZE, shuffle=True)
                     
                     model.train()
-                    for batch in tqdm(train_loader, desc=f"Training on {pgn_path.name} batch {batch_num}", leave=False):
+                    for batch in tqdm(train_loader, desc=f"Training on batch {batch_num}", leave=False):
                         gnn_batch, cnn_batch, target_policies, target_values = prepare_sequence_batch(batch, device)
                         optimizer.zero_grad()
                         policy_logits, value_preds = model(gnn_batch, cnn_batch)
@@ -200,16 +216,16 @@ def main():
                         total_loss = policy_loss + value_loss
                         total_loss.backward()
                         optimizer.step()
-            
+                    
+                    del train_samples, train_loader
+                    gc.collect()
+
             checkpoint_path = paths.checkpoints_dir / f"iterative_supervised_checkpoint_epoch{epoch+1}_file{i+1}.pth.tar"
             torch.save({ 'epoch': epoch, 'last_processed_file_index': i, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict() }, checkpoint_path)
             
             val_loss, val_accuracy = validate(model, validation_pgn_files, device)
             print(f"File {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
             print(f"Checkpoint saved to {checkpoint_path}")
-
-            del train_samples, train_loader
-            gc.collect()
 
 if __name__ == "__main__":
     main()
