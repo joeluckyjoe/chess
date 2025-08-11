@@ -23,9 +23,9 @@ from gnn_agent.gamestate_converters.action_space_converter import get_action_spa
 from hardware_setup import get_device
 from run_expert_sparring import GNN_METADATA, prepare_sequence_batch
 
-# --- Configuration ---
+# --- Configuration & Helper Functions (unchanged) ---
 EPOCHS = 3
-BATCH_SIZE = config_params.get("BATCH_SIZE", 256)
+BATCH_SIZE = config_params.get("BATCH_SIZE", 64) # Using the corrected batch size
 LEARNING_RATE = 1e-4
 SEQUENCE_LENGTH = 8
 SAMPLES_PER_BATCH = 50000 
@@ -129,11 +129,8 @@ def main():
     train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
     validation_pgn_files = list(validation_corpus_dir.glob('*.pgn'))
 
-    if not train_pgn_files:
-        print("[FATAL] No training PGN files found in the corpus.")
-        sys.exit(1)
-    if not validation_pgn_files:
-        print("[FATAL] No validation PGN files found in the validation corpus.")
+    if not train_pgn_files or not validation_pgn_files:
+        print("[FATAL] Both a training and validation corpus are required.")
         sys.exit(1)
         
     start_epoch = 0
@@ -177,7 +174,8 @@ def main():
                     train_loader = DataLoader(train_samples, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate)
                     
                     model.train()
-                    for gnn_batch, cnn_batch, target_policies, target_values in tqdm(train_loader, desc=f"Training on batch {batch_num}", leave=False):
+                    # <<< MODIFIED: Removed the verbose inner tqdm progress bar >>>
+                    for gnn_batch, cnn_batch, target_policies, target_values in train_loader:
                         optimizer.zero_grad()
                         policy_logits, value_preds = model(gnn_batch, cnn_batch)
                         policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
