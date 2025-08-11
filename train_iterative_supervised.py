@@ -25,17 +25,19 @@ from run_expert_sparring import GNN_METADATA, prepare_sequence_batch
 
 # --- Configuration & Helper Functions (unchanged) ---
 EPOCHS = 3
-BATCH_SIZE = config_params.get("BATCH_SIZE", 64) # Using the corrected batch size
+BATCH_SIZE = config_params.get("BATCH_SIZE", 64)
 LEARNING_RATE = 1e-4
 SEQUENCE_LENGTH = 8
 SAMPLES_PER_BATCH = 50000 
 
 def get_value_target(result: str, player_turn: chess.Color) -> float:
+    # ... (function is unchanged)
     if result == '1-0': return 1.0 if player_turn == chess.WHITE else -1.0
     elif result == '0-1': return -1.0 if player_turn == chess.WHITE else 1.0
     return 0.0
 
 def process_pgn_stream_to_samples(pgn_stream, device, pbar):
+    # ... (function is unchanged)
     empty_board = chess.Board()
     initial_gnn, initial_cnn, _ = convert_to_gnn_input(empty_board, device)
     initial_state_tuple = (initial_gnn, initial_cnn)
@@ -63,10 +65,11 @@ def process_pgn_stream_to_samples(pgn_stream, device, pbar):
             continue
 
 def validate(model, validation_pgn_files, device):
+    # ... (function is unchanged)
     model.eval()
     total_val_loss, correct_policy_preds, total_policy_samples = 0, 0, 0
     num_batches = 0
-    print("Running validation...")
+    print("\nRunning validation...")
     custom_collate = partial(prepare_sequence_batch, device=device)
     for pgn_path in validation_pgn_files:
         with open(pgn_path, encoding='utf-8', errors='ignore') as pgn_stream:
@@ -81,7 +84,6 @@ def validate(model, validation_pgn_files, device):
                         break
                     validation_samples.append(sample)
                 if not validation_samples: break
-                
                 validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
                 with torch.no_grad():
                     for gnn_batch, cnn_batch, target_policies, target_values in validation_loader:
@@ -122,19 +124,15 @@ def main():
     def get_sort_key(f):
         name = f.stem
         kingbase_match = re.search(r'KingBaseLite\d+-([A-E]\d+)-([A-E]\d+)', name)
-        if kingbase_match:
-            return (1, kingbase_match.group(1), kingbase_match.group(2))
+        if kingbase_match: return (1, kingbase_match.group(1), kingbase_match.group(2))
         return (2, name)
 
     train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
     validation_pgn_files = list(validation_corpus_dir.glob('*.pgn'))
 
-    if not train_pgn_files or not validation_pgn_files:
-        print("[FATAL] Both a training and validation corpus are required.")
-        sys.exit(1)
-        
     start_epoch = 0
     last_processed_file_index = -1
+    last_processed_batch_num = -1
 
     if args.checkpoint:
         print(f"Resuming from checkpoint: {args.checkpoint}")
@@ -143,11 +141,11 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch']
         last_processed_file_index = checkpoint.get('last_processed_file_index', -1)
+        last_processed_batch_num = checkpoint.get('last_processed_batch_num', -1)
 
     for epoch in range(start_epoch, EPOCHS):
         print(f"\n--- Starting Epoch {epoch + 1}/{EPOCHS} ---")
-        start_index = last_processed_file_index + 1
-        last_processed_file_index = -1 
+        start_index = last_processed_file_index + 1 if epoch == start_epoch else 0
 
         for i in range(start_index, len(train_pgn_files)):
             pgn_path = train_pgn_files[i]
@@ -159,6 +157,14 @@ def main():
                 batch_num = 0
                 is_file_done = False
                 while not is_file_done:
+                    batch_num += 1
+                    # <<< MODIFIED: Skip batches within a file if resuming >>>
+                    if epoch == start_epoch and i == last_processed_file_index and batch_num <= last_processed_batch_num:
+                        # We still need to consume the generator to advance its state
+                        _ = [next(sample_generator, None) for _ in range(SAMPLES_PER_BATCH)]
+                        print(f"Skipping already processed batch {batch_num} in {pgn_path.name}")
+                        continue
+
                     train_samples = []
                     for _ in range(SAMPLES_PER_BATCH):
                         sample = next(sample_generator, None)
@@ -168,13 +174,11 @@ def main():
                         train_samples.append(sample)
 
                     if not train_samples: break
-                    batch_num += 1
-
+                    
                     custom_collate = partial(prepare_sequence_batch, device=device)
                     train_loader = DataLoader(train_samples, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate)
                     
                     model.train()
-                    # <<< MODIFIED: Removed the verbose inner tqdm progress bar >>>
                     for gnn_batch, cnn_batch, target_policies, target_values in train_loader:
                         optimizer.zero_grad()
                         policy_logits, value_preds = model(gnn_batch, cnn_batch)
@@ -184,15 +188,22 @@ def main():
                         total_loss.backward()
                         optimizer.step()
                     
+                    # <<< MODIFIED: Checkpoint and validate after each small batch, not each file >>>
+                    checkpoint_path = paths.checkpoints_dir / f"iterative_supervised_checkpoint_epoch{epoch+1}_file{i+1}_batch{batch_num}.pth.tar"
+                    torch.save({ 
+                        'epoch': epoch, 
+                        'last_processed_file_index': i,
+                        'last_processed_batch_num': batch_num,
+                        'model_state_dict': model.state_dict(), 
+                        'optimizer_state_dict': optimizer.state_dict() 
+                    }, checkpoint_path)
+                    
+                    val_loss, val_accuracy = validate(model, validation_pgn_files, device)
+                    print(f"\nBatch {batch_num} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
+                    print(f"Checkpoint saved to {checkpoint_path}")
+
                     del train_samples, train_loader
                     gc.collect()
-
-            checkpoint_path = paths.checkpoints_dir / f"iterative_supervised_checkpoint_epoch{epoch+1}_file{i+1}.pth.tar"
-            torch.save({ 'epoch': epoch, 'last_processed_file_index': i, 'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict() }, checkpoint_path)
-            
-            val_loss, val_accuracy = validate(model, validation_pgn_files, device)
-            print(f"File {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
-            print(f"Checkpoint saved to {checkpoint_path}")
 
 if __name__ == "__main__":
     main()
