@@ -69,11 +69,9 @@ def validate(model, validation_chunk_dir, device):
     print("\nRunning validation...")
     validation_chunks = sorted(list(validation_chunk_dir.glob('*.pt')))
     custom_collate = partial(prepare_sequence_batch, device=device)
-
     for chunk_path in tqdm(validation_chunks, desc="Validating on Chunks", leave=False):
         validation_samples = torch.load(chunk_path, map_location=device)
         validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
-        
         with torch.no_grad():
             for gnn_batch, cnn_batch, target_policies, target_values in validation_loader:
                 policy_logits, value_preds = model(gnn_batch, cnn_batch)
@@ -85,10 +83,8 @@ def validate(model, validation_chunk_dir, device):
                 correct_policy_preds += (predicted_moves == correct_moves).sum().item()
                 total_policy_samples += len(target_policies)
                 num_batches += 1
-        
         del validation_samples, validation_loader
         gc.collect()
-
     if num_batches == 0: return 0.0, 0.0
     return total_val_loss / num_batches, (correct_policy_preds / total_policy_samples) * 100
 
@@ -113,7 +109,7 @@ def main():
 
     train_corpus_dir = paths.drive_project_root / 'pgn_corpus'
     validation_chunk_dir = paths.drive_project_root / 'training_data' / 'validation_chunks'
-
+    
     def get_sort_key(f):
         name = f.stem
         kingbase_match = re.search(r'KingBaseLite\d+-([A-E]\d+)-([A-E]\d+)', name)
@@ -122,17 +118,7 @@ def main():
 
     train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
     
-    if not train_pgn_files:
-        print("[FATAL] No training PGN files found in the corpus.")
-        sys.exit(1)
-    if not validation_chunk_dir.exists():
-        print(f"[FATAL] Pre-processed validation chunk directory not found at {validation_chunk_dir}")
-        print("Please run create_validation_dataset.py first.")
-        sys.exit(1)
-        
-    start_epoch = 0
-    last_processed_file_index = -1
-    last_processed_batch_num = -1
+    start_epoch, last_processed_file_index, last_processed_batch_num = 0, -1, -1
 
     if args.checkpoint:
         print(f"Resuming from checkpoint: {args.checkpoint}")
@@ -146,7 +132,7 @@ def main():
     for epoch in range(start_epoch, EPOCHS):
         print(f"\n--- Starting Epoch {epoch + 1}/{EPOCHS} ---")
         start_index = last_processed_file_index + 1 if epoch == start_epoch else 0
-        
+
         for i in range(start_index, len(train_pgn_files)):
             pgn_path = train_pgn_files[i]
             print(f"\nProcessing training file: {pgn_path.name} ({i+1}/{len(train_pgn_files)})")
@@ -163,15 +149,10 @@ def main():
                         print(f"Skipping already processed batch {batch_num} in {pgn_path.name}")
                         continue
 
-                    train_samples = []
-                    for _ in range(SAMPLES_PER_BATCH):
-                        sample = next(sample_generator, None)
-                        if sample is None:
-                            is_file_done = True
-                            break
-                        train_samples.append(sample)
-
-                    if not train_samples: break
+                    train_samples = [s for _, s in zip(range(SAMPLES_PER_BATCH), sample_generator)]
+                    if not train_samples:
+                        is_file_done = True
+                        break
                     
                     custom_collate = partial(prepare_sequence_batch, device=device)
                     train_loader = DataLoader(train_samples, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate)
@@ -186,7 +167,8 @@ def main():
                         total_loss.backward()
                         optimizer.step()
                     
-                    checkpoint_path = paths.checkpoints_dir / f"iterative_supervised_checkpoint_epoch{epoch+1}_file{i+1}_batch{batch_num}.pth.tar"
+                    # <<< MODIFIED: Checkpoint frequently for safety >>>
+                    checkpoint_path = paths.checkpoints_dir / f"supervised_checkpoint_epoch{epoch+1}_file{i+1}_batch{batch_num}.pth.tar"
                     torch.save({ 
                         'epoch': epoch, 
                         'last_processed_file_index': i,
@@ -194,15 +176,15 @@ def main():
                         'model_state_dict': model.state_dict(), 
                         'optimizer_state_dict': optimizer.state_dict() 
                     }, checkpoint_path)
-                    
-                    val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
-                    print(f"\nBatch {batch_num} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
-                    print(f"Checkpoint saved to {checkpoint_path}")
+                    print(f"\nCheckpoint saved to {checkpoint_path}")
 
                     del train_samples, train_loader
                     gc.collect()
+
+            # <<< MODIFIED: Validate only at the end of the file for meaningful progress >>>
+            val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
+            print(f"\nFile {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
             
-            # After a file is fully processed, reset the batch number for the next file
             last_processed_batch_num = -1
 
 if __name__ == "__main__":
