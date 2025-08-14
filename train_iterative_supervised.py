@@ -11,6 +11,8 @@ import re
 import gc
 import argparse
 from functools import partial
+import pickle
+import os
 
 # --- Import from project files ---
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -29,6 +31,7 @@ BATCH_SIZE = config_params.get("BATCH_SIZE", 64)
 LEARNING_RATE = 1e-4
 SEQUENCE_LENGTH = 8
 SAMPLES_PER_BATCH = 50000 
+VALIDATION_PROGRESS_FILENAME = "validation_progress.pkl"
 
 def get_value_target(result: str, player_turn: chess.Color) -> float:
     if result == '1-0': return 1.0 if player_turn == chess.WHITE else -1.0
@@ -64,27 +67,59 @@ def process_pgn_stream_to_samples(pgn_stream, device, pbar):
 
 def validate(model, validation_chunk_dir, device):
     model.eval()
-    total_val_loss, correct_policy_preds, total_policy_samples = 0, 0, 0
-    num_batches = 0
-    print("\nRunning validation...")
     validation_chunks = sorted(list(validation_chunk_dir.glob('*.pt')))
+    progress_path = validation_chunk_dir / VALIDATION_PROGRESS_FILENAME
+    
+    start_chunk_index = 0
+    total_val_loss, correct_policy_preds, total_policy_samples, num_batches = 0.0, 0, 0, 0
+    if progress_path.exists():
+        print("Found existing validation progress, attempting to resume...")
+        with open(progress_path, 'rb') as f:
+            progress = pickle.load(f)
+            start_chunk_index = progress.get('last_processed_chunk_index', -1) + 1
+            total_val_loss = progress.get('total_val_loss', 0.0)
+            correct_policy_preds = progress.get('correct_policy_preds', 0)
+            total_policy_samples = progress.get('total_policy_samples', 0)
+            num_batches = progress.get('num_batches', 0)
+        print(f"Resuming validation from chunk {start_chunk_index + 1}/{len(validation_chunks)}")
+
     custom_collate = partial(prepare_sequence_batch, device=device)
-    for chunk_path in tqdm(validation_chunks, desc="Validating on Chunks", leave=False):
-        validation_samples = torch.load(chunk_path, map_location=device)
-        validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
-        with torch.no_grad():
-            for gnn_batch, cnn_batch, target_policies, target_values in validation_loader:
-                policy_logits, value_preds = model(gnn_batch, cnn_batch)
-                policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
-                value_loss = torch.nn.functional.mse_loss(value_preds.squeeze(-1), target_values.squeeze(-1))
-                total_val_loss += (policy_loss + value_loss).item()
-                predicted_moves = torch.argmax(policy_logits, dim=1)
-                correct_moves = torch.argmax(target_policies, dim=1)
-                correct_policy_preds += (predicted_moves == correct_moves).sum().item()
-                total_policy_samples += len(target_policies)
-                num_batches += 1
-        del validation_samples, validation_loader
-        gc.collect()
+
+    for i in range(start_chunk_index, len(validation_chunks)):
+        chunk_path = validation_chunks[i]
+        try:
+            validation_samples = torch.load(chunk_path, map_location=device)
+            validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
+            
+            with torch.no_grad():
+                for gnn_batch, cnn_batch, target_policies, target_values in tqdm(validation_loader, desc=f"Validating chunk {i+1}/{len(validation_chunks)}", leave=False):
+                    policy_logits, value_preds = model(gnn_batch, cnn_batch)
+                    policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
+                    value_loss = torch.nn.functional.mse_loss(value_preds.squeeze(-1), target_values.squeeze(-1))
+                    total_val_loss += (policy_loss + value_loss).item()
+                    predicted_moves = torch.argmax(policy_logits, dim=1)
+                    correct_moves = torch.argmax(target_policies, dim=1)
+                    correct_policy_preds += (predicted_moves == correct_moves).sum().item()
+                    total_policy_samples += len(target_policies)
+                    num_batches += 1
+            
+            del validation_samples, validation_loader
+            gc.collect()
+
+            with open(progress_path, 'wb') as f:
+                pickle.dump({
+                    'last_processed_chunk_index': i, 'total_val_loss': total_val_loss,
+                    'correct_policy_preds': correct_policy_preds, 'total_policy_samples': total_policy_samples,
+                    'num_batches': num_batches
+                }, f)
+        except Exception as e:
+            print(f"An error occurred during validation of {chunk_path.name}: {e}")
+            return None, None
+
+    print("\nFull validation pass complete.")
+    if progress_path.exists():
+        progress_path.unlink() 
+    
     if num_batches == 0: return 0.0, 0.0
     return total_val_loss / num_batches, (correct_policy_preds / total_policy_samples) * 100
 
@@ -118,6 +153,10 @@ def main():
 
     train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
     
+    if not train_pgn_files or not validation_chunk_dir.exists() or not any(validation_chunk_dir.iterdir()):
+        print("[FATAL] Training PGNs and pre-processed validation chunks are required.")
+        sys.exit(1)
+        
     start_epoch, last_processed_file_index, last_processed_batch_num = 0, -1, -1
 
     if args.checkpoint:
@@ -167,23 +206,21 @@ def main():
                         total_loss.backward()
                         optimizer.step()
                     
-                    # <<< MODIFIED: Checkpoint frequently for safety >>>
                     checkpoint_path = paths.checkpoints_dir / f"supervised_checkpoint_epoch{epoch+1}_file{i+1}_batch{batch_num}.pth.tar"
                     torch.save({ 
-                        'epoch': epoch, 
-                        'last_processed_file_index': i,
-                        'last_processed_batch_num': batch_num,
-                        'model_state_dict': model.state_dict(), 
-                        'optimizer_state_dict': optimizer.state_dict() 
+                        'epoch': epoch, 'last_processed_file_index': i, 'last_processed_batch_num': batch_num,
+                        'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict() 
                     }, checkpoint_path)
                     print(f"\nCheckpoint saved to {checkpoint_path}")
 
                     del train_samples, train_loader
                     gc.collect()
 
-            # <<< MODIFIED: Validate only at the end of the file for meaningful progress >>>
             val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
-            print(f"\nFile {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
+            if val_loss is not None and val_accuracy is not None:
+                print(f"\nFile {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
+            else:
+                print(f"\nFile {pgn_path.name} complete. | Validation in progress (will resume on next cycle).")
             
             last_processed_batch_num = -1
 
