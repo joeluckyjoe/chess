@@ -32,6 +32,7 @@ LEARNING_RATE = 1e-4
 SEQUENCE_LENGTH = 8
 SAMPLES_PER_BATCH = 50000 
 VALIDATION_PROGRESS_FILENAME = "validation_progress.pkl"
+VALIDATION_INTERVAL_BATCHES = 50 # Run validation every 50 batches
 
 def get_value_target(result: str, player_turn: chess.Color) -> float:
     if result == '1-0': return 1.0 if player_turn == chess.WHITE else -1.0
@@ -170,7 +171,7 @@ def main():
 
     for epoch in range(start_epoch, EPOCHS):
         print(f"\n--- Starting Epoch {epoch + 1}/{EPOCHS} ---")
-        start_index = last_processed_file_index + 1 if epoch == start_epoch else 0
+        start_index = last_processed_file_index + 1 if epoch == start_epoch and last_processed_file_index != -1 else 0
 
         for i in range(start_index, len(train_pgn_files)):
             pgn_path = train_pgn_files[i]
@@ -216,11 +217,19 @@ def main():
                     del train_samples, train_loader
                     gc.collect()
 
+                    if batch_num % VALIDATION_INTERVAL_BATCHES == 0:
+                        val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
+                        if val_loss is not None:
+                            print(f"\n--- Mid-File Validation Report (Batch {batch_num}) ---")
+                            print(f"Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
+                        else:
+                            print(f"\n--- Mid-File Validation Report (Batch {batch_num}) ---")
+                            print("Validation in progress (will resume on next cycle).")
+
+
             val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
-            if val_loss is not None and val_accuracy is not None:
+            if val_loss is not None:
                 print(f"\nFile {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
-            else:
-                print(f"\nFile {pgn_path.name} complete. | Validation in progress (will resume on next cycle).")
             
             last_processed_batch_num = -1
 
