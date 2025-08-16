@@ -32,7 +32,7 @@ LEARNING_RATE = 1e-4
 SEQUENCE_LENGTH = 8
 SAMPLES_PER_BATCH = 50000 
 VALIDATION_PROGRESS_FILENAME = "validation_progress.pkl"
-VALIDATION_INTERVAL_BATCHES = 50 # Run validation every 50 batches
+VALIDATION_INTERVAL_BATCHES = 50
 
 def get_value_target(result: str, player_turn: chess.Color) -> float:
     if result == '1-0': return 1.0 if player_turn == chess.WHITE else -1.0
@@ -92,6 +92,7 @@ def validate(model, validation_chunk_dir, device):
             validation_samples = torch.load(chunk_path, map_location=device)
             validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
             
+            # The outer tqdm wrapper provides high-level progress
             with torch.no_grad():
                 for gnn_batch, cnn_batch, target_policies, target_values in tqdm(validation_loader, desc=f"Validating chunk {i+1}/{len(validation_chunks)}", leave=False):
                     policy_logits, value_preds = model(gnn_batch, cnn_batch)
