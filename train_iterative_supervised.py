@@ -25,7 +25,7 @@ from gnn_agent.gamestate_converters.action_space_converter import get_action_spa
 from hardware_setup import get_device
 from run_expert_sparring import GNN_METADATA, prepare_sequence_batch
 
-# --- Configuration & Helper Functions (unchanged) ---
+# --- Configuration ---
 EPOCHS = 3
 BATCH_SIZE = config_params.get("BATCH_SIZE", 64)
 LEARNING_RATE = 1e-4
@@ -74,7 +74,6 @@ def validate(model, validation_chunk_dir, device):
     start_chunk_index = 0
     total_val_loss, correct_policy_preds, total_policy_samples, num_batches = 0.0, 0, 0, 0
     if progress_path.exists():
-        print("Found existing validation progress, attempting to resume...")
         with open(progress_path, 'rb') as f:
             progress = pickle.load(f)
             start_chunk_index = progress.get('last_processed_chunk_index', -1) + 1
@@ -82,19 +81,15 @@ def validate(model, validation_chunk_dir, device):
             correct_policy_preds = progress.get('correct_policy_preds', 0)
             total_policy_samples = progress.get('total_policy_samples', 0)
             num_batches = progress.get('num_batches', 0)
-        print(f"Resuming validation from chunk {start_chunk_index + 1}/{len(validation_chunks)}")
-
+    
     custom_collate = partial(prepare_sequence_batch, device=device)
 
-    # Use tqdm on the outer loop (chunks), but not the inner loop (batches)
-    for i in tqdm(range(start_chunk_index, len(validation_chunks)), desc="Validating on Chunks"):
+    for i in range(start_chunk_index, len(validation_chunks)):
         chunk_path = validation_chunks[i]
         try:
             validation_samples = torch.load(chunk_path, map_location=device)
             validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
-            
             with torch.no_grad():
-                # <<< MODIFIED: Removed the verbose inner tqdm wrapper for stability >>>
                 for gnn_batch, cnn_batch, target_policies, target_values in validation_loader:
                     policy_logits, value_preds = model(gnn_batch, cnn_batch)
                     policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
@@ -119,7 +114,6 @@ def validate(model, validation_chunk_dir, device):
             print(f"An error occurred during validation of {chunk_path.name}: {e}")
             return None, None
 
-    print("\nFull validation pass complete.")
     if progress_path.exists():
         progress_path.unlink() 
     
@@ -155,10 +149,6 @@ def main():
         return (2, name)
 
     train_pgn_files = sorted(train_corpus_dir.glob('*.pgn'), key=get_sort_key)
-    
-    if not train_pgn_files or not validation_chunk_dir.exists() or not any(validation_chunk_dir.iterdir()):
-        print("[FATAL] Training PGNs and pre-processed validation chunks are required.")
-        sys.exit(1)
         
     start_epoch, last_processed_file_index, last_processed_batch_num = 0, -1, -1
 
@@ -173,7 +163,9 @@ def main():
 
     for epoch in range(start_epoch, EPOCHS):
         print(f"\n--- Starting Epoch {epoch + 1}/{EPOCHS} ---")
-        start_index = last_processed_file_index + 1 if epoch == start_epoch and last_processed_file_index != -1 else 0
+        start_index = last_processed_file_index if last_processed_file_index != -1 else 0
+        if epoch > start_epoch: # If it's a new epoch, start from the beginning
+            start_index = 0
 
         for i in range(start_index, len(train_pgn_files)):
             pgn_path = train_pgn_files[i]
@@ -186,10 +178,16 @@ def main():
                 is_file_done = False
                 while not is_file_done:
                     batch_num += 1
+                    
+                    # <<< MODIFIED: This is the definitive intra-file resume logic >>>
                     if epoch == start_epoch and i == last_processed_file_index and batch_num <= last_processed_batch_num:
+                        # Consume the generator to skip the samples in this batch
                         _ = [next(sample_generator, None) for _ in range(SAMPLES_PER_BATCH)]
-                        print(f"Skipping already processed batch {batch_num} in {pgn_path.name}")
+                        pbar.set_postfix_str(f"Skipping batch {batch_num}")
                         continue
+                    
+                    # Reset the description after skipping is done
+                    pbar.set_postfix_str("")
 
                     train_samples = [s for _, s in zip(range(SAMPLES_PER_BATCH), sample_generator)]
                     if not train_samples:
@@ -214,8 +212,7 @@ def main():
                         'epoch': epoch, 'last_processed_file_index': i, 'last_processed_batch_num': batch_num,
                         'model_state_dict': model.state_dict(), 'optimizer_state_dict': optimizer.state_dict() 
                     }, checkpoint_path)
-                    print(f"\nCheckpoint saved to {checkpoint_path}")
-
+                    
                     del train_samples, train_loader
                     gc.collect()
 
@@ -224,15 +221,17 @@ def main():
                         if val_loss is not None:
                             print(f"\n--- Mid-File Validation Report (Batch {batch_num}) ---")
                             print(f"Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
+                            print(f"Checkpoint saved to {checkpoint_path}")
                         else:
-                            print(f"\n--- Mid-File Validation Report (Batch {batch_num}) ---")
-                            print("Validation in progress (will resume on next cycle).")
+                            print(f"\nValidation for Batch {batch_num} in progress...")
 
             val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
             if val_loss is not None:
                 print(f"\nFile {pgn_path.name} complete. | Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_accuracy:.2f}%")
             
-            last_processed_batch_num = -1
+            last_processed_batch_num = -1 # Reset for the next file
+        
+        last_processed_file_index = -1 # Reset for the next epoch
 
 if __name__ == "__main__":
     main()
