@@ -25,7 +25,7 @@ from gnn_agent.gamestate_converters.action_space_converter import get_action_spa
 from hardware_setup import get_device
 from run_expert_sparring import GNN_METADATA, prepare_sequence_batch
 
-# --- Configuration ---
+# --- Configuration & Helper Functions (unchanged) ---
 EPOCHS = 3
 BATCH_SIZE = config_params.get("BATCH_SIZE", 64)
 LEARNING_RATE = 1e-4
@@ -86,15 +86,16 @@ def validate(model, validation_chunk_dir, device):
 
     custom_collate = partial(prepare_sequence_batch, device=device)
 
-    for i in range(start_chunk_index, len(validation_chunks)):
+    # Use tqdm on the outer loop (chunks), but not the inner loop (batches)
+    for i in tqdm(range(start_chunk_index, len(validation_chunks)), desc="Validating on Chunks"):
         chunk_path = validation_chunks[i]
         try:
             validation_samples = torch.load(chunk_path, map_location=device)
             validation_loader = DataLoader(validation_samples, batch_size=BATCH_SIZE, collate_fn=custom_collate)
             
-            # The outer tqdm wrapper provides high-level progress
             with torch.no_grad():
-                for gnn_batch, cnn_batch, target_policies, target_values in tqdm(validation_loader, desc=f"Validating chunk {i+1}/{len(validation_chunks)}", leave=False):
+                # <<< MODIFIED: Removed the verbose inner tqdm wrapper for stability >>>
+                for gnn_batch, cnn_batch, target_policies, target_values in validation_loader:
                     policy_logits, value_preds = model(gnn_batch, cnn_batch)
                     policy_loss = -(torch.nn.functional.log_softmax(policy_logits, dim=1) * target_policies).sum(dim=1).mean()
                     value_loss = torch.nn.functional.mse_loss(value_preds.squeeze(-1), target_values.squeeze(-1))
@@ -226,7 +227,6 @@ def main():
                         else:
                             print(f"\n--- Mid-File Validation Report (Batch {batch_num}) ---")
                             print("Validation in progress (will resume on next cycle).")
-
 
             val_loss, val_accuracy = validate(model, validation_chunk_dir, device)
             if val_loss is not None:
